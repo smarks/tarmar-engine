@@ -1,0 +1,32 @@
+name: Tag version guard
+
+# Fail a pushed release tag vX.Y.Z whose number does not match the
+# [project] version in pyproject.toml, so a release can never ship metadata
+# stuck at an old version (the silent no-op class from melee #261).
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Verify tag matches pyproject version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pyproject_version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "Tag version:       $tag_version"
+          echo "pyproject version: $pyproject_version"
+          if [ "$tag_version" != "$pyproject_version" ]; then
+            echo "::error::Tag v$tag_version does not match pyproject version $pyproject_version. Bump [project] version before tagging."
+            exit 1
+          fi

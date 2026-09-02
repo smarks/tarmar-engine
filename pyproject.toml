@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tarmar-engine"
+version = "0.1.0"
+description = "Shared Tarmar turn engine (six-phase battle loop, actions, combat math, spells, utility AI policy) over hexarena geometry and tarmar-rules resolution."
+requires-python = ">=3.11"
+dependencies = [
+    # Tag-pinned git dependencies, the same pattern melee's requirements.txt
+    # and tarmar-studio's pyproject document for hexarena/tarmar-rules: bump
+    # by editing the @vX.Y.Z ref in a commit CI tests. For local development
+    # against a sibling checkout: uv pip install -e ../hexarena (etc.).
+    "hexarena @ git+https://github.com/smarks/hexarena.git@v0.2.0",
+    "tarmar-rules @ git+https://github.com/smarks/tarmar-rules.git@v0.3.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyright>=1.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["tarmar_engine*"]
+
+[tool.setuptools.package-data]
+tarmar_engine = ["spec/**/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+include = ["tarmar_engine", "tests"]
+typeCheckingMode = "basic"
+# hexarena's pathfinding Node is an untyped Hashable alias; same relaxation
+# tarmar-studio's pyrightconfig.json applies to the identical test code.
+reportAttributeAccessIssue = false
