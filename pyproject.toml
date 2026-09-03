@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tarmar-engine"
-version = "0.6.0"
-description = "Shared Tarmar turn engine (six-phase battle loop, actions, combat math, spells, utility AI policy) over hexarena geometry and tarmar-rules resolution."
+version = "0.7.0"
+description = "Shared turn engine for Tarmar and classic Melee rules profiles (turn loops, actions, combat math, spells, decision layers) over hexarena geometry and tarmar-rules resolution."
 requires-python = ">=3.11"
 dependencies = [
     # Tag-pinned git dependencies, the same pattern melee's requirements.txt

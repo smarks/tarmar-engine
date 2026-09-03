@@ -28,6 +28,7 @@ from collections.abc import Callable
 from hexarena.dice import Dice
 
 from ..profile import CLASSIC_MELEE_NAME, PROFILES, MeleeStructureProfile
+from . import policy
 from .data import classic_reactions
 from .resolution import ClassicResolution
 from .state import GameState, IllegalAction
@@ -53,12 +54,17 @@ class ClassicMeleeProfile(MeleeStructureProfile):
             roller: A ``hexarena.dice.Dice`` to install as the game's dice
                 source, or ``None`` to keep the state's own.
             sink: Called once per new log line the turn produced.
-            choose_option: ``choose_option(game, figure)`` — sets the
-                figure's option for the turn through the game's verbs
-                (``game.move(...)``, direct option assignment plus
-                ``game.queue_attack(...)``, ``game.pass_action(...)``). A
-                figure left with no option is set to DO NOTHING so the turn
-                always completes.
+            choose_option: ``choose_option(game, figure)``, in either of two
+                shapes. **Menu-driven** (tarmar-engine#3, what an app with a
+                UI wants): return a
+                :class:`~tarmar_engine.policy.Candidate` off
+                :func:`.policy.menu` and this runner enacts it — the same
+                path whether the AI or a player picked it. **Direct**
+                (melee's own board, and mechanics tests): drive the game's
+                verbs yourself (``game.move(...)``, direct option assignment
+                plus ``game.queue_attack(...)``, ``game.pass_action(...)``)
+                and return ``None``. A figure left with no option either way
+                is set to DO NOTHING so the turn always completes.
 
         The phase walk is the profile's own ``phases`` table: (1) Movement —
         initiative-ordered selection via :meth:`GameState.begin_selection` /
@@ -76,11 +82,18 @@ class ClassicMeleeProfile(MeleeStructureProfile):
         # Phase 1 — Movement: initiative-ordered option selection.
         game.begin_selection()
         while (figure := game.active_character()) is not None:
-            choose_option(game, figure)
+            picked = choose_option(game, figure)
+            if picked is not None:
+                policy.enact(game, figure, picked)
             if figure.current_option is None and game.active_character() is figure:
                 game.set_do_nothing(figure)
 
-        # Phase 2 — Attacks, in adjDX order.
+        # Phase 2 — Attacks. Declared only now, once every figure has moved, so
+        # a blow is aimed at where its target actually stands (melee declares
+        # attacks in its own combat phase for exactly this reason); a figure
+        # whose driver queued its attack directly is left alone. Then they
+        # resolve in adjDX order.
+        policy.declare_attacks(game)
         game.resolve_combat()
 
         # Phase 3 — Forced Retreat: spend every armed, still-legal push.

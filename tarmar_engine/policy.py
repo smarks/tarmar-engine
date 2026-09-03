@@ -64,7 +64,11 @@ class Candidate:
     name: str
     score: float
     rationale: str
-    target_id: int | None = None
+    #: Who the option is aimed at, in the identifier its own profile uses:
+    #: the Tarmar profile numbers its combatants, the classic profile gives
+    #: each figure a string ``uid``. The field admits both so one candidate
+    #: shape serves both menus — a consumer that stores it must not assume int.
+    target_id: int | str | None = None
     spell_key: str = ""
 
     def to_payload(self) -> dict:

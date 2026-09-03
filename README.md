@@ -112,6 +112,38 @@ replay of the option menu all need it not to. The write-only audit trails
 (`spell_results`, `damage_events`, `applied_results`) are deliberately left
 out; the rules never read them back and `end_turn` clears them.
 
+### Deciding a classic turn
+
+A classic turn can now be *shown* before it is *taken* — what a database-backed
+UI needs, and what melee's board never had to separate. `classic/policy.py`
+splits the decision three ways, over the classic heuristics ported into
+`classic/ai.py` from melee's `engine/ai.py`:
+
+```python
+from tarmar_engine.classic import policy
+
+decision = policy.choose_option(game, figure)   # pure: the scored menu + a pick
+policy.enact(game, figure, decision.chosen)     # or enact a *player's* pick
+policy.declare_attacks(game)                    # combat phase, after everyone moved
+```
+
+`Candidate`/`Decision` are the **shared** types from `tarmar_engine.policy`, so
+one menu payload serves both profiles; `Candidate.target_id` therefore admits
+either profile's identifier (Tarmar's int combatant id, classic's string
+`uid`). Scores are thin on purpose — melee's AI is a decision tree, not a
+scorer, so the pick carries the tactic that produced it and the alternatives
+come back at zero rather than with invented numbers.
+
+`ClassicMeleeProfile.run_turn` accepts either shape of `choose_option`: return
+a `Candidate` and the runner enacts it; drive the game's verbs yourself and
+return `None` (melee's board, and the mechanics tests). Attacks are declared
+between selection and resolution either way, so a blow is aimed at where its
+target actually stands.
+
+**A behavioural difference worth naming:** enacting an option lets the *engine*
+derive the movement and facing, as the Tarmar engine already does. Melee's own
+board instead lets a human click the destination hex.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
