@@ -84,6 +84,34 @@ method and its mutation hooks; the spell narrations join
 (`tests/test_classic_spells.py`, `test_classic_spell_batch.py`,
 `test_classic_staff.py`, `test_classic_wizard_weapons.py`).
 
+### Snapshotting a classic battle
+
+Both state types now carry the same snapshot contract, so a consumer that
+serves battles out of a database can hold either profile's state:
+
+```python
+snapshot = game.to_dict()          # JSON-safe; store it
+game = GameState.from_dict(snapshot)   # resumes exactly, dice included
+```
+
+`classic/persistence.py` (ported from melee's `board/persistence.py`, trimmed
+to the engine) round-trips the arena, the ruleset identity, the turn and
+initiative-selection state, the log, the dropped weapons, the queued attacks
+AND casts, and every figure — gear from the catalogs by name, a monster's
+ad-hoc weapon or hide by value, the wizard's identity and lasting-spell
+records intact. Drift guards assert the persisted key set equals the
+dataclass field set for `Figure`, `PendingAttack` and `PendingCast`, and that
+every `GameState` attribute is either serialized or in the documented
+omission set.
+
+The one departure from melee's save/load: **the dice stream round-trips too**
+— the scripted queue and the RNG state both — so a restored battle draws the
+same future rolls. Melee restarted the stream on each load; turn rewind,
+deterministic resume, and validating a remote player's choice against a
+replay of the option menu all need it not to. The write-only audit trails
+(`spell_results`, `damage_events`, `applied_results`) are deliberately left
+out; the rules never read them back and `end_turn` clears them.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

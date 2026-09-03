@@ -3302,3 +3302,21 @@ class GameState(
         no missiles, and figures drop out at ST <= 3. The single mode flag the
         combat rules read."""
         return self.combat_type is CombatType.PRACTICE
+
+    # ---- snapshot contract --------------------------------------------------
+    # The same ``to_dict`` / ``from_dict`` pair ``tarmar_engine.state.BattleState``
+    # offers, so a consumer that serves battles out of a database can hold either
+    # profile's state. The implementation lives in ``.persistence``, imported
+    # inside the methods because that module imports this one.
+    def to_dict(self) -> dict:
+        """This state as a JSON-safe ``dict`` (see :mod:`.persistence`)."""
+        from .persistence import state_to_json
+
+        return state_to_json(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> GameState:
+        """Rebuild a state from :meth:`to_dict` output."""
+        from .persistence import state_from_json
+
+        return state_from_json(data)
