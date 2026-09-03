@@ -104,16 +104,48 @@ def menu(game: GameState, figure: Figure) -> list[Candidate]:
     a player was shown.
     """
     target_uid = _target_uid(game, figure)
+    candidates: list[Candidate] = []
+    for option, reason in game.option_availability(figure):
+        if reason is not None:
+            continue
+        if option == Option.CAST:
+            candidates.extend(cast_candidates(game, figure))
+            continue
+        candidates.append(
+            Candidate(
+                letter=option.value,
+                name=_label(option),
+                score=0.0,
+                rationale=NOT_CHOSEN,
+                target_id=target_uid or None,
+            )
+        )
+    return candidates
+
+
+def cast_candidates(game: GameState, figure: Figure) -> list[Candidate]:
+    """One candidate per spell ``figure`` could actually cast, and at whom.
+
+    The classic analogue of :func:`tarmar_engine.policy._cast_candidates`. A
+    bare CAST entry would name an option a chooser cannot act on: which spell
+    to cast was melee's AI re-deriving its own preference in the combat phase,
+    invisible to anyone else and unoverridable by them. Each entry here names
+    its spell in ``spell_key`` and its subject in ``target_id``, which together
+    are everything :meth:`GameState.queue_spell` needs.
+
+    Empty when nothing is castable — so the CAST option disappears from the
+    menu rather than sitting there as an offer the queue would reject.
+    """
     return [
         Candidate(
-            letter=option.value,
-            name=_label(option),
+            letter=Option.CAST.value,
+            name=f"{_label(Option.CAST)} {spell.name}",
             score=0.0,
             rationale=NOT_CHOSEN,
-            target_id=target_uid or None,
+            target_id=target.uid,
+            spell_key=spell.id,
         )
-        for option, reason in game.option_availability(figure)
-        if reason is None
+        for spell, target, _st in ai.castable_spells(game, figure)
     ]
 
 
@@ -133,24 +165,54 @@ def choose_option(game: GameState, figure: Figure) -> Decision:
     option = Option.DO_NOTHING if intent is None else intent.option
     target_uid = intent.target_uid if intent is not None else ""
     rationale = TACTICS.get(option, _label(option))
+    # A CAST is the one option whose menu entries differ by more than a letter,
+    # so the pick has to name the spell the heuristics settled on — otherwise
+    # it would replace an arbitrary one of the caster's spell entries.
+    spell_key, cast_target = "", ""
+    if option == Option.CAST:
+        cast = ai._cast_plan(game, figure)
+        if cast is not None:
+            spell, cast_subject, _st = cast
+            spell_key, cast_target = spell.id, cast_subject.uid
     chosen = Candidate(
         letter=option.value,
-        name=_label(option),
+        name=(f"{_label(option)} {spell_key and _spell_name(spell_key)}".strip()
+              if spell_key else _label(option)),
         score=CHOSEN_SCORE,
         rationale=rationale,
-        target_id=target_uid or None,
+        target_id=cast_target or target_uid or None,
+        spell_key=spell_key,
     )
     # The plan's option is legal by construction, so it is already in the menu:
     # replace that entry rather than appending a duplicate.
     candidates = [
-        chosen if candidate.letter == chosen.letter else candidate
+        chosen if _same_entry(candidate, chosen) else candidate
         for candidate in candidates
     ]
-    if all(candidate.letter != chosen.letter for candidate in candidates):
+    if all(not _same_entry(candidate, chosen) for candidate in candidates):
         # DO NOTHING for a figure that cannot act at all: the menu is empty
         # because the engine offers it nothing, but the turn still has to move on.
         candidates.append(chosen)
     return Decision(chosen=chosen, candidates=candidates)
+
+
+def _spell_name(spell_key: str) -> str:
+    """The spell's printed name, or its id if the catalog has never heard of it."""
+    from .spells import SPELLS
+
+    spell = SPELLS.get(spell_key)
+    return spell.name if spell is not None else spell_key
+
+
+def _same_entry(candidate: Candidate, chosen: Candidate) -> bool:
+    """Whether two candidates name the same menu entry.
+
+    The letter alone identifies every option but CAST, which has an entry per
+    spell; comparing the spell as well keeps the AI's pick from overwriting a
+    different spell's entry and dropping its own from the menu.
+    """
+    return (candidate.letter == chosen.letter
+            and candidate.spell_key == chosen.spell_key)
 
 
 def _figure_by_uid(game: GameState, uid) -> Figure | None:
@@ -218,6 +280,12 @@ def enact(game: GameState, figure: Figure, candidate: Candidate) -> None:
     if candidate.letter == Option.PASS.value:
         game.pass_action(figure)
         return
+    if candidate.letter == Option.CAST.value and candidate.spell_key:
+        # Record which spell was chosen, for the combat phase to honour. The
+        # spell is queued there, not here, because melee declares attacks only
+        # once every figure has moved (see :func:`declare_attacks`).
+        figure.declared_spell_id = candidate.spell_key
+        figure.declared_spell_target = str(candidate.target_id or "")
     ai.apply(game, figure, plan_for(game, figure, candidate))
 
 

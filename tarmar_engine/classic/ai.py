@@ -113,6 +113,70 @@ def apply(state: GameState, figure: Figure, plan: Plan) -> None:
     )
 
 
+def cast_st_for(state: GameState, figure: Figure, spell, target: Figure,
+                *, reserve: int = 0) -> int | None:
+    """The ST a cast of ``spell`` at ``target`` invests, or ``None`` to refuse.
+
+    The one affordability rule, so the menu a caster is shown, the AI's own
+    pick and the queue can never disagree about what a cast costs.
+
+    ``reserve`` is the caller's caution, not a rule: the AI keeps
+    :data:`CAST_RESERVE_ST` back because the ST pool is also its hit points,
+    while a menu offered to a *player* passes 0 — the rules let a cast take a
+    wizard to 0 ST (``_validate_cast``), and hiding a legal cast behind the
+    AI's tactic knob would offer less than the queue accepts.
+    """
+    if spell.variable_st:
+        # A variable-ST spell invests as much as the caster can stand behind,
+        # capped by the catalog ceiling (0 = no ceiling, bounded by the pool).
+        ceiling = spell.max_st or figure.current_st
+        invested = min(ceiling, figure.current_st - reserve)
+        return invested if invested >= spell.st_cost else None
+    cost = spell_cost_for(spell, target.strength)
+    return cost if figure.current_st - cost >= reserve else None
+
+
+def castable_spells(state: GameState, figure: Figure) -> list[tuple]:
+    """Every ``(spell, target, st)`` ``figure`` could legally cast right now.
+
+    Read off :meth:`GameState.spell_targets` — the engine's single source for
+    which figures a spell may be aimed at, already gated by
+    ``cast_block_reason`` and ``turn_cast_block_reason`` — so nothing is
+    offered that :meth:`GameState.queue_spell` would reject. One entry per
+    (spell, target) pair, in the caster's own ``spells_known`` order.
+    """
+    if not figure.spells_known or cast_block_reason(figure) is not None:
+        return []
+    offers = []
+    for spell_id in figure.spells_known:
+        spell = SPELLS.get(spell_id)
+        if spell is None:
+            continue
+        for target in state.spell_targets(figure, spell):
+            st_used = cast_st_for(state, figure, spell, target)
+            if st_used is not None:
+                offers.append((spell, target, st_used))
+    return offers
+
+
+def declared_cast(state: GameState, figure: Figure):
+    """The cast ``figure`` DECLARED this turn as ``(spell, target, st)``.
+
+    ``None`` when it declared none, or when what it declared has since become
+    illegal — a target felled or moved out of reach between the selection and
+    combat phases. The combat phase stands the caster down in that case, the
+    same answer melee gave a re-derivation that came back empty.
+    """
+    if not figure.declared_spell_id:
+        return None
+    return next(
+        (offer for offer in castable_spells(state, figure)
+         if offer[0].id == figure.declared_spell_id
+         and offer[1].uid == figure.declared_spell_target),
+        None,
+    )
+
+
 def _cast_plan(state: GameState, figure: Figure):
     """The simple AI cast for ``figure``: ``(spell, target, st)`` or ``None``.
 
@@ -132,12 +196,14 @@ def _cast_plan(state: GameState, figure: Figure):
          if spell_id in SPELLS and SPELLS[spell_id].is_missile),
         key=lambda spell: -spell.damage_per_st)   # 1d > 1d-1 > 1d-2
     for spell in missiles:
-        st_max = min(spell.max_st, figure.current_st - CAST_RESERVE_ST)
-        if st_max < spell.st_cost:
-            continue
         targets = state.spell_targets(figure, spell)
-        if targets:
-            return spell, _best_target(state, figure, targets), st_max
+        if not targets:
+            continue
+        target = _best_target(state, figure, targets)
+        st_max = cast_st_for(state, figure, spell, target,
+                             reserve=CAST_RESERVE_ST)
+        if st_max is not None:
+            return spell, target, st_max
     for spell_id in _OBVIOUS_DEBUFFS:
         if spell_id not in figure.spells_known or spell_id not in SPELLS:
             continue
@@ -146,8 +212,9 @@ def _cast_plan(state: GameState, figure: Figure):
         for target in sorted(
                 state.spell_targets(figure, spell),
                 key=lambda enemy: layout.distance(figure.position, enemy.position)):
-            cost = spell_cost_for(spell, target.strength)
-            if figure.current_st - cost >= CAST_RESERVE_ST:
+            cost = cast_st_for(state, figure, spell, target,
+                               reserve=CAST_RESERVE_ST)
+            if cost is not None:
                 return spell, target, cost
     return None
 
@@ -569,7 +636,11 @@ def queue_attack_for(state: GameState, figure: Figure) -> None:
         if figure.cast_this_turn or any(
                 pending.caster is figure for pending in state._pending_casts):
             return                        # already queued/cast this turn
-        cast = _cast_plan(state, figure)
+        # A declared cast (a player's pick, or the AI's own recorded by
+        # ``policy.enact``) is what gets queued; only an undeclared caster
+        # falls back to the heuristics re-deriving their own.
+        cast = (declared_cast(state, figure) if figure.declared_spell_id
+                else _cast_plan(state, figure))
         if cast is None:
             state.stand_down(figure)
         else:

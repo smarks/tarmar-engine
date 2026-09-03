@@ -144,6 +144,41 @@ target actually stands.
 derive the movement and facing, as the Tarmar engine already does. Melee's own
 board instead lets a human click the destination hex.
 
+### Choosing a classic *spell*
+
+Deciding the turn left one thing still the AI's private business: **which
+spell**. The menu offered a bare `CAST` option, and the combat phase re-derived
+the spell from the heuristics — so a cast chosen by anyone but the AI was
+silently overruled. The menu now names the spell:
+
+```python
+for candidate in policy.menu(game, wizard):
+    candidate.letter, candidate.spell_key, candidate.target_id
+    # "cast", "magic_fist", "dummy"   <- one entry per castable spell
+
+policy.enact(game, wizard, chosen)   # records the declaration
+policy.declare_attacks(game)         # queues the spell that was declared
+```
+
+Each entry comes from `GameState.spell_targets` — the engine's single source
+for what a spell may be aimed at — so nothing is offered that `queue_spell`
+would reject, and a caster with nothing castable is offered no `CAST` at all
+rather than an option that dead-ends.
+
+The choice is *recorded* on the figure (`declared_spell_id` /
+`declared_spell_target`, per-turn like every other declaration) rather than
+queued on the spot, because melee declares attacks only once every figure has
+moved. A declaration that has since gone illegal — the target felled, the ST
+spent — stands the caster down, which is what melee already did when its own
+re-derivation came back empty.
+
+**Affordability is the rules' bound, not the AI's.** `ai.CAST_RESERVE_ST` is a
+tactic knob: the AI keeps ST back because the pool is also its hit points. A
+menu shown to a player applies no reserve, since the rules let a cast take a
+wizard to 0 ST — hiding a legal cast behind the AI's caution would offer less
+than the queue accepts. `ai.cast_st_for` is the one affordability rule both
+read.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
