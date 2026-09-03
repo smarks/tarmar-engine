@@ -121,7 +121,7 @@ def is_engaged_by(layout: HexLayout, figure: Figure, enemy: Figure) -> bool:
     """True if ``figure`` stands in ``enemy``'s front hex (so enemy engages it).
 
     A prone or airborne enemy has no front and engages no one; nor does an
-    unarmed (staffless) wizard (Wizard p.9 — inert here until milestone 5).
+    unarmed (staffless) wizard (Wizard p.9).
     """
     if enemy.posture == Posture.PRONE or enemy.collapsed or enemy.flying:
         return False

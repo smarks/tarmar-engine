@@ -50,7 +50,7 @@ class Option(StrEnum):
     CHANGE_WEAPONS = "change_weapons"  # (m) shift 1, swap to a non-missile
     DISENGAGE = "disengage"            # (n) move away from engaging enemies
     HTH_ATTACK = "hth_attack"          # (b/o) grapple hand-to-hand
-    CAST = "cast"                      # a wizard casts (milestone 5)
+    CAST = "cast"                      # (h/r) a wizard casts a spell
     PICK_UP = "pick_up"                # (q) take a dropped weapon in reach
     GO_PRONE = "go_prone"              # (f) drop prone
     KNEEL = "kneel"                    # (f) drop to one knee

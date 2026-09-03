@@ -40,13 +40,14 @@ the Tarmar profile, bit-for-bit — the milestone-1 suite passes unchanged).
 
 `get_profile("classic-melee")` lazily loads `tarmar_engine.classic` — the
 **segregated** subpackage holding everything SJG-derived: the rulebook data
-(`classic/data.py` is the one data module — weapon/armor/shield tables,
-Section III constants, injury thresholds, the special to-hit totals) and the
-classic combat machinery ported from the melee project's engine (figure,
-arena, facing, ruleset, `classic.state.GameState`, and — since milestone 4,
-when melee itself became a consumer of this package — hand-to-hand piles,
-the shield rush, the combat-phase general disengage, practice bouts,
-Section IX experience, and the prose narrative layer). The profile wires the
+(`classic/data.py` — weapon/armor/shield tables, Section III constants,
+injury thresholds, the special to-hit and spell-cast totals — beside the
+`classic/spells.py` Wizard spell catalog) and the classic combat machinery
+ported from the melee project's engine (figure, arena, facing, ruleset,
+`classic.state.GameState`, and — since milestone 4, when melee itself became
+a consumer of this package — hand-to-hand piles, the shield rush, the
+combat-phase general disengage, practice bouts, Section IX experience, and
+the prose narrative layer). The profile wires the
 shared melee-structure seam components with those numbers, resolves by
 `ClassicResolution` (3d6 roll-under), and its `run_turn` drives the classic
 `GameState` through the four-phase turn.
@@ -62,12 +63,26 @@ uv run pytest tests/test_combat_example.py -v
 
 Per the unification plan's copyright note, no Tarmar-canon module imports the
 classic subpackage (a guard test enforces it); the classic data never leaks
-into the shared mechanics. Still in melee only: the SPELL layer (TFT: Wizard
-casting, the 14-spell catalog, spell narration) — milestone 5 reconciles
-magic under the magic.md-canon ruling. The classic engine exposes documented
-spell hooks (`_pending_casts`/`spell_results`, `_resolve_cast`,
-`_expire_active_spells`, `Figure.SPELL_CATALOG`) that melee's spell layer
-plugs into; they are inert in this package.
+into the shared mechanics.
+
+### The classic spell layer (milestone 5)
+
+Since milestone 5 the SPELL layer (TFT: Wizard) lives here natively, under
+Spencer's spell-canon ruling: **Tarmar's magic.md-faithful magic stays canon
+for the Tarmar profile** (`tarmar_engine/spells.py`, untouched), and **the
+14-spell classic Wizard suite is classic-profile-only** — ported verbatim
+from melee into the segregated subpackage. `classic/spells.py` carries the
+catalog (IQ tiers, ST costs, durations, heavy-target variants, every number
+cited against the reference text); the cast flow (target legality, the
+declare/resolve queue, missile-spell line-of-flight, dodging's four-dice
+shift, fizzles, lasting-spell bookkeeping and expiry) fills the spell hooks
+milestone 4 installed (`_pending_casts`/`spell_results`, `_resolve_cast`,
+`_expire_active_spells`, `Figure.SPELL_CATALOG` — now bound to the classic
+catalog by default); `Ruleset` gains melee's `resolve_spell` composition
+method and its mutation hooks; the spell narrations join
+`classic/narrative.py`. Melee's spell/wizard tests ride along verbatim
+(`tests/test_classic_spells.py`, `test_classic_spell_batch.py`,
+`test_classic_staff.py`, `test_classic_wizard_weapons.py`).
 
 ## What it sits on
 

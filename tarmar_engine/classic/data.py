@@ -104,7 +104,7 @@ BATTLEAXE = Weapon("Battleaxe", DamageDice(3, 0), 15, two_handed=True)
 # the WEAPONS catalog — "Only wizards may carry magical staffs" (p.23), and the
 # catalog is exactly what a fighter build may pick, so keeping the staff out
 # makes a fighter spec naming it fail as "unknown weapon". A wizard gets one
-# from the consumer's spell layer (knowing the Staff spell grants it at build).
+# at build: knowing the Staff spell grants it (.figure.create_wizard).
 STAFF = Weapon("Staff", DamageDice(1, 0), 0,
                notes="a wizard's magical staff — wizards only (Wizard p.19)")
 
@@ -250,6 +250,36 @@ FOUR_DICE_SPECIALS: dict[int, tuple[bool, int, bool, bool]] = {
     22: (False, 0, True, False),
     23: (False, 0, False, True),
     24: (False, 0, False, True),
+}
+
+# ---- Special SPELL-cast totals (Wizard p.11; unification milestone 5) --------
+# Distinct from a weapon's 17-drop/18-break: a spell's 17 fizzles losing the
+# FULL ST cost, and an 18 fizzles + knocks the caster down. Each entry is
+# ``(hit, damage_multiplier, fizzle, knockdown)``.
+SPELL_THREE_DICE_SPECIALS: dict[int, tuple[bool, int, bool, bool]] = {
+    3: (True, 3, False, False),    # triple effect
+    4: (True, 2, False, False),    # double effect
+    5: (True, 1, False, False),    # automatic hit
+    16: (False, 0, False, False),  # automatic miss (loses 1 ST, per the miss rule)
+    17: (False, 0, True, False),   # fizzle: lose the full ST cost
+    18: (False, 0, True, True),    # fizzle + the shock knocks the caster down
+}
+# Special four-dice totals for a SPELL cast against a dodging/defending target
+# (melee #418). The dodge/defend rule shifts the specials exactly as for
+# weapons — "4 and 5 are automatic hits with triple and double damage; 20 and
+# above are automatic misses; 21 and 22 are dropped weapons, and 23 and 24 are
+# broken weapons" (wizard-rules lines 998-1001) — and the weapon drop/break
+# analogues for a spell are its fizzle tiers (rules lines 605-612): a "dropped"
+# spell fizzles losing the full ST, a "broken" one fizzles and knocks the
+# caster down.
+SPELL_FOUR_DICE_SPECIALS: dict[int, tuple[bool, int, bool, bool]] = {
+    4: (True, 3, False, False),    # triple effect
+    5: (True, 2, False, False),    # double effect
+    20: (False, 0, False, False),  # automatic miss
+    21: (False, 0, True, False),   # fizzle: lose the full ST cost
+    22: (False, 0, True, False),
+    23: (False, 0, True, True),    # fizzle + the shock knocks the caster down
+    24: (False, 0, True, True),
 }
 
 

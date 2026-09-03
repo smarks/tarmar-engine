@@ -2,11 +2,10 @@
 
 Ported from melee's ``engine/figure.py``. A figure is created with Strength
 (ST) and Dexterity (DX), then equipped, and carries the running state of a
-fight. The spell-layer state (``spells_known``/``active_spells``/…) is neutral
-data here: the three spell computations read the pluggable
-:attr:`Figure.SPELL_CATALOG` (``None`` in this package, so they are inert);
-the consumer's spell layer binds its own catalog — see melee's
-``engine/figure.py``.
+fight. The spell computations read the pluggable
+:attr:`Figure.SPELL_CATALOG`, bound by default to the classic spell catalog
+(:data:`.spells.SPELLS`) since the battle/melee unification's milestone 5
+brought the spell layer into this subpackage; a consumer may still rebind it.
 
 A figure is created with Strength (ST) and Dexterity (DX), then equipped with
 armor, an optional shield, and up to two weapons plus a dagger. ST governs how
@@ -38,6 +37,7 @@ from .data import (
     Shield,
     Weapon,
 )
+from .spells import SPELLS
 
 
 def footprint_for(
@@ -114,8 +114,9 @@ class Figure:
 
     #: The spell-layer hook: a mapping of spell id -> catalog entry with
     #: ``ma_percent`` / ``dx_penalty_per_st`` / ``defense_dx_penalty`` fields.
-    #: ``None`` (the package default) keeps every spell computation inert; the
-    #: consumer's spell layer (melee) binds its own catalog once at import.
+    #: Bound below to the classic catalog (:data:`.spells.SPELLS`) — the
+    #: package casts natively as of unification milestone 5; a consumer may
+    #: rebind it (``None`` turns every spell computation inert).
     SPELL_CATALOG: ClassVar[Mapping[str, object] | None] = None
 
     name: str
@@ -475,6 +476,12 @@ MONSTER_FIELDS: tuple[str, ...] = (
     "size", "needs_two_to_engage", "flying", "fly_movement_allowance",
     "all_front", "hard_to_hit", "wound_hits_threshold", "knockdown_hits_threshold",
 )
+
+
+
+# Bind the classic spell catalog (unification milestone 5): every Figure's
+# active-spell computations read the classic Wizard data by default.
+Figure.SPELL_CATALOG = SPELLS
 
 
 def create_fighter(
