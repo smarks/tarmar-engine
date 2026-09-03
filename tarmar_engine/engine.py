@@ -47,11 +47,11 @@ levels the engine does not track (``battle.policy`` module docstring).
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 
 from . import combat_math, hexes
 from . import resolution as combat
+from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, get_spell
 from .state import BattleState, CombatantState, WeaponState, bare_handed_damage
 
@@ -78,12 +78,25 @@ EventSink = Callable[[dict], None]
 
 
 class TurnRunner:
-    """Runs exactly one full turn, keeping the event-sequence bookkeeping."""
+    """Runs exactly one full turn, keeping the event-sequence bookkeeping.
 
-    def __init__(self, state: BattleState, roller, sink: EventSink) -> None:
+    ``profile`` is the rules-profile seam (``tarmar_engine.profile``): the
+    runner consults it for engagement, forced-retreat, injury-reaction, and
+    grapple decisions. The default — :data:`~tarmar_engine.profile.TARMAR` —
+    reproduces the pre-seam six-phase behavior exactly.
+    """
+
+    def __init__(
+        self,
+        state: BattleState,
+        roller,
+        sink: EventSink,
+        profile: RulesProfile | None = None,
+    ) -> None:
         self.state = state
         self.roller = roller
         self.sink = sink
+        self.profile = profile or TARMAR
         self.phase = 0
 
     # ------------------------------------------------------------------ events
@@ -271,7 +284,7 @@ class TurnRunner:
                     "candidates": [c.to_payload() for c in decision.candidates],
                 },
             )
-            if hexes.figure_locked_by_grapple(
+            if self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
             ):
                 # turn-sequence table: "Neither combatant moves — both are
@@ -306,20 +319,15 @@ class TurnRunner:
 
     # Phase 6 -----------------------------------------------------------------
     def phase_forced_retreat(self) -> None:
+        """Eligibility and victim selection are the retreat seam's calls
+        (``profile.retreat``); the runner keeps the pushing and the events."""
         self.begin_phase(6, "Forced Retreat")
         for combatant in self.state.combatants:
             if not combatant.active:
                 continue
-            if hexes.figure_locked_by_grapple(
-                combatant.grappled_by, combatant.grappling
-            ):
-                # hand-to-hand-and-grappling.md: "Not available against — or
-                # to — a grappled figure; there's no hex to push someone
-                # into while you're holding them."
+            if not self.profile.retreat.pusher_eligible(combatant):
                 continue
-            if not combatant.dealt_damage_this_turn or combatant.took_damage_this_turn:
-                continue
-            victim = self._retreat_victim(combatant)
+            victim = self.profile.retreat.victim_of(self.state, combatant)
             if victim is not None:
                 self.push_back(combatant, victim)
         self.survival_saves()
@@ -349,32 +357,19 @@ class TurnRunner:
             return
         combatant.facing = new_facing
 
-    def _retreat_victim(self, combatant: CombatantState) -> CombatantState | None:
-        target_id = combatant.chosen_target
-        if target_id is None:
-            return None
-        victim = self.state.by_id(target_id)
-        if not victim.alive or not combat_math.figures_adjacent(combatant, victim):
-            return None
-        if hexes.figure_locked_by_grapple(victim.grappled_by, victim.grappling):
-            # Exempt even when a third party (not the grapple pair itself)
-            # dealt the damage — the rule is "against — or to — a grappled
-            # figure," not just within the pair.
-            return None
-        return victim
-
     def push_back(self, pusher: CombatantState, victim: CombatantState) -> None:
         away = hexes.direction_towards(pusher.position, victim.position)
         destination = hexes.add(victim.position, away)
         if not self._footprint_clear(victim, destination, victim.facing):
+            save_target = self.profile.retreat.blocked_save_target(victim)
             record, _sequence = self.roll(
-                "3d6",
+                self.profile.retreat.blocked_save_dice,
                 purpose="retreat save",
                 actor=victim.name,
-                target_number=victim.dexterity,
+                target_number=save_target,
                 outcome=None,
             )
-            if record.total > victim.dexterity:
+            if record.total > save_target:
                 victim.prone = True
                 self.emit(
                     "status",
@@ -416,38 +411,29 @@ class TurnRunner:
     def survival_saves(self) -> None:
         """3d6 ≤ CON for every combatant deep below zero; failure is death.
 
-        Thresholds follow tarmar-studio's
-        ``characters.models.Character.injury_thresholds``:
+        Threshold arithmetic is the reactions seam's call
+        (``profile.reactions`` — tarmar-studio's
+        ``characters.models.Character.injury_thresholds`` semantics:
         a pool at or below −ceil(max/2) forces a save every turn, and past
         −max the save is penalized by how far past that threshold the pool
-        sits. The fatal chain on a death references the rolls that put the
+        sits). The fatal chain on a death references the rolls that put the
         combatant here plus this save.
         """
         for combatant in self.state.combatants:
             if not combatant.alive or combatant.conscious:
                 continue
-            worst_penalty = None
-            for pool_value, pool_maximum in (
-                (combatant.fatigue, combatant.max_fatigue),
-                (combatant.body, combatant.max_body),
-            ):
-                save_at = -math.ceil(pool_maximum / 2)
-                if pool_value > save_at:
-                    continue
-                penalized_at = -pool_maximum
-                penalty = max(0, penalized_at - pool_value)
-                if worst_penalty is None or penalty > worst_penalty:
-                    worst_penalty = penalty
+            worst_penalty = self.profile.reactions.survival_save_penalty(combatant)
             if worst_penalty is None:
                 continue
+            save_target = self.profile.reactions.survival_save_target(combatant)
             record, sequence = self.roll(
                 "3d6",
                 purpose="survival",
                 actor=combatant.name,
                 modifier=worst_penalty,
-                target_number=combatant.constitution,
+                target_number=save_target,
             )
-            if record.total <= combatant.constitution:
+            if record.total <= save_target:
                 self.emit(
                     "info",
                     f"{combatant.name} clings to life (survival save made)",
@@ -479,7 +465,7 @@ class TurnRunner:
         start = combatant.position
         steps = 0
         for _step in range(allowance):
-            if combat_math.is_engaged(self.state, combatant):
+            if self.profile.engagement.is_engaged(self.state, combatant):
                 break
             if combat_math.figures_adjacent(combatant, target):
                 break
@@ -708,7 +694,7 @@ class TurnRunner:
         target = self._living_target(combatant)
         if target is None:
             return
-        if combat_math.is_engaged(self.state, combatant):
+        if self.profile.engagement.is_engaged(self.state, combatant):
             # One Last Shot (l) needs "ready before engaged" state the engine
             # does not track; the archer defends instead.
             combatant.defending = True
@@ -970,7 +956,7 @@ class TurnRunner:
             defender,
             ranged=False,
             weapon_class="Flexible / Snare",
-            extra_situational=hexes.HTH_TO_HIT_BONUS,
+            extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_attacker_skill=True,
         )
         situational_penalty = 0
@@ -1136,7 +1122,7 @@ class TurnRunner:
             grappler,
             ranged=False,
             weapon_override=self._unarmed_weapon(combatant),
-            extra_situational=hexes.HTH_TO_HIT_BONUS,
+            extra_situational=self.profile.grapple.to_hit_bonus,
             verb="strikes back at",
         )
 
@@ -1154,7 +1140,7 @@ class TurnRunner:
             target,
             ranged=False,
             weapon_override=self._unarmed_weapon(combatant),
-            extra_situational=hexes.HTH_TO_HIT_BONUS,
+            extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_defender_bonuses=True,
             verb="squeezes",
         )
@@ -1296,6 +1282,7 @@ class TurnRunner:
             if reaches_body:
                 defender.body -= net
         defender.took_damage_this_turn = True
+        defender.hits_this_turn += net
         attacker.dealt_damage_this_turn = True
         defender.fatal_chain = list(chain)
         pools = f"fatigue {defender.fatigue}/{defender.max_fatigue}"
@@ -1319,10 +1306,11 @@ class TurnRunner:
     def check_unconsciousness(
         self, combatant: CombatantState, chain: list[int]
     ) -> None:
-        """Pool at or below 0 → unconscious (injury-thresholds semantics)."""
+        """Pool at or below 0 → unconscious — the reactions seam's verdict
+        (injury-thresholds semantics under the Tarmar profile)."""
         if not combatant.conscious:
             return
-        if combatant.fatigue > 0 and combatant.body > 0:
+        if not self.profile.reactions.unconscious(combatant):
             return
         combatant.conscious = False
         combatant.prone = True
@@ -1336,6 +1324,16 @@ class TurnRunner:
         )
 
 
-def run_turn(state: BattleState, roller, sink: EventSink, choose_option) -> None:
-    """Run exactly one full turn of the battle. Mutates ``state``."""
-    TurnRunner(state, roller, sink).run(choose_option)
+def run_turn(
+    state: BattleState,
+    roller,
+    sink: EventSink,
+    choose_option,
+    profile: RulesProfile | None = None,
+) -> None:
+    """Run exactly one full turn of the battle. Mutates ``state``.
+
+    ``profile`` selects the rules profile; omitted, the Tarmar profile runs
+    (identical to the pre-seam behavior).
+    """
+    TurnRunner(state, roller, sink, profile=profile).run(choose_option)

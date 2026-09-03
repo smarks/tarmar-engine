@@ -13,10 +13,16 @@ No Django anywhere in the import chain — games adapt their models to the
 ``common.rolling.Roller`` interface. Every event and roll is emitted through
 a sink callback, so per-action logging stays with the caller.
 
-Rules profiles (six-phase Tarmar vs classic Melee) arrive in milestones 2+
-of the unification plan; today the package speaks Tarmar only. The rules
-markdown these mechanics are drift-guarded against is vendored under
-``spec/`` — tarmar-studio guards that snapshot against its live rules text.
+Structural mechanics are governed by rules **profiles**
+(:mod:`tarmar_engine.profile`, milestone 2 of the unification plan): the
+default :data:`~tarmar_engine.profile.TARMAR` profile is the six-phase
+engine unchanged, and melee's structural mechanics (one-directional
+engagement, the cap-based option catalog, per-target forced-retreat
+entitlements, hit-count injury reactions) live behind the same seam as
+data-free variants. The classic Melee profile itself — rules data plus a
+turn runner — arrives in milestone 3. The rules markdown the Tarmar
+mechanics are drift-guarded against is vendored under ``spec/`` —
+tarmar-studio guards that snapshot against its live rules text.
 """
 
 from __future__ import annotations
@@ -25,10 +31,15 @@ from . import (  # noqa: F401
     actions,
     combat_math,
     dice,
+    engagement,
     engine,
     hexes,
+    options,
     policy,
+    profile,
+    reactions,
     resolution,
+    retreat,
     spells,
     state,
 )
@@ -37,10 +48,15 @@ __all__ = [
     "actions",
     "combat_math",
     "dice",
+    "engagement",
     "engine",
     "hexes",
+    "options",
     "policy",
+    "profile",
+    "reactions",
     "resolution",
+    "retreat",
     "spells",
     "state",
 ]

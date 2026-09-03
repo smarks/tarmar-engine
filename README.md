@@ -9,9 +9,34 @@ Seeded from tarmar-studio's `battle/engine/` (plus `battle/spells.py` and
 `battle/policy.py`) in tarmar-studio #240 milestone 1, as a clean copy taken
 at tarmar-studio commit `98d80213` with imports repointed at the shared
 packages; the git history of these mechanics up to that point lives in the
-tarmar-studio repo. Rules **profiles** (six-phase Tarmar vs classic Melee)
-arrive in milestones 2+ of the Battle⇄Melee unification plan; today the
-package speaks Tarmar only.
+tarmar-studio repo.
+
+## Rules profiles
+
+Structural mechanics are governed by **rules profiles** (`tarmar_engine.profile`,
+tarmar-studio #240 milestone 2) — melee's proven `Ruleset` seam ported up a
+level, from resolution mechanics to turn structure. A `RulesProfile` bundles
+six areas, each a small swappable component:
+
+| Area | Seam | Tarmar default | Melee-style variant (structure only) |
+|---|---|---|---|
+| Turn structure | `RulesProfile.phases` / `run_turn` | the six-phase `TurnRunner` | phase table only; runner arrives in milestone 3 |
+| Option catalog | `options.OptionCatalog` | the lettered `actions.py` tables, gait movement caps | melee's taxonomy: contexts, fraction-of-MA caps, attack/dodge/defend/cast flags |
+| Facing/engagement | `engagement.EngagementRules` | size-band thresholds, multi-hex auto-engage | one-directional front-hex engagement; downed figures engage no one; large figures need two engagers |
+| Forced retreat | `retreat.ForcedRetreatRules` | dealt-and-untouched pushes the chosen target; blocked victim saves 3d6 ≤ DEX | per-target push entitlements armed by melee damage only, spent per push, optional advance, no save |
+| Reactions to injury | `reactions.InjuryReactions` | pools ≤ 0 fell; deep-below-zero survival saves | hit-count wound/knockdown thresholds and pool death lines — **all injected**, no rulebook numbers |
+| Grapple/HTH | `profile.GrappleRules` | movement lock, grappled/grappler vocabularies, HTH +4 | hooks only (classic HTH is milestone 4 scope) |
+
+Arc classification is deliberately **shared, not profiled**: both games split
+the six directions front/side/rear identically and award +2 side / +4 rear,
+so `hexes.arc_of` serves every profile.
+
+`profile.TARMAR` is the default everywhere (`run_turn` without a profile is
+the Tarmar profile, bit-for-bit — the milestone-1 suite passes unchanged).
+The classic Melee profile — SJG rules **data** in a segregated module plus
+its own turn runner, acceptance-tested against the rulebook's nine-turn
+Combat Example — arrives in milestone 3; per the unification plan's
+copyright note, no classic rules data lives in this package's mechanics.
 
 ## What it sits on
 

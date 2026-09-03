@@ -129,6 +129,20 @@ class CombatantState:
     moved_this_turn: bool = False
     dealt_damage_this_turn: bool = False
     took_damage_this_turn: bool = False
+    # Post-armour damage taken this turn, as a count. Feeds the profile
+    # seam's reaction and retreat mechanics (tarmar_engine.reactions /
+    # tarmar_engine.retreat); the Tarmar profile maintains it but keys no
+    # behavior off it.
+    hits_this_turn: int = 0
+    # Melee-structure reaction flag: wounded by this-many-hits-last-turn
+    # (rolled forward by HitCountReactions.end_of_turn, read by its
+    # dx_penalty). Unused by the Tarmar profile.
+    wounded_last_turn: bool = False
+    # Melee-structure forced-retreat entitlements: ids of enemies this
+    # combatant hit with damaging melee blows this turn, each spent by one
+    # push (tarmar_engine.retreat.MeleeStyleForcedRetreat). Unused by the
+    # Tarmar profile, whose phase 6 keys off the damage flags above.
+    retreat_push_targets_this_turn: list[int] = field(default_factory=list)
     # Fatal roll chain: sequence numbers of the to-hit/damage/threshold roll
     # events that led to this combatant's death (filled by the engine).
     fatal_chain: list[int] = field(default_factory=list)
@@ -177,6 +191,8 @@ class CombatantState:
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
         self.took_damage_this_turn = False
+        self.hits_this_turn = 0
+        self.retreat_push_targets_this_turn = []
 
 
 @dataclass
