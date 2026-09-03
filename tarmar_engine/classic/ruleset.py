@@ -99,6 +99,9 @@ class Ruleset:
         wound = self.wound_penalty(attacker)
         if wound:
             parts.append(f"{wound:+d} wounded")
+        bespelled = attacker.spell_dx_penalty()
+        if bespelled:
+            parts.append(f"{bespelled:+d} bespelled")
         parts.extend(format_situational_parts(
             zone, ignore_facing=ignore_facing,
             range_penalty=range_penalty, situational_note=situational_note))
@@ -128,10 +131,22 @@ class Ruleset:
         """Pre-armor damage a hit deals. Override to change the damage model."""
         return roll_weapon_damage(dice, weapon, multiplier)
 
-    def absorbed(self, target: Figure, *, zone: str | None) -> int:
-        """Hits stopped by armor (and a frontal shield). Override for new armor.
+    @staticmethod
+    def _blunt(raw_damage: int, blunted: bool) -> int:
+        """Halve a blunted (practice-combat) blow's pre-armor damage, rounding
+        down (p.22) — a 6 becomes 3, a 5 becomes 2. A normal blow is unchanged.
+        Armor still stops hits as usual, off the reduced figure."""
+        return raw_damage // 2 if blunted else raw_damage
 
-        ``spell_protection`` is 0 until classic magic lands (milestone 5).
+    def absorbed(self, target: Figure, *, zone: str | None) -> int:
+        """Hits stopped by armor (and a frontal shield), plus any active
+        magical protection. Override for new armor.
+
+        A protection spell folds in here as extra hit-stopping, composing
+        with worn armour and a shield through the one absorption seam.
+        ``spell_protection`` is 0 on any figure without an active protection
+        spell (always, absent a consumer's spell layer — melee's), so
+        non-wizard play is unchanged.
         """
         return target.hits_stopped(
             from_front=(zone == FRONT), from_rear=(zone == REAR)
@@ -154,12 +169,14 @@ class Ruleset:
         hth_damage: object | None = None,
         force_hit: bool = False,
         ranged: bool = False,
+        blunted: bool = False,
     ) -> AttackResult:
         """Roll one attack and return its result (no state is mutated).
 
         Composed from the hooks above so a subclass can change any single
         step. ``force_hit`` skips the to-hit roll (the hit is already decided,
         e.g. a thrown weapon that struck a figure in its flight path).
+        ``blunted`` halves pre-armor damage (a practice bout's weapons, p.22).
         """
         weapon = weapon or attacker.ready_weapon
         needed = self.to_hit_number(
@@ -175,14 +192,16 @@ class Ruleset:
 
         raw_damage = 0
         damage = 0
-        if hit and hth_damage is not None:      # grapple strike (future HTH port)
+        if hit and hth_damage is not None:      # grapple strike (dagger or bare hands)
             raw_damage = roll_damage(dice, hth_damage, multiplier)
+            raw_damage = self._blunt(raw_damage, blunted)
             damage = max(0, raw_damage - self.absorbed(target, zone=zone))
         elif hit and weapon is not None:
             raw_damage = self.weapon_damage(dice, weapon, multiplier)
             if extra_dice:                      # pole weapon in/against a charge:
                 # ...added AFTER the crit multiplier (classic; melee #154).
                 raw_damage += dice.total(extra_dice)
+            raw_damage = self._blunt(raw_damage, blunted)
             stopped = self.absorbed(target, zone=zone) + main_gauche_parry(
                 target, weapon, zone)
             damage = max(0, raw_damage - stopped)
@@ -206,9 +225,16 @@ class Ruleset:
         )
 
     # ---- injury / status ----------------------------------------------------
-    def apply_damage(self, target: Figure, amount: int) -> None:
+    def apply_damage(
+        self, target: Figure, amount: int, *, body_hit: bool = False
+    ) -> None:
         """Subtract a hit's damage from the target. Override to change how
-        hits accrue."""
+        hits accrue (e.g. damage to a hit-location instead of ST).
+
+        ``body_hit`` flags a crit that also reaches a deeper pool (used by a
+        Fatigue/Body stat model such as melee's Tarmar profile); classic Melee
+        has a single pool and ignores it.
+        """
         target.damage_taken += amount
         target.hits_this_turn += amount
 

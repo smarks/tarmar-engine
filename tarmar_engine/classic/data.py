@@ -100,6 +100,14 @@ MORNINGSTAR = Weapon("Morningstar", DamageDice(2, 1), 13)
 TWO_HANDED_SWORD = Weapon("Two-handed sword", DamageDice(3, -1), 14, two_handed=True)
 BATTLEAXE = Weapon("Battleaxe", DamageDice(3, 0), 15, two_handed=True)
 
+# The wizard's staff (TFT: Wizard p.19): 1d damage, no ST requirement. NOT in
+# the WEAPONS catalog — "Only wizards may carry magical staffs" (p.23), and the
+# catalog is exactly what a fighter build may pick, so keeping the staff out
+# makes a fighter spec naming it fail as "unknown weapon". A wizard gets one
+# from the consumer's spell layer (knowing the Staff spell grants it at build).
+STAFF = Weapon("Staff", DamageDice(1, 0), 0,
+               notes="a wizard's magical staff — wizards only (Wizard p.19)")
+
 # pole weapons (Pole Weapon rules, p.12)
 JAVELIN = Weapon("Javelin", DamageDice(1, -1), 9, kind=WeaponKind.POLE,
                  throwable=True, notes="too short to jab")

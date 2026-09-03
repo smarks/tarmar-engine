@@ -57,9 +57,22 @@ class AttackResult:
     note: str = ""
     to_hit_breakdown: str = ""   # human-readable composition of `needed`
     thrown: bool = False         # this attack was a hurled weapon
-    roll_under: bool = True      # classic 3d6: hit by rolling <= needed
+    body_hit: bool = False       # crit reaching a deeper pool (a Fatigue/Body
+    #                              stat model's crits); read by apply_damage
+    roll_under: bool = True      # classic 3d6: hit by rolling <= needed;
+    #                              False: hit by rolling >= needed (a d20
+    #                              roll-over model). Read by narration.
     auto_hit: bool = False       # the hit was forced (a weapon striking
-    #                              mid-flight) — rolled/needed are not a test
+    #                              mid-flight, an HTH free hit) — rolled/needed
+    #                              are not a test and must not narrate as one
+    confirm_roll: int = 0        # a d20 model's §7 confirm roll for a natural-
+    #                              20 crit (0 = no confirm rolled)
+    severe_crit: bool = False    # the confirm hit — triple damage, the blow
+    #                              reaches Body, and the wound bleeds
+    fumble_effect: str = ""      # a d20 model's fumble-table outcome for a
+    #                              natural 1: "off_balance" / "drop" / "stress"
+    #                              / "break". Read by narration and
+    #                              apply_attack_side_effects.
 
 
 def classify_roll(
