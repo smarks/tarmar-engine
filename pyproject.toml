@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tarmar-engine"
-version = "0.7.0"
+version = "0.8.0"
 description = "Shared turn engine for Tarmar and classic Melee rules profiles (turn loops, actions, combat math, spells, decision layers) over hexarena geometry and tarmar-rules resolution."
 requires-python = ">=3.11"
 dependencies = [

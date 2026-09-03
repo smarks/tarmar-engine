@@ -202,6 +202,13 @@ class Figure:
     active_spells: dict[str, dict] = field(default_factory=dict)
     spell_protection: int = 0
     cast_this_turn: bool = False     # cast a new spell this turn (one/turn, p.11)
+    # The cast DECLARED in the selection phase, honoured in the combat phase
+    # (tarmar-engine#5). melee's own driver re-derived the AI's spell when the
+    # combat phase came round, which silently overruled any chooser but the AI;
+    # a declaration recorded here is what actually gets queued. Empty means "no
+    # cast declared" — the AI's own re-derivation, unchanged.
+    declared_spell_id: str = ""
+    declared_spell_target: str = ""
 
     # ---- experience / advancement (Section IX) ----
     # XP earned across fights, and how many basic ST/DX points it has bought. The
@@ -416,7 +423,7 @@ class Figure:
 # end_turn, the figure rebuild (board.views._update_figure), and the save/load
 # round-trip (board.persistence) share one source and can't drift (#155).
 # current_option and wounded_last_turn reset differently and stay explicit.
-PER_TURN_FLAGS: dict[str, int | bool | list[str]] = {
+PER_TURN_FLAGS: dict[str, int | bool | str | list[str]] = {
     "hits_this_turn": 0,
     "attacked_this_turn": False,
     "disengaged_this_turn": False,
@@ -428,6 +435,8 @@ PER_TURN_FLAGS: dict[str, int | bool | list[str]] = {
     "dealt_st_damage_this_turn": False,
     "force_retreat_targets_this_turn": [],
     "cast_this_turn": False,
+    "declared_spell_id": "",
+    "declared_spell_target": "",
 }
 
 
