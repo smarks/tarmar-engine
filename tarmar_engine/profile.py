@@ -31,6 +31,7 @@ from . import actions, hexes
 from .engagement import EngagementRules, MeleeStyleEngagement, TarmarEngagement
 from .options import OptionCatalog, melee_structure_catalog, tarmar_catalog
 from .reactions import HitCountReactions, InjuryReactions, TarmarReactions
+from .resolution_policy import ResolutionPolicy, TarmarResolution
 from .retreat import ForcedRetreatRules, MeleeStyleForcedRetreat, TarmarForcedRetreat
 from .state import BattleState
 
@@ -96,6 +97,7 @@ class RulesProfile:
         retreat: ForcedRetreatRules | None = None,
         reactions: InjuryReactions | None = None,
         grapple: GrappleRules | None = None,
+        resolution: ResolutionPolicy | None = None,
     ) -> None:
         self.name = name
         self._phases = phases
@@ -104,15 +106,25 @@ class RulesProfile:
         self.retreat: ForcedRetreatRules = retreat or ForcedRetreatRules()
         self.reactions: InjuryReactions = reactions or InjuryReactions()
         self.grapple: GrappleRules = grapple or GrappleRules()
+        self.resolution: ResolutionPolicy = resolution or ResolutionPolicy()
 
     @property
     def phases(self) -> tuple[tuple[int, str], ...]:
         return self._phases
 
-    def run_turn(
-        self, state: BattleState, roller, sink, choose_option
-    ) -> None:
-        """Run one full turn under this profile's structure."""
+    def run_turn(self, state, roller, sink, choose_option) -> None:
+        """Run one full turn under this profile's structure.
+
+        Turn structure is profile identity, so the state it runs over is
+        too: the Tarmar profile runs the six-phase engine over
+        :class:`~tarmar_engine.state.BattleState`; the classic Melee profile
+        runs its four-phase turn over the classic game state
+        (``tarmar_engine.classic.state.GameState``). ``roller`` is the
+        profile's dice source (the Tarmar runner's RollRecord roller; the
+        classic runner takes a ``hexarena.dice.Dice``), ``sink`` receives the
+        turn's event/log lines, and ``choose_option`` picks each figure's
+        option.
+        """
         raise NotImplementedError(f"profile {self.name!r} has no turn runner")
 
 
@@ -127,6 +139,7 @@ class TarmarProfile(RulesProfile):
             retreat=TarmarForcedRetreat(),
             reactions=TarmarReactions(),
             grapple=TarmarGrapple(),
+            resolution=TarmarResolution(),
         )
 
     @property
@@ -164,6 +177,7 @@ class MeleeStructureProfile(RulesProfile):
         needs_two: Callable | None = None,
         exempt: Callable | None = None,
         grapple: GrappleRules | None = None,
+        resolution: ResolutionPolicy | None = None,
     ) -> None:
         super().__init__(
             name="melee-structure",
@@ -173,24 +187,36 @@ class MeleeStructureProfile(RulesProfile):
             retreat=MeleeStyleForcedRetreat(),
             reactions=reactions,
             grapple=grapple or GrappleRules(),
+            resolution=resolution,
         )
 
-    def run_turn(
-        self, state: BattleState, roller, sink, choose_option
-    ) -> None:
+    def run_turn(self, state, roller, sink, choose_option) -> None:
         raise NotImplementedError(
-            "the classic profile's turn runner arrives in milestone 3"
+            "the melee-structure profile is data-free; the runnable classic "
+            "profile is tarmar_engine.classic.profile.CLASSIC_MELEE"
         )
 
 
 #: The default profile — every engine entrypoint that takes no profile uses it.
 TARMAR = TarmarProfile()
 
-#: Registered, runnable profiles by name. The classic Melee profile joins in
-#: milestone 3 once its data module and turn runner exist.
+#: Registered, runnable profiles by name. The classic Melee profile
+#: ("classic-melee") registers itself on import of ``tarmar_engine.classic``;
+#: :func:`get_profile` loads it lazily so Tarmar-canon import chains never pull
+#: in the SJG-derived classic modules.
 PROFILES: dict[str, RulesProfile] = {TARMAR.name: TARMAR}
+
+#: The classic profile's registered name (importable without loading it).
+CLASSIC_MELEE_NAME = "classic-melee"
 
 
 def get_profile(name: str) -> RulesProfile:
-    """Look up a registered profile; raises ``KeyError`` for an unknown name."""
+    """Look up a registered profile; raises ``KeyError`` for an unknown name.
+
+    The classic Melee profile is loaded on first request — asking for it by
+    name is the one Tarmar-canon path that touches the segregated classic
+    subpackage, and only ever at the caller's explicit demand.
+    """
+    if name == CLASSIC_MELEE_NAME and name not in PROFILES:
+        from . import classic  # noqa: F401  (registers CLASSIC_MELEE)
     return PROFILES[name]

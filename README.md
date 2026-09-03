@@ -20,12 +20,14 @@ six areas, each a small swappable component:
 
 | Area | Seam | Tarmar default | Melee-style variant (structure only) |
 |---|---|---|---|
-| Turn structure | `RulesProfile.phases` / `run_turn` | the six-phase `TurnRunner` | phase table only; runner arrives in milestone 3 |
+| Turn structure | `RulesProfile.phases` / `run_turn` | the six-phase `TurnRunner` | melee's four-phase turn (movement, adjDX-ordered attacks, forced retreats, end of turn), run by the classic profile |
+| Resolution | `resolution_policy.ResolutionPolicy` | d20 roll-over vs the TN matrix (`tarmar-rules`, unchanged) | classic 3d6 roll-under adjDX; four dice vs dodge (missiles) / defend (melee); the p.10 special totals |
 | Option catalog | `options.OptionCatalog` | the lettered `actions.py` tables, gait movement caps | melee's taxonomy: contexts, fraction-of-MA caps, attack/dodge/defend/cast flags |
 | Facing/engagement | `engagement.EngagementRules` | size-band thresholds, multi-hex auto-engage | one-directional front-hex engagement; downed figures engage no one; large figures need two engagers |
 | Forced retreat | `retreat.ForcedRetreatRules` | dealt-and-untouched pushes the chosen target; blocked victim saves 3d6 ≤ DEX | per-target push entitlements armed by melee damage only, spent per push, optional advance, no save |
 | Reactions to injury | `reactions.InjuryReactions` | pools ≤ 0 fell; deep-below-zero survival saves | hit-count wound/knockdown thresholds and pool death lines — **all injected**, no rulebook numbers |
 | Grapple/HTH | `profile.GrappleRules` | movement lock, grappled/grappler vocabularies, HTH +4 | hooks only (classic HTH is milestone 4 scope) |
+| Reactions data | `reactions.HitCountReactions` thresholds | — | `classic.data.classic_reactions()`: 5+ hits wound (-2 DX), 8+ knock down, ST 0 fells, ST -1 kills, ST ≤ 3 lasting -3 |
 
 Arc classification is deliberately **shared, not profiled**: both games split
 the six directions front/side/rear identically and award +2 side / +4 rear,
@@ -33,10 +35,32 @@ so `hexes.arc_of` serves every profile.
 
 `profile.TARMAR` is the default everywhere (`run_turn` without a profile is
 the Tarmar profile, bit-for-bit — the milestone-1 suite passes unchanged).
-The classic Melee profile — SJG rules **data** in a segregated module plus
-its own turn runner, acceptance-tested against the rulebook's nine-turn
-Combat Example — arrives in milestone 3; per the unification plan's
-copyright note, no classic rules data lives in this package's mechanics.
+
+### The classic Melee profile (milestone 3)
+
+`get_profile("classic-melee")` lazily loads `tarmar_engine.classic` — the
+**segregated** subpackage holding everything SJG-derived: the rulebook data
+(`classic/data.py` is the one data module — weapon/armor/shield tables,
+Section III constants, injury thresholds, the special to-hit totals) and the
+classic combat machinery ported from the melee project's engine (figure,
+arena, facing, ruleset, `classic.state.GameState`). The profile wires the
+shared melee-structure seam components with those numbers, resolves by
+`ClassicResolution` (3d6 roll-under), and its `run_turn` drives the classic
+`GameState` through the four-phase turn.
+
+Its acceptance bar is the rulebook's nine-turn Combat Example, imported
+verbatim from melee (`tests/test_combat_example.py` — expectations untouched,
+only imports adapted), plus melee's facing/retreat/reaction edge-case tests.
+Watch it run:
+
+```bash
+uv run pytest tests/test_combat_example.py -v
+```
+
+Per the unification plan's copyright note, no Tarmar-canon module imports the
+classic subpackage (a guard test enforces it); the classic data never leaks
+into the shared mechanics. Still in melee only (later milestones): classic
+hand-to-hand piles, shield rush, spells, practice bouts.
 
 ## What it sits on
 
