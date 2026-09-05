@@ -97,6 +97,12 @@ class CombatantState:
     mana: int = 0
     spells: list[str] = field(default_factory=list)
     active_spells: list[str] = field(default_factory=list)
+    # Team tag. Empty means free-for-all — this combatant is its own team of
+    # one, an enemy of everybody. A non-empty tag makes every combatant
+    # carrying the same tag a teammate: never offered as a target
+    # (``BattleState.enemies_of`` is the one gate all targeting reads
+    # through), and victory upstream is last *team* standing.
+    team: str = ""
     # Figure size and kind. ``size_hexes`` > 1 means a multi-hex footprint
     # (tarmar_engine.hexes); ``is_beast`` routes the AI's melee-only subset
     # and body-based flee/defend thresholds (battle.policy).
@@ -208,11 +214,19 @@ class BattleState:
         return [combatant for combatant in self.combatants if combatant.active]
 
     def enemies_of(self, combatant: CombatantState) -> list[CombatantState]:
-        """Free-for-all: every other active combatant is an enemy."""
+        """Every other active combatant, minus living teammates.
+
+        With no teams in play (every ``team`` empty) this is the historic
+        free-for-all: everyone else is an enemy. A non-empty ``team`` names
+        teammates, who are never enemies — the single chokepoint the AI's
+        targeting, engagement, and combat math all read through.
+        """
         return [
             other
             for other in self.combatants
-            if other.active and other.combatant_id != combatant.combatant_id
+            if other.active
+            and other.combatant_id != combatant.combatant_id
+            and (not combatant.team or other.team != combatant.team)
         ]
 
     def occupied_hexes(self) -> set[tuple[int, int]]:
