@@ -112,6 +112,37 @@ class BattleStateTest(TestCase):
         enemies = state.enemies_of(state.by_id(1))
         self.assertEqual([enemy.combatant_id for enemy in enemies], [2])
 
+    def test_enemies_of_excludes_living_teammates(self):
+        state = BattleState(
+            combatants=[
+                make_combatant(1, team="Red"),
+                make_combatant(2, team="Red"),
+                make_combatant(3, team="Blue"),
+                make_combatant(4),  # free-for-all: everyone's enemy
+            ]
+        )
+        red_enemies = state.enemies_of(state.by_id(1))
+        self.assertEqual([enemy.combatant_id for enemy in red_enemies], [3, 4])
+        # A teamless combatant fights everyone, teamed included.
+        solo_enemies = state.enemies_of(state.by_id(4))
+        self.assertEqual([enemy.combatant_id for enemy in solo_enemies], [1, 2, 3])
+
+    def test_two_teamless_combatants_are_enemies(self):
+        # Empty team is "own team of one", never a shared team.
+        state = BattleState(combatants=[make_combatant(1), make_combatant(2)])
+        self.assertEqual(
+            [enemy.combatant_id for enemy in state.enemies_of(state.by_id(1))], [2]
+        )
+
+    def test_team_round_trips_and_defaults_empty(self):
+        state = BattleState(combatants=[make_combatant(1, team="Red")])
+        restored = BattleState.from_dict(json.loads(json.dumps(state.to_dict())))
+        self.assertEqual(restored.combatants[0].team, "Red")
+        # A snapshot written before the team field existed loads teamless.
+        legacy = state.to_dict()
+        del legacy["combatants"][0]["team"]
+        self.assertEqual(BattleState.from_dict(legacy).combatants[0].team, "")
+
     def test_by_id_raises_for_unknown(self):
         state = BattleState(combatants=[make_combatant(1)])
         with self.assertRaises(KeyError):
