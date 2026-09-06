@@ -19,8 +19,12 @@ from hexarena.hex import Hex
 from tarmar_engine.classic.arena import DEFAULT_LAYOUT as LAYOUT
 from tarmar_engine.classic.arena import Arena
 from tarmar_engine.classic.data import (
+    BATTLEAXE,
     BROADSWORD,
+    DAGGER,
+    LARGE_SHIELD,
     LIGHT_CROSSBOW,
+    MACE,
     NO_ARMOR,
     SHORTSWORD,
     SMALL_BOW,
@@ -318,3 +322,65 @@ def test_one_attack_per_turn_rejects_a_second_declaration() -> None:
 
     with pytest.raises(IllegalAction):
         state.queue_attack(a, b)                  # already attacked this turn
+
+
+# ---- weapon pickup obeys the ready rules (tarmar-studio #286 / #287) ---------
+# ``pick_up_weapon`` used to set ``ready_weapon`` directly, skipping both guards
+# the READY WEAPON path applies: the weapon's ST requirement (Section III — a
+# too-heavy weapon cannot be wielded, and ``Figure.__post_init__`` refuses to
+# deserialize the combination, bricking the saved battle) and the two-handed
+# shield rule (both hands on the weapon means the shield goes down). Each of
+# these FAILED before the fix.
+
+
+def _pickup_scene(figure):
+    """Place ``figure`` alone on a small board, empty-handed."""
+    arena = Arena(cols=7, rows=7)
+    figure.position, figure.facing = Hex(3, 3), 0
+    return GameState(arena, [figure], dice=Dice(seed=1))
+
+
+def test_pick_up_refuses_a_weapon_too_heavy_to_wield() -> None:
+    # The #286 brick, distilled: a ST 8 figure may not take an ST 11 mace off
+    # the ground — the same refusal READY WEAPON (and the deserializer's
+    # invariant) would give it.
+    weakling = create_human("Weakling", 8, 16, "red",
+                            weapons=[], ready_weapon=None, armor=NO_ARMOR)
+    state = _pickup_scene(weakling)
+    state._drop_to_ground(MACE, weakling.position)
+
+    with pytest.raises(IllegalAction):
+        state.pick_up_weapon(weakling, "Mace")
+    assert weakling.ready_weapon is None
+    assert MACE not in weakling.weapons
+    assert any(weapon is MACE for _hex, weapon in state.dropped)  # still there
+
+
+def test_dropped_in_reach_omits_weapons_too_heavy_to_wield() -> None:
+    # The AI re-arms from ``dropped_in_reach``; a weapon the figure cannot
+    # wield must never be offered, or the planner walks into the refusal.
+    weakling = create_human("Weakling", 8, 16, "red",
+                            weapons=[], ready_weapon=None, armor=NO_ARMOR)
+    state = _pickup_scene(weakling)
+    state._drop_to_ground(MACE, weakling.position)      # needs ST 11
+    state._drop_to_ground(DAGGER, weakling.position)    # no requirement
+
+    in_reach = state.dropped_in_reach(weakling)
+    assert DAGGER in in_reach
+    assert MACE not in in_reach
+
+
+def test_picking_up_a_two_handed_weapon_unreadies_the_shield() -> None:
+    # The #287 leak, distilled: a shield-bearer who takes a two-handed weapon
+    # off the ground has both hands on it — the shield goes down, exactly as
+    # READY WEAPON rules it.
+    bearer = create_human("Bearer", 15, 9, "red",
+                          weapons=[], ready_weapon=None,
+                          armor=NO_ARMOR, shield=LARGE_SHIELD)
+    state = _pickup_scene(bearer)
+    state._drop_to_ground(BATTLEAXE, bearer.position)   # two-handed, ST 15
+    assert bearer.shield_ready
+
+    state.pick_up_weapon(bearer, "Battleaxe")
+    assert bearer.ready_weapon is BATTLEAXE
+    assert not bearer.shield_ready

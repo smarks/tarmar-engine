@@ -557,9 +557,64 @@ def state_to_json(state: GameState) -> dict:
     }
 
 
+def _salvage_illegal_gear(figure_data: dict) -> tuple[dict, list[Weapon], list[str]]:
+    """Strip gear a pre-v0.9.1 snapshot may hold that :class:`Figure` forbids.
+
+    The unguarded PICK UP path (fixed for tarmar-studio #286/#287) could save a
+    figure wielding a weapon over its ST — which ``Figure.__post_init__``
+    refuses to deserialize, so the battle could never load again — or a shield
+    still readied under a two-handed weapon, which ``__post_init__`` flipped
+    silently, making the dump/load round trip unfaithful. Battles those
+    engines already saved must come back playable, so the STATE loader (the
+    one place with a ground to drop the weapon onto) salvages instead of
+    raising: the unwieldable weapon leaves the figure (the caller drops it at
+    the figure's hex), the shield goes down, and each change lands in the
+    battle log. A snapshot the fixed engine wrote passes through untouched.
+
+    Returns ``(figure data to load, weapons to drop at the figure's hex,
+    log notes)`` — the input dict is never mutated.
+    """
+    strength = figure_data["strength"]
+    name = figure_data["name"]
+    kept_specs: list = []
+    salvaged: list[Weapon] = []
+    notes: list[str] = []
+    for spec in figure_data["weapons"]:
+        weapon = weapon_from_json(spec)
+        if weapon.min_strength and strength < weapon.min_strength:
+            salvaged.append(weapon)
+            notes.append(
+                f"{name} (ST {strength}) cannot wield the {weapon.name} "
+                f"(needs ST {weapon.min_strength}) — it falls to the ground.")
+        else:
+            kept_specs.append(spec)
+    ready_spec = figure_data["ready_weapon"]
+    ready = weapon_from_json(ready_spec) if ready_spec is not None else None
+    if (ready is not None and ready.min_strength
+            and strength < ready.min_strength):
+        ready_spec = None
+        ready = None
+    if ready is not None and ready.two_handed and figure_data.get("shield_ready"):
+        # ``Figure.__post_init__`` lowers the shield; the note makes it loud.
+        notes.append(
+            f"{name} lowers its shield — the {ready.name} needs both hands.")
+    if not salvaged and not notes:
+        return figure_data, [], []
+    return ({**figure_data, "weapons": kept_specs, "ready_weapon": ready_spec},
+            salvaged, notes)
+
+
 def state_from_json(data: dict) -> GameState:
     """Rebuild a :class:`~.state.GameState` from :func:`state_to_json` output."""
-    figures = [figure_from_json(figure) for figure in data["figures"]]
+    figures: list[Figure] = []
+    salvaged_gear: list[tuple[int, list[Weapon]]] = []
+    salvage_notes: list[str] = []
+    for index, figure_data in enumerate(data["figures"]):
+        figure_data, salvaged, notes = _salvage_illegal_gear(figure_data)
+        figures.append(figure_from_json(figure_data))
+        if salvaged:
+            salvaged_gear.append((index, salvaged))
+        salvage_notes.extend(notes)
     state = GameState(
         arena_from_json(data["arena"]),
         figures,
@@ -578,6 +633,13 @@ def state_from_json(data: dict) -> GameState:
         (Hex(entry["col"], entry["row"]), weapon_from_json(entry["weapon"]))
         for entry in data.get("dropped", [])
     ]
+    for index, weapons in salvaged_gear:
+        # An unwieldable weapon a pre-fix engine saved on the figure goes to
+        # the ground at its hex — where the fixed pickup would have left it.
+        position = figures[index].position
+        if position is not None:
+            state.dropped.extend((position, weapon) for weapon in weapons)
+    state.log.extend(salvage_notes)
     by_uid = {figure.uid: figure for figure in figures}
     state._pending = [
         pending_attack_from_json(pending, by_uid) for pending in data.get("pending", [])

@@ -511,3 +511,96 @@ def test_an_unknown_ruleset_name_fails_loudly_on_load() -> None:
 
     with pytest.raises(KeyError):
         GameState.from_dict(payload)
+
+
+# ---- salvaging illegal gear on load (tarmar-studio #286 / #287) --------------
+# Snapshots written by engines up to v0.9.0 can hold gear the rules forbid:
+# the unguarded PICK UP path let a figure wield a weapon over its ST, and let
+# a shield stay readied under a two-handed weapon. ``Figure.__post_init__``
+# refuses the first outright — so the saved battle could never load again
+# (bricked) — and silently flips the second, making dump(load(x)) != x. The
+# loader now salvages both with a logged note instead, so the battles those
+# engines already saved come back playable. New states never contain either
+# combination (the pickup path now applies the ready-weapon guards).
+
+
+def test_loading_an_over_st_ready_weapon_salvages_it_to_the_ground() -> None:
+    # A pre-fix snapshot: ST 8 figure wielding an ST 11 mace (the #286 brick).
+    state = _two_figure_game()
+    snapshot = persistence.state_to_json(state)
+    tampered = snapshot["figures"][0]
+    tampered["strength"] = 8
+    tampered["weapons"] = ["Mace"]
+    tampered["ready_weapon"] = "Mace"
+
+    restored = persistence.state_from_json(snapshot)   # must not raise
+
+    figure = restored.figures[0]
+    assert all(weapon.name != "Mace" for weapon in figure.weapons)
+    assert figure.ready_weapon is None
+    dropped_here = [weapon for hex_pos, weapon in restored.dropped
+                    if hex_pos == figure.position]
+    assert any(weapon.name == "Mace" for weapon in dropped_here)
+    assert any("Mace" in line and "ST" in line for line in restored.log)
+
+
+def test_loading_an_over_st_carried_weapon_salvages_it_too() -> None:
+    # The same salvage covers a merely-carried (not readied) illegal weapon:
+    # __post_init__ checks the whole carry list, not just the ready slot.
+    state = _two_figure_game()
+    snapshot = persistence.state_to_json(state)
+    tampered = snapshot["figures"][0]
+    tampered["strength"] = 8
+    tampered["weapons"] = ["Dagger", "Mace"]
+    tampered["ready_weapon"] = "Dagger"
+
+    restored = persistence.state_from_json(snapshot)   # must not raise
+
+    figure = restored.figures[0]
+    assert [weapon.name for weapon in figure.weapons] == ["Dagger"]
+    assert figure.ready_weapon is not None and figure.ready_weapon.name == "Dagger"
+    assert any(weapon.name == "Mace" for _hex, weapon in restored.dropped)
+
+
+def test_loading_a_readied_shield_under_a_two_handed_weapon_notes_it() -> None:
+    # A pre-fix snapshot: shield still up under a battleaxe (the #287 leak).
+    # __post_init__ always lowered it silently; the loader now says so.
+    state = _two_figure_game()
+    snapshot = persistence.state_to_json(state)
+    tampered = snapshot["figures"][0]
+    tampered["strength"] = 15
+    tampered["dexterity"] = 9
+    tampered["weapons"] = ["Battleaxe"]
+    tampered["ready_weapon"] = "Battleaxe"
+    tampered["shield_ready"] = True
+
+    restored = persistence.state_from_json(snapshot)
+
+    figure = restored.figures[0]
+    assert not figure.shield_ready
+    assert any("shield" in line.lower() for line in restored.log)
+    # And the salvaged state round-trips faithfully from here on.
+    resnapshot = persistence.state_to_json(restored)
+    assert resnapshot["figures"][0]["shield_ready"] is False
+    assert persistence.state_to_json(
+        persistence.state_from_json(resnapshot)) == resnapshot
+
+
+def test_loading_a_legal_snapshot_adds_no_salvage_notes() -> None:
+    # The salvage layer must be inert for every state the fixed engine writes.
+    state = _two_figure_game()
+    snapshot = persistence.state_to_json(state)
+    restored = persistence.state_from_json(snapshot)
+    assert persistence.state_to_json(restored) == snapshot
+
+
+def test_figure_from_json_alone_still_refuses_illegal_wielding() -> None:
+    # The direct figure loader keeps the clear, loud error — salvage is the
+    # state loader's job, where the ground exists to drop the weapon onto.
+    figure = _fighter("Red", "red")
+    data = persistence.figure_to_json(figure)
+    data["strength"] = 8
+    data["weapons"] = ["Mace"]
+    data["ready_weapon"] = "Mace"
+    with pytest.raises(ValueError, match="cannot wield"):
+        persistence.figure_from_json(data)
