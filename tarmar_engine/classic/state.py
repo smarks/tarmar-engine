@@ -915,17 +915,26 @@ class _MovementMixin:
             return True
         return figure.has_staff
 
+    @staticmethod
+    def _can_wield(figure: Figure, weapon) -> bool:
+        """Whether ``figure`` meets ``weapon``'s ST requirement (Section III)."""
+        return not weapon.min_strength or figure.strength >= weapon.min_strength
+
     def dropped_in_reach(self, figure: Figure) -> list:
         """Dropped weapons in ``figure``'s hex or an adjacent one (option q).
 
         Only what ``figure`` may actually take: a wizard's dropped staff is
-        never offered to a non-owner (see :meth:`_may_take_dropped`).
+        never offered to a non-owner (see :meth:`_may_take_dropped`), and a
+        weapon over the figure's ST is never offered — picking up readies
+        (this is how the option re-arms), and a weapon the figure cannot
+        wield cannot be readied (tarmar-studio #286).
         """
         if figure.position is None:
             return []
         reach = {figure.position, *self.arena.neighbors(figure.position)}
         return [weapon for hex_pos, weapon in self.dropped
-                if hex_pos in reach and self._may_take_dropped(figure, weapon)]
+                if hex_pos in reach and self._may_take_dropped(figure, weapon)
+                and self._can_wield(figure, weapon)]
 
     def pick_up_weapon(self, figure: Figure, weapon_name: str) -> None:
         """Take a named dropped weapon in reach, dropping the current one (p.7, q)."""
@@ -941,6 +950,13 @@ class _MovementMixin:
             # occult-zap the fool who touched it; see _may_take_dropped).
             raise IllegalAction(
                 f"{figure.name} cannot take a wizard's staff — it is not theirs")
+        if not self._can_wield(figure, entry[1]):
+            # Picking up readies, and readying is exactly what an over-ST
+            # weapon forbids (Section III) — the same refusal READY WEAPON
+            # gives, applied here too (tarmar-studio #286).
+            raise IllegalAction(
+                f"{figure.name} (ST {figure.strength}) cannot wield "
+                f"{entry[1].name} (needs ST {entry[1].min_strength})")
         if figure.ready_weapon is not None:        # drop what you're holding first
             if figure.ready_weapon in figure.weapons:
                 figure.weapons.remove(figure.ready_weapon)
@@ -949,6 +965,8 @@ class _MovementMixin:
         weapon = entry[1]
         figure.weapons.append(weapon)
         figure.ready_weapon = weapon
+        if weapon.two_handed and figure.shield_ready:
+            figure.shield_ready = False   # a two-handed weapon needs both hands
         self.log.append(narrate_ready(figure, weapon))
 
     def _discard_thrown(self, attacker: Figure, landing_hex=None) -> None:
