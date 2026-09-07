@@ -29,6 +29,10 @@ DEAD = "dead"
 UNCONSCIOUS = "unconscious"
 KNOCKDOWN = "knockdown"
 
+# injury-thresholds-death.md: the flat -2 band runs from 1 up to this value;
+# above it (but at or below half the pool's starting value) the penalty is -1.
+SEVERE_INJURY_BAND_TOP = 5
+
 
 class InjuryReactions:
     """Base of the reactions seam.
@@ -48,6 +52,14 @@ class InjuryReactions:
 
     def survival_save_target(self, combatant: CombatantState) -> int:
         """The attribute a survival save rolls against."""
+        raise NotImplementedError
+
+    def injury_penalty(self, combatant: CombatantState) -> int:
+        """This turn's -1/-2 "to all rolls" band penalty (a positive
+        magnitude — callers subtract it), for the attack/casting/aim/escape
+        rolls that carry it. Distinct from ``survival_save_penalty``, which
+        covers the deep-negative-pool save arithmetic further down the same
+        table and is untouched by this hook."""
         raise NotImplementedError
 
 
@@ -82,6 +94,30 @@ class TarmarReactions(InjuryReactions):
     def survival_save_target(self, combatant: CombatantState) -> int:
         """The save rolls 3d6 at or under CON."""
         return combatant.constitution
+
+    def injury_penalty(self, combatant: CombatantState) -> int:
+        """injury-thresholds-death.md: down to half a pool's starting value
+        (but still above :data:`SEVERE_INJURY_BAND_TOP`) costs -1 on rolls;
+        between :data:`SEVERE_INJURY_BAND_TOP` and 1 it costs -2. At or
+        below zero the combatant is already unconscious (a separate row)
+        and takes no more rolls for this band to touch. The worst pool
+        (Fatigue or Body) governs, matching ``survival_save_penalty``.
+        """
+        worst = 0
+        for pool_value, pool_maximum in (
+            (combatant.fatigue, combatant.max_fatigue),
+            (combatant.body, combatant.max_body),
+        ):
+            if pool_value <= 0:
+                continue
+            if pool_value <= SEVERE_INJURY_BAND_TOP:
+                penalty = 2
+            elif pool_value <= pool_maximum // 2:
+                penalty = 1
+            else:
+                penalty = 0
+            worst = max(worst, penalty)
+        return worst
 
 
 class HitCountReactions(InjuryReactions):

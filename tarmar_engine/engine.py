@@ -70,6 +70,13 @@ PHASES: tuple[tuple[int, str], ...] = (
 RUN_FATIGUE_COST = 1
 SPRINT_FATIGUE_COST = 6
 
+# mana-pool.md: a natural 3d6 casting roll of 16-18 fails the spell outright
+# (fumble/bad fumble/catastrophic), regardless of the caster's attribute.
+# The low-end 3-5 specials are GM-flavour narration only and do not change
+# the success/failure verdict (Spencer's ruling on #292's scope) — the
+# engine tracks none of Runaway's or mana-loss's state.
+CASTING_FUMBLE_ROLL_FLOOR = 16
+
 # Distance archers/casters try to keep open with their phase-4 adjustment.
 PREFERRED_STANDOFF = 3
 WALK_SLOW_MAX = 2
@@ -742,6 +749,8 @@ class TurnRunner:
         if attacker.off_balance:
             situational_penalty = combat_math.OFF_BALANCE_PENALTY
             attacker.off_balance = False
+        # injury-thresholds-death.md's -1/-2 band (#296).
+        situational_penalty += self.profile.reactions.injury_penalty(attacker)
         bonus = numbers.bonus - situational_penalty
         record, attack_sequence = self.roll(
             "1d20",
@@ -1083,13 +1092,17 @@ class TurnRunner:
         if grappler_id is None:
             return
         grappler = self.state.by_id(grappler_id)
+        # injury-thresholds-death.md's -1/-2 band (#296).
+        effective_dex = combatant.dexterity - self.profile.reactions.injury_penalty(
+            combatant
+        )
         record, _sequence = self.roll(
             "4d6",
             purpose="escape",
             actor=combatant.name,
-            target_number=combatant.dexterity,
+            target_number=effective_dex,
         )
-        if record.total > combatant.dexterity:
+        if record.total > effective_dex:
             self.emit(
                 "info",
                 f"{combatant.name} fails to struggle free and remains held",
@@ -1158,9 +1171,12 @@ class TurnRunner:
         # paid on the attempt.
         combatant.mana -= spell.level
         attribute_name = spell.attribute
-        attribute = (
+        base_attribute = (
             combatant.intelligence if attribute_name == "INT" else combatant.wisdom
         )
+        # injury-thresholds-death.md's -1/-2 band (#296) applies to the
+        # effective attribute the roll checks against.
+        attribute = base_attribute - self.profile.reactions.injury_penalty(combatant)
         record, cast_sequence = self.roll(
             "3d6",
             purpose="casting",
@@ -1168,7 +1184,9 @@ class TurnRunner:
             target_number=attribute,
             outcome=None,
         )
-        succeeded = record.total <= attribute
+        succeeded = (
+            record.total <= attribute and record.total < CASTING_FUMBLE_ROLL_FLOOR
+        )
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "
@@ -1216,8 +1234,10 @@ class TurnRunner:
         if spell.targeted:
             # casting-spells.md: magic requiring hitting a target needs an
             # additional DEX roll — 3d6 ≤ DEX. A dodging target's +4-TN is
-            # re-mapped onto the caster's effective DEX for this check.
+            # re-mapped onto the caster's effective DEX for this check, and
+            # so is the injury-thresholds-death.md -1/-2 band (#296).
             effective_dex = combatant.dexterity
+            effective_dex -= self.profile.reactions.injury_penalty(combatant)
             if target.dodging:
                 effective_dex -= DODGE_DEX_CHECK_PENALTY
             aim_record, _sequence = self.roll(

@@ -86,7 +86,10 @@ SPELLS: dict[str, Spell] = {
             name="Shield",
             school="Protection",
             level=1,
-            attribute="INT",
+            # spell-descriptions.md's Protection table is explicit and
+            # self-consistent: Shield is "a defensive instinct, not a shaped
+            # effect" and rolls against WIS, not INT (tarmar-studio#291).
+            attribute="WIS",
             targeted=False,
             continuing=True,
             tn_bonus=1,
