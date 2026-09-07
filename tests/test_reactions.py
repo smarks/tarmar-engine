@@ -75,6 +75,52 @@ class TarmarReactionsTest(TestCase):
         self.assertEqual(self.rules.survival_save_target(combatant), 13)
 
 
+class TarmarReactionsInjuryPenaltyTest(TestCase):
+    """injury-thresholds-death.md's -1/-2 "to all rolls" band (issue #296).
+    Down to half (but above 5) costs -1; between 1 and 5 costs -2; worst of
+    Fatigue/Body governs. This is distinct from survival_save_penalty, which
+    covers the negative-pool save arithmetic further down the same table."""
+
+    def setUp(self):
+        self.rules = TarmarReactions()
+
+    def test_no_penalty_above_half(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=21, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 0)
+
+    def test_minus_one_starts_at_half(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=20, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 1)
+
+    def test_minus_one_persists_down_to_six(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=6, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 1)
+
+    def test_minus_two_starts_at_five(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=5, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 2)
+
+    def test_minus_two_persists_down_to_one(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=1, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 2)
+
+    def test_no_penalty_once_unconscious(self):
+        # 0 and below is unconscious (a separate row); no more rolls happen,
+        # so there is nothing left for this band to penalize.
+        combatant = make_combatant(max_fatigue=40, fatigue=0, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 0)
+
+    def test_worst_of_the_two_pools_governs(self):
+        combatant = make_combatant(max_fatigue=40, fatigue=25, max_body=27, body=3)
+        self.assertEqual(self.rules.injury_penalty(combatant), 2)
+
+    def test_small_pool_skips_straight_to_the_severe_band(self):
+        # Mirrors tarmar-studio's minus_one_at=None case: when half the
+        # pool already sits inside the 1-5 band, there is no -1 range.
+        combatant = make_combatant(max_fatigue=8, fatigue=4, max_body=27, body=27)
+        self.assertEqual(self.rules.injury_penalty(combatant), 2)
+
+
 class HitCountReactionsTest(TestCase):
     """Melee's reaction structure with arbitrary injected thresholds."""
 

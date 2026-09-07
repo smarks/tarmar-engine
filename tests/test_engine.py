@@ -911,6 +911,182 @@ class CastingTest(TestCase):
         runner.cast_spell(caster)
         self.assertIn("lacks the mana", events_of_type(events, "info")[0]["message"])
 
+    def test_shield_casting_roll_uses_wisdom_not_intelligence(self):
+        # #291: spell-descriptions.md's Protection table gives Shield WIS,
+        # not INT — the doc wins per Spencer's ruling. INT 14 would pass a
+        # roll of 6; WIS 5 must not.
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.chosen_spell = "shield"
+        caster.wisdom = 5
+        events = []
+        # 3d6 = [3, 2, 1] = 6.
+        runner = engine.TurnRunner(state, ScriptedRoller([[3, 2, 1]]), events.append)
+        runner.cast_spell(caster)
+        self.assertEqual(caster.active_spells, [])
+        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
+
+    def test_casting_roll_of_16_fails_regardless_of_attribute(self):
+        # mana-pool.md: a 16 is a fumble ("spell fails") even when it would
+        # otherwise be <= the caster's attribute.
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.intelligence = 18
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        events = []
+        # 3d6 = [6, 6, 4] = 16 <= 18, but mana-pool.md's table overrides it.
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 4]]), events.append)
+        runner.cast_spell(caster)
+        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
+        purposes = [
+            event["payload"]["purpose"] for event in events_of_type(events, "roll")
+        ]
+        self.assertEqual(purposes, ["casting"])  # no aim/damage roll on a failed cast
+
+    def test_casting_roll_of_17_fails_regardless_of_attribute(self):
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.intelligence = 18
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        events = []
+        # 3d6 = [6, 6, 5] = 17 <= 18.
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 5]]), events.append)
+        runner.cast_spell(caster)
+        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
+
+    def test_casting_roll_of_18_fails_regardless_of_attribute(self):
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.intelligence = 18
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        events = []
+        # 3d6 = [6, 6, 6] = 18 <= 18.
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
+        runner.cast_spell(caster)
+        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
+
+    def test_casting_roll_of_15_still_succeeds_under_a_high_attribute(self):
+        # Regression guard: only 16-18 change the verdict; 15 and below are
+        # untouched (the low-end 3/4/5 specials stay narrated-only, per
+        # Spencer's ruling on #292's scope).
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.wisdom = 18  # shield rolls against WIS (#291)
+        caster.chosen_spell = "shield"
+        events = []
+        # 3d6 = [6, 6, 3] = 15 <= 18.
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 3]]), events.append)
+        runner.cast_spell(caster)
+        self.assertEqual(caster.active_spells, ["shield"])
+
+
+class InjuryRollPenaltyTest(TestCase):
+    """#296: injury-thresholds-death.md's -1/-2 "to all rolls" band, worst
+    pool governing, applied as a situational modifier on attack, casting,
+    spell-aim, and escape rolls. Survival saves carry their own penalty
+    arithmetic (reactions.TarmarReactions.survival_save_penalty) and are
+    explicitly out of scope here."""
+
+    def _wizard_state(self):
+        return BattleState(
+            arena_radius=8,
+            combatants=[
+                make_combatant(
+                    1,
+                    q=-3,
+                    r=0,
+                    facing=0,
+                    intelligence=14,
+                    wisdom=12,
+                    spells=["fire_missile"],
+                    mana=10,
+                    max_mana=10,
+                ),
+                make_combatant(2, q=3, r=0, facing=3),
+            ],
+        )
+
+    def test_attack_roll_takes_the_band_penalty(self):
+        state = duel_state()
+        attacker = state.by_id(1)
+        attacker.fatigue = 5  # max_fatigue 40: within the 1-5 band, -2.
+        attacker.chosen_target = 2
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[10]]), events.append)
+        runner.resolve_attack(attacker, state.by_id(2), ranged=False)
+        penalized = events_of_type(events, "roll")[0]
+
+        clean_state = duel_state()
+        clean_events = []
+        runner2 = engine.TurnRunner(
+            clean_state, ScriptedRoller([[10]]), clean_events.append
+        )
+        runner2.resolve_attack(
+            clean_state.by_id(1), clean_state.by_id(2), ranged=False
+        )
+        clean_roll = events_of_type(clean_events, "roll")[0]
+        self.assertEqual(
+            penalized["payload"]["modifier"], clean_roll["payload"]["modifier"] - 2
+        )
+
+    def test_casting_roll_takes_the_band_penalty(self):
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.fatigue = 20  # max_fatigue 40: at half, -1.
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[3, 3, 3]]), events.append)
+        runner.cast_spell(caster)
+        casting_roll = events_of_type(events, "roll")[0]
+        self.assertEqual(casting_roll["payload"]["target_number"], 13)  # INT 14 - 1
+
+    def test_spell_aim_roll_takes_the_band_penalty(self):
+        state = self._wizard_state()
+        caster = state.by_id(1)
+        caster.fatigue = 5  # -2 band.
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        events = []
+        runner = engine.TurnRunner(
+            state, ScriptedRoller([[3, 3, 3], [2, 2, 2]]), events.append
+        )
+        runner.cast_spell(caster)
+        aim_roll = events_of_type(events, "roll")[1]
+        self.assertEqual(aim_roll["payload"]["purpose"], "spell aim")
+        self.assertEqual(aim_roll["payload"]["target_number"], 10)  # DEX 12 - 2
+
+    def test_escape_roll_takes_the_band_penalty(self):
+        state = duel_state()
+        grapplee, grappler = state.by_id(1), state.by_id(2)
+        grapplee.grappled_by = 2
+        grappler.grappling = 1
+        grapplee.fatigue = 20  # at half, -1.
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[1, 1, 1, 1]]), events.append)
+        runner.grapple_struggle_free(grapplee)
+        escape_roll = events_of_type(events, "roll")[0]
+        self.assertEqual(escape_roll["payload"]["target_number"], 11)  # DEX 12 - 1
+
+    def test_survival_save_is_not_touched_by_the_band_penalty(self):
+        # Scope boundary: survival saves keep their own penalty math
+        # (TarmarReactions.survival_save_penalty), untouched by this issue.
+        state = duel_state()
+        combatant = state.by_id(1)
+        combatant.fatigue = 5  # would be -2 under the attack/casting band...
+        combatant.body = -14  # ...but deep-below-zero body is what triggers
+        combatant.alive = True  # a survival save, and that penalty is 0 here.
+        combatant.conscious = False
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
+        runner.survival_saves()
+        save_roll = events_of_type(events, "roll")[0]
+        self.assertEqual(save_roll["payload"]["purpose"], "survival")
+        self.assertEqual(save_roll["payload"]["modifier"], 0)
+
 
 class ActionPhaseRemapTest(TestCase):
     def test_engaged_archer_defends_instead_of_shooting(self):
