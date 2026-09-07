@@ -131,32 +131,69 @@ class TurnRunner:
         )
         return sequence
 
-    def roll(
+    def roll_unlogged(
         self,
         specification: str,
         *,
         purpose: str,
-        actor: str,
         modifier: int = 0,
         target_number: int | None = None,
-        outcome: str | None = None,
     ):
-        """Roll via the Roller and emit the roll event. Returns (record, seq)."""
-        record = self.roller.roll(
+        """Roll without emitting, for a verdict only known after later dice.
+
+        Every roll taken this way must be handed to :meth:`emit_roll`. The
+        pairing exists so an attack's d20 can be logged *with* its hit/miss
+        verdict, which the resolver only knows once the crit-confirm and
+        fumble dice have also been thrown (tarmar-studio #301). It is not a
+        way to keep a die off the log.
+        """
+        return self.roller.roll(
             specification,
             purpose=purpose,
             modifier=modifier,
             target_number=target_number,
-            outcome=outcome,
+            outcome=None,
         )
+
+    def emit_roll(
+        self,
+        record,
+        *,
+        actor: str,
+        versus: str = "TN",
+        roll_under: bool = False,
+        outcome: str | None = None,
+    ) -> int:
+        """Emit one roll event; returns its sequence number.
+
+        The message follows character creation's shape (``3d6: [4, 5, 3] =
+        12``), then says what the total was measured against and how it came
+        out::
+
+            Wulf attack 1d20: [13] +5 = 18 vs TN 14 (need 14+) - hit
+            Sara casting 3d6: [4, 5, 3] = 12 vs INT 12 (need 12 or less) - success
+
+        ``roll_under`` is load-bearing: the engine tests some totals for "at
+        least" (the d20 attack) and others for "at most" (3d6 attribute
+        checks, retreat and survival saves), and a bare "vs TN 12" left a
+        reader no way to tell which way the comparison ran.
+        """
         faces = ", ".join(str(face) for face in record.faces)
-        message = f"{actor} {purpose} {record.specification}: [{faces}]"
+        message = f"{actor} {record.purpose} {record.specification}: [{faces}]"
         if record.modifier:
             message += f" {record.modifier:+d}"
         message += f" = {record.total}"
         if record.target_number is not None:
-            message += f" vs TN {record.target_number}"
-        sequence = self.emit(
+            need = (
+                f"{record.target_number} or less"
+                if roll_under
+                else f"{record.target_number}+"
+            )
+            message += f" vs {versus} {record.target_number} (need {need})"
+        verdict = outcome if outcome is not None else record.outcome
+        if verdict:
+            message += f" — {verdict}"
+        return self.emit(
             "roll",
             message,
             actor=actor,
@@ -167,8 +204,46 @@ class TurnRunner:
                 "modifier": record.modifier,
                 "total": record.total,
                 "target_number": record.target_number,
-                "outcome": record.outcome,
+                "versus": versus,
+                "roll_under": roll_under,
+                "outcome": verdict,
             },
+        )
+
+    def roll(
+        self,
+        specification: str,
+        *,
+        purpose: str,
+        actor: str,
+        modifier: int = 0,
+        target_number: int | None = None,
+        outcome: str | None = None,
+        versus: str = "TN",
+        roll_under: bool = False,
+        judge=None,
+    ):
+        """Roll via the Roller and emit the roll event. Returns (record, seq).
+
+        ``judge`` is called with the record and returns the verdict text for
+        the log — the hook for a save whose made/failed reading lives at the
+        call site rather than inside the roller.
+        """
+        record = self.roller.roll(
+            specification,
+            purpose=purpose,
+            modifier=modifier,
+            target_number=target_number,
+            outcome=outcome,
+        )
+        if outcome is None and judge is not None:
+            outcome = judge(record)
+        sequence = self.emit_roll(
+            record,
+            actor=actor,
+            versus=versus,
+            roll_under=roll_under,
+            outcome=outcome,
         )
         return record, sequence
 
@@ -281,12 +356,18 @@ class TurnRunner:
             combatant.chosen_letter = decision.chosen.letter
             combatant.chosen_target = decision.chosen.target_id
             combatant.chosen_spell = decision.chosen.spell_key
+            # "Forecast" up front because this block is written before any
+            # die is thrown: its P(hit) is what the AI expected, not what
+            # happened. The roll and damage events that follow are the record
+            # of what actually happened, and a reader had no way to tell the
+            # two kinds of line apart (#301).
             self.emit(
                 "decision",
-                f"{combatant.name} chooses {decision.chosen.name} "
+                f"Forecast — {combatant.name} chooses {decision.chosen.name} "
                 f"({decision.chosen.letter}): {decision.chosen.rationale}",
                 actor=combatant.name,
                 payload={
+                    "forecast": True,
                     "chosen": decision.chosen.to_payload(),
                     "candidates": [c.to_payload() for c in decision.candidates],
                 },
@@ -374,7 +455,11 @@ class TurnRunner:
                 purpose="retreat save",
                 actor=victim.name,
                 target_number=save_target,
-                outcome=None,
+                versus="DEX",
+                roll_under=True,
+                judge=lambda made: (
+                    "falls" if made.total > save_target else "keeps their feet"
+                ),
             )
             if record.total > save_target:
                 victim.prone = True
@@ -439,6 +524,10 @@ class TurnRunner:
                 actor=combatant.name,
                 modifier=worst_penalty,
                 target_number=save_target,
+                roll_under=True,
+                judge=lambda save: (
+                    "clings to life" if save.total <= save_target else "dies"
+                ),
             )
             if record.total <= save_target:
                 self.emit(
@@ -752,29 +841,30 @@ class TurnRunner:
         # injury-thresholds-death.md's -1/-2 band (#296).
         situational_penalty += self.profile.reactions.injury_penalty(attacker)
         bonus = numbers.bonus - situational_penalty
-        record, attack_sequence = self.roll(
+        # The three dice are thrown first and logged after, so each one can
+        # carry the verdict the resolver reaches — the d20 line says "hit",
+        # not just a number a reader has to adjudicate themselves (#301).
+        record = self.roll_unlogged(
             "1d20",
             purpose="attack",
-            actor=attacker.name,
             modifier=bonus,
             target_number=numbers.target_number,
         )
         die = record.faces[0]
+        confirm_record = None
         confirm_roll = None
         if die == combat.DIE_FACES:
-            confirm_record, _sequence = self.roll(
+            confirm_record = self.roll_unlogged(
                 "1d20",
                 purpose="confirm",
-                actor=attacker.name,
                 modifier=bonus,
                 target_number=numbers.target_number,
             )
             confirm_roll = confirm_record.faces[0]
+        fumble_record = None
         fumble_roll = None
         if die == 1:
-            fumble_record, _sequence = self.roll(
-                "1d6", purpose="fumble", actor=attacker.name
-            )
+            fumble_record = self.roll_unlogged("1d6", purpose="fumble")
             fumble_roll = fumble_record.faces[0]
         result = combat.resolve_attack(
             die,
@@ -783,11 +873,35 @@ class TurnRunner:
             confirm_roll=confirm_roll,
             fumble_roll=fumble_roll,
         )
+        attack_sequence = self.emit_roll(
+            record, actor=attacker.name, outcome=result["outcome"]
+        )
+        if confirm_record is not None:
+            self.emit_roll(
+                confirm_record,
+                actor=attacker.name,
+                outcome=(
+                    "severe critical confirmed"
+                    if result["severe"]
+                    else "not confirmed, ordinary critical"
+                ),
+            )
+        if fumble_record is not None:
+            detail = result["fumble_detail"] or {}
+            self.emit_roll(
+                fumble_record,
+                actor=attacker.name,
+                outcome=detail.get("label") or "fumble",
+            )
+        # Everything the score was forecast from, restated as what actually
+        # faced the dice: weapon, reach, to-hit bonus and Target Number.
         arc_note = f" from the {numbers.arc}" if numbers.arc != "front" else ""
         self.emit(
             "action",
             f"{attacker.name} {verb} {defender.name}{arc_note} with "
-            f"{weapon.name}: {result['outcome']}",
+            f"{weapon.name} at {combat_math.hexes_text(numbers.distance)} "
+            f"(d20 {bonus:+d} vs TN {numbers.target_number}): "
+            f"{result['outcome']}",
             actor=attacker.name,
             payload={
                 "target": defender.combatant_id,
@@ -795,6 +909,10 @@ class TurnRunner:
                 "arc": numbers.arc,
                 "ranged": ranged,
                 "attack_roll": attack_sequence,
+                "weapon": weapon.name,
+                "distance": numbers.distance,
+                "to_hit_bonus": bonus,
+                "target_number": numbers.target_number,
             },
         )
         if result["fumble"]:
@@ -804,9 +922,17 @@ class TurnRunner:
             return
         damage_total = 0
         damage_sequences: list[int] = []
-        for _repetition in range(result["damage_multiplier"]):
+        rolls_due = result["damage_multiplier"]
+        for repetition in range(rolls_due):
             damage_record, damage_sequence = self.roll(
-                weapon.damage, purpose="damage", actor=attacker.name
+                weapon.damage,
+                purpose="damage",
+                actor=attacker.name,
+                outcome=(
+                    None
+                    if rolls_due == 1
+                    else f"critical damage roll {repetition + 1} of {rolls_due}"
+                ),
             )
             damage_total += damage_record.total
             damage_sequences.append(damage_sequence)
@@ -979,6 +1105,15 @@ class TurnRunner:
             actor=attacker.name,
             modifier=bonus,
             target_number=numbers.target_number,
+            judge=lambda grab: (
+                "natural 20, the hold takes"
+                if grab.faces[0] == combat.DIE_FACES
+                else "natural 1, fumbled"
+                if grab.faces[0] == 1
+                else "held"
+                if grab.total >= numbers.target_number
+                else "slips free"
+            ),
         )
         die = record.faces[0]
         if die == combat.DIE_FACES:
@@ -1101,6 +1236,11 @@ class TurnRunner:
             purpose="escape",
             actor=combatant.name,
             target_number=effective_dex,
+            versus="DEX",
+            roll_under=True,
+            judge=lambda attempt: (
+                "still held" if attempt.total > effective_dex else "struggles free"
+            ),
         )
         if record.total > effective_dex:
             self.emit(
@@ -1182,7 +1322,13 @@ class TurnRunner:
             purpose="casting",
             actor=combatant.name,
             target_number=attribute,
-            outcome=None,
+            versus=attribute_name,
+            roll_under=True,
+            judge=lambda cast: (
+                "success"
+                if cast.total <= attribute and cast.total < CASTING_FUMBLE_ROLL_FLOOR
+                else "failure"
+            ),
         )
         succeeded = (
             record.total <= attribute and record.total < CASTING_FUMBLE_ROLL_FLOOR
@@ -1245,6 +1391,11 @@ class TurnRunner:
                 purpose="spell aim",
                 actor=combatant.name,
                 target_number=effective_dex,
+                versus="DEX",
+                roll_under=True,
+                judge=lambda aim: (
+                    "misses" if aim.total > effective_dex else "on target"
+                ),
             )
             if aim_record.total > effective_dex:
                 self.emit(
@@ -1290,9 +1441,15 @@ class TurnRunner:
         if net <= 0:
             self.emit(
                 "damage",
-                f"{defender.name}'s armour stops the blow ({raw} rolled)",
+                f"{defender.name}'s armour stops the blow "
+                f"({raw} rolled, all of it stopped)",
                 actor=attacker.name,
-                payload={"target": defender.combatant_id, "net": 0, "raw": raw},
+                payload={
+                    "target": defender.combatant_id,
+                    "net": 0,
+                    "raw": raw,
+                    "stopped": raw,
+                },
             )
             return
         if body_only:
@@ -1308,14 +1465,20 @@ class TurnRunner:
         pools = f"fatigue {defender.fatigue}/{defender.max_fatigue}"
         if reaches_body or body_only:
             pools += f", body {defender.body}/{defender.max_body}"
+        # The subtraction is shown, not just its answer: "takes 5 damage"
+        # beside a damage roll of 7 previously left the missing 2 unexplained
+        # (#301).
+        stopped = raw - net
         self.emit(
             "damage",
-            f"{defender.name} takes {net} damage ({pools})",
+            f"{defender.name} takes {net} damage "
+            f"({raw} rolled less {stopped} stopped by armour; {pools})",
             actor=attacker.name,
             payload={
                 "target": defender.combatant_id,
                 "net": net,
                 "raw": raw,
+                "stopped": stopped,
                 "fatigue": defender.fatigue,
                 "body": defender.body,
                 "chain": list(chain),

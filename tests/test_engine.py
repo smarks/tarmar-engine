@@ -1396,3 +1396,124 @@ class MultiHexFigureTest(TestCase):
                 if combatant.alive:
                     covered.extend(combatant.footprint)
             self.assertEqual(len(covered), len(set(covered)))
+
+
+class DiceAlwaysOnTheRecordTest(TestCase):
+    """tarmar-studio #301: no roll and no verdict happens off-screen.
+
+    Before this, an attack logged ``1d20: [13] +5 = 18 vs TN 14`` and then,
+    separately, ``takes 7 damage`` — the reader could see neither which way
+    the comparison ran, nor whether the roll had hit, nor what armour took
+    out of the damage.
+    """
+
+    def rolls(self, events, purpose):
+        return [
+            event
+            for event in events
+            if event["event_type"] == "roll"
+            and event["payload"]["purpose"] == purpose
+        ]
+
+    def test_attack_roll_states_its_verdict_and_which_way_it_is_read(self):
+        events = run_one_turn(duel_state(), SeededStubRoller(3))
+        attack = self.rolls(events, "attack")[0]
+        self.assertIn("(need ", attack["message"])
+        self.assertIn("+)", attack["message"])  # d20 is a roll-over test
+        self.assertIn(attack["payload"]["outcome"], attack["message"])
+        self.assertIn(attack["payload"]["outcome"], ("hit", "miss", "critical"))
+        self.assertFalse(attack["payload"]["roll_under"])
+
+    def test_roll_under_checks_say_so(self):
+        # A save or attribute check is "3d6 at most"; the old line read
+        # "vs TN 12" and left the direction of the comparison to guesswork.
+        events = []
+        runner = engine.TurnRunner(
+            duel_state(), ScriptedRoller([(5, 1, 3)]), events.append
+        )
+        runner.roll(
+            "3d6",
+            purpose="retreat save",
+            actor="Wulf",
+            target_number=12,
+            versus="DEX",
+            roll_under=True,
+            judge=lambda save: "keeps their feet" if save.total <= 12 else "falls",
+        )
+        self.assertEqual(
+            events[0]["message"],
+            "Wulf retreat save 3d6: [5, 1, 3] = 9 vs DEX 12 "
+            "(need 12 or less) — keeps their feet",
+        )
+        self.assertTrue(events[0]["payload"]["roll_under"])
+
+    def test_roll_over_checks_read_the_other_way(self):
+        events = []
+        runner = engine.TurnRunner(
+            duel_state(), ScriptedRoller([(13,)]), events.append
+        )
+        runner.roll(
+            "1d20",
+            purpose="attack",
+            actor="Wulf",
+            modifier=5,
+            target_number=14,
+            outcome="hit",
+        )
+        self.assertEqual(
+            events[0]["message"],
+            "Wulf attack 1d20: [13] +5 = 18 vs TN 14 (need 14+) — hit",
+        )
+
+    def test_damage_shows_the_subtraction_not_only_its_answer(self):
+        state = duel_state()
+        state.by_id(2).stops = 2
+        state.by_id(2).armour_tier = "Light"
+        events = run_one_turn(state, ScriptedRoller([(4,), (3,), (14,), (5, 5)]))
+        damage = events_of_type(events, "damage")[0]
+        self.assertIn("rolled less", damage["message"])
+        self.assertIn("stopped by armour", damage["message"])
+        self.assertEqual(
+            damage["payload"]["raw"] - damage["payload"]["net"],
+            damage["payload"]["stopped"],
+        )
+
+    def test_critical_confirm_and_fumble_dice_are_logged_with_their_reading(self):
+        # Natural 20 for the first attacker, natural 1 for the second.
+        state = duel_state()
+        events = run_one_turn(state, ScriptedRoller([(4,), (3,), (20,), (20,)]))
+        confirm = self.rolls(events, "confirm")
+        self.assertTrue(confirm)
+        self.assertIn("critical", confirm[0]["message"])
+
+        state = duel_state()
+        events = run_one_turn(state, ScriptedRoller([(4,), (3,), (1,), (3,)]))
+        fumble = self.rolls(events, "fumble")
+        self.assertTrue(fumble)
+        self.assertIn(fumble[0]["payload"]["outcome"], fumble[0]["message"])
+
+    def test_deliberation_is_labelled_a_forecast(self):
+        events = run_one_turn(duel_state(), SeededStubRoller(3))
+        decision = events_of_type(events, "decision")[0]
+        self.assertTrue(decision["message"].startswith("Forecast — "))
+        self.assertTrue(decision["payload"]["forecast"])
+
+    def test_action_line_restates_the_numbers_the_dice_faced(self):
+        events = run_one_turn(duel_state(), SeededStubRoller(3))
+        action = events_of_type(events, "action")[0]
+        self.assertIn("vs TN", action["message"])
+        self.assertIn("hex", action["message"])
+        self.assertIn("weapon", action["payload"])
+        self.assertIn("to_hit_bonus", action["payload"])
+
+    def test_every_roll_the_roller_makes_reaches_the_log(self):
+        seen = []
+
+        class CountingRoller(SeededStubRoller):
+            def roll(self, *args, **kwargs):
+                record = super().roll(*args, **kwargs)
+                seen.append(record)
+                return record
+
+        events = run_one_turn(duel_state(), CountingRoller(5))
+        self.assertEqual(len(seen), len(events_of_type(events, "roll")))
