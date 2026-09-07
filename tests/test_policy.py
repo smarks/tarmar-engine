@@ -304,3 +304,117 @@ class BeastPolicyTest(TestCase):
         self.assertIn(decision.chosen.letter, ("k", "n"))
         defend = next(c for c in decision.candidates if c.letter == "k")
         self.assertIn("wounded beast", defend.rationale)
+
+
+class CheckableRationaleTest(TestCase):
+    """tarmar-studio #301: a reader must be able to verify every score.
+
+    The old log printed ``P(hit) 60% x 4.7 expected damage`` beside a score
+    of ``2.835`` — three numbers that do not multiply out, because the
+    factors were rounded for display while the score was not. These tests
+    pin the two guarantees that fix it: the printed factors reproduce the
+    printed score, and the inputs behind those factors are on the line.
+    """
+
+    def melee_pair(self, **overrides):
+        return BattleState(
+            combatants=[
+                make_combatant(1, q=0, r=0, facing=0, **overrides),
+                make_combatant(2, q=1, r=0, facing=3),
+            ]
+        )
+
+    def test_printed_factors_reproduce_the_printed_score(self):
+        state = self.melee_pair()
+        decision = policy.choose_option(state, state.by_id(1))
+        for candidate in decision.candidates:
+            if "=" not in candidate.rationale:
+                continue
+            printed = candidate.rationale.rsplit("=", 1)[1].strip()
+            self.assertEqual(
+                printed,
+                policy.score_text(candidate.score),
+                f"({candidate.letter}) rationale ends in {printed} "
+                f"but scores {candidate.score}",
+            )
+
+    def test_product_of_multiplies_the_rounded_factors(self):
+        # 0.6 x 4.725 is 2.835 exactly, but 0.600 x 4.725 as printed is
+        # 2.835 too — the discipline only bites when a factor is truncated.
+        self.assertEqual(policy.product_of(0.6, 4.7254), 2.835)
+        self.assertEqual(policy.product_of(1 / 3, 3.0), 0.999)
+
+    def test_melee_rationale_names_every_input(self):
+        state = self.melee_pair()
+        decision = policy.choose_option(state, state.by_id(1))
+        strike = next(c for c in decision.candidates if c.letter == "j")
+        self.assertIn("Broadsword", strike.rationale)  # weapon in hand
+        self.assertIn("1 hex", strike.rationale)  # distance, as missile shows
+        self.assertIn("d20 +", strike.rationale)  # the attack bonus
+        self.assertIn("vs TN", strike.rationale)  # what it is tested against
+        self.assertIn("of 20 faces", strike.rationale)  # where P(hit) came from
+        self.assertIn("armour stops", strike.rationale)  # what damage loses
+
+    def test_missile_rationale_keeps_its_range_band(self):
+        state = BattleState(
+            combatants=[
+                make_combatant(1, q=0, r=0, weapon=bow()),
+                make_combatant(2, q=6, r=0),
+            ]
+        )
+        decision = policy.choose_option(state, state.by_id(1))
+        shot = next(c for c in decision.candidates if c.letter == "f")
+        self.assertIn("6 hexes", shot.rationale)
+        self.assertIn("range ", shot.rationale)
+        self.assertIn("Longbow", shot.rationale)
+
+    def test_move_says_which_side_of_the_jog_line_it_fell(self):
+        near = BattleState(
+            combatants=[
+                make_combatant(1, q=0, r=0, weapon=bow()),
+                make_combatant(2, q=3, r=0),
+            ]
+        )
+        move = next(
+            c for c in policy.choose_option(near, near.by_id(1)).candidates
+            if c.letter == "a"
+        )
+        self.assertIn("within a 7-hex jog, so half of 1.000", move.rationale)
+        self.assertEqual(move.score, 0.5)
+
+        far = BattleState(
+            arena_radius=20,
+            combatants=[
+                make_combatant(1, q=0, r=0, weapon=bow()),
+                make_combatant(2, q=12, r=0),
+            ],
+        )
+        move = next(
+            c for c in policy.choose_option(far, far.by_id(1)).candidates
+            if c.letter == "a"
+        )
+        self.assertIn("beyond a 7-hex jog, so the full 1.000", move.rationale)
+
+    def test_payload_carries_a_score_string_matching_the_rationale(self):
+        state = self.melee_pair()
+        strike = next(
+            c for c in policy.choose_option(state, state.by_id(1)).candidates
+            if c.letter == "j"
+        )
+        payload = strike.to_payload()
+        self.assertEqual(payload["score_text"], policy.score_text(strike.score))
+        self.assertTrue(strike.rationale.endswith(payload["score_text"]))
+
+    def test_wounded_beast_caution_stays_in_the_printed_chain(self):
+        state = BattleState(
+            combatants=[
+                make_beast_actor(1, q=0, r=0, facing=0, body=5),
+                make_combatant(2, q=1, r=0, facing=3),
+            ]
+        )
+        strike = next(
+            c for c in policy.choose_option(state, state.by_id(1)).candidates
+            if c.letter == "j"
+        )
+        self.assertIn("body left", strike.rationale)
+        self.assertTrue(strike.rationale.endswith(policy.score_text(strike.score)))

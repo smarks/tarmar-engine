@@ -40,6 +40,15 @@ class AttackNumbers:
     distance: int
 
 
+def hexes_text(distance: int) -> str:
+    """``"1 hex"`` / ``"8 hexes"`` — a distance that reads as English.
+
+    Lives here beside :func:`figure_distance` so the AI's forecast and the
+    engine's resolution log say the same thing about reach.
+    """
+    return f"{distance} hex" if distance == 1 else f"{distance} hexes"
+
+
 def figure_distance(a: CombatantState, b: CombatantState) -> int:
     """Hex distance between two combatants' footprints (closest edge)."""
     return hexes.figure_distance(a.footprint, b.footprint)

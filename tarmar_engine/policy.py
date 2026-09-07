@@ -55,6 +55,38 @@ WOUNDED_BEAST_DEFEND_BONUS = 0.8
 GRAPPLE_ATTEMPT_SCORE = 0.0
 GRAPPLE_TACTICS_RATIONALE = "grapple tactics out of scope"
 
+#: Decimal places every score and every factor behind it is printed to.
+#: Scores are *built* from factors already rounded to this precision (see
+#: :func:`product_of`), so a reader who multiplies the printed factors gets
+#: the printed score back exactly — the tarmar-studio #301 complaint was a
+#: rationale reading "60% x 4.7" beside a score of 2.835.
+SCORE_PRECISION = 3
+
+
+def round_score(value: float) -> float:
+    """A score or factor at the precision the log prints it to."""
+    return round(value, SCORE_PRECISION)
+
+
+def product_of(*factors: float) -> float:
+    """The product of the factors *as printed*, not as computed.
+
+    Rounding each factor before multiplying is what makes the log
+    checkable: the score stored on the candidate is exactly what a reader
+    gets by multiplying the numbers in front of them. The lost precision is
+    below any threshold the ranking cares about — candidates that differ by
+    less than a thousandth were already a coin flip broken by letter order.
+    """
+    product = 1.0
+    for factor in factors:
+        product *= round_score(factor)
+    return round_score(product)
+
+
+def score_text(value: float) -> str:
+    """A score or factor rendered for the log, at :data:`SCORE_PRECISION`."""
+    return f"{value:.{SCORE_PRECISION}f}"
+
 
 @dataclass
 class Candidate:
@@ -75,7 +107,11 @@ class Candidate:
         return {
             "letter": self.letter,
             "name": self.name,
-            "score": round(self.score, 3),
+            "score": round_score(self.score),
+            # The score as the log should print it. A bare float renders at
+            # whatever width repr chooses (0.5, 2.94, 4.41), which stops the
+            # rationale's "… = 0.500" from matching the score beside it.
+            "score_text": score_text(self.score),
             "rationale": self.rationale,
             "target_id": self.target_id,
             "spell_key": self.spell_key,
@@ -142,7 +178,13 @@ def _beast_caution(
     if not actor.is_beast or not hurt:
         return score, rationale
     fraction = _hurt_fraction(actor)
-    return score * fraction, f"{rationale}; wounded and wary"
+    scaled = product_of(score, fraction)
+    # The caution factor joins the printed chain rather than silently
+    # re-scaling a score the rationale has already shown its working for.
+    return scaled, (
+        f"{rationale}, x {score_text(fraction)} body left "
+        f"(wounded and wary) = {score_text(scaled)}"
+    )
 
 
 def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState | None:
@@ -160,30 +202,53 @@ def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState |
     )
 
 
-def _melee_score(actor: CombatantState, defender: CombatantState) -> tuple[float, str]:
-    numbers = combat_math.attack_numbers(actor, defender, ranged=False)
+def _attack_forecast(
+    actor: CombatantState, defender: CombatantState, *, ranged: bool
+) -> tuple[float, str]:
+    """Score one prospective swing or shot, showing every input it used.
+
+    The rationale names the four numbers a reader would need to check the
+    forecast by hand and could not previously see (tarmar-studio #301): the
+    weapon in hand, the distance to the target, the to-hit bonus the d20
+    gets, and the armour stops that come off the damage. P(hit) is given
+    both as a probability and as the count of winning d20 faces it came
+    from, because that count is what the bonus and the Target Number
+    actually decide.
+
+    Melee and missile share this one function: they differed only in which
+    numbers they printed, which is exactly how melee came to hide the
+    distance that missile showed.
+    """
+    numbers = combat_math.attack_numbers(actor, defender, ranged=ranged)
     probability = combat.hit_probability(numbers.target_number, numbers.bonus)
     damage = combat_math.expected_attack_damage(actor, defender)
-    score = probability * damage
+    score = product_of(probability, damage)
+    stops = combat.applied_armour_stops(
+        defender.stops, actor.weapon.weapon_class, defender.armour_tier
+    )
+    winning_faces = round(probability * combat.DIE_FACES)
+    range_note = f" (range {numbers.range_penalty:+d})" if ranged else ""
+    reach = combat_math.hexes_text(numbers.distance)
     rationale = (
-        f"P(hit) {probability:.0%} vs TN {numbers.target_number} "
-        f"x {damage:.1f} expected damage"
+        f"{actor.weapon.name} at {reach}{range_note}, "
+        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
+        f"— P(hit) {score_text(probability)} "
+        f"({winning_faces} of {combat.DIE_FACES} faces) "
+        f"x {score_text(damage)} expected damage "
+        f"({actor.weapon.damage} less {stops} armour stops) "
+        f"= {score_text(score)}"
     )
     return score, rationale
+
+
+def _melee_score(actor: CombatantState, defender: CombatantState) -> tuple[float, str]:
+    return _attack_forecast(actor, defender, ranged=False)
 
 
 def _missile_score(
     actor: CombatantState, defender: CombatantState
 ) -> tuple[float, str]:
-    numbers = combat_math.attack_numbers(actor, defender, ranged=True)
-    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
-    damage = combat_math.expected_attack_damage(actor, defender)
-    score = probability * damage
-    rationale = (
-        f"P(hit) {probability:.0%} at {numbers.distance} hexes "
-        f"(range {numbers.range_penalty:+d}) x {damage:.1f} expected damage"
-    )
-    return score, rationale
+    return _attack_forecast(actor, defender, ranged=True)
 
 
 def _cast_candidates(
@@ -200,10 +265,21 @@ def _cast_candidates(
             continue  # already up; renewal happens in phase 2
         attribute = actor.intelligence if spell.attribute == "INT" else actor.wisdom
         cast_probability = three_d6_at_most(attribute)
+        attribute_name = spell.attribute
+        cast_note = (
+            f"3d6 ≤ {attribute_name} {attribute} — P(cast) "
+            f"{score_text(cast_probability)}"
+        )
         if spell.heals:
             missing = actor.max_fatigue - actor.fatigue
-            value = cast_probability * min(missing, 3.5) * HEAL_SCORE_PER_POINT
-            rationale = f"P(cast) {cast_probability:.0%}, {missing} fatigue missing"
+            healed = min(missing, 3.5)
+            value = product_of(cast_probability, healed, HEAL_SCORE_PER_POINT)
+            rationale = (
+                f"{cast_note} x {score_text(healed)} fatigue restored "
+                f"({missing} fatigue missing, capped at 3.500 per cast) "
+                f"x {score_text(HEAL_SCORE_PER_POINT)} per point "
+                f"= {score_text(value)}"
+            )
             candidates.append(
                 Candidate(
                     letter, f"CAST SPELL {spell.name}", value, rationale, spell_key=key
@@ -211,8 +287,11 @@ def _cast_candidates(
             )
             continue
         if spell.damage is None:
-            value = cast_probability * BUFF_SCORE
-            rationale = f"P(cast) {cast_probability:.0%}, defensive buff"
+            value = product_of(cast_probability, BUFF_SCORE)
+            rationale = (
+                f"{cast_note} x {score_text(BUFF_SCORE)} flat value of a "
+                f"defensive buff = {score_text(value)}"
+            )
             candidates.append(
                 Candidate(
                     letter, f"CAST SPELL {spell.name}", value, rationale, spell_key=key
@@ -223,12 +302,20 @@ def _cast_candidates(
             continue
         stops = 0 if spell.ignores_armour else enemy.stops
         damage = combat_math.expected_damage(spell.damage, stops)
+        aim_note = ""
         probability = cast_probability
         if spell.targeted:
-            probability *= three_d6_at_most(actor.dexterity)
-        value = probability * damage
+            aim_probability = three_d6_at_most(actor.dexterity)
+            probability = round_score(probability * aim_probability)
+            aim_note = (
+                f" x P(aim) {score_text(aim_probability)} "
+                f"(3d6 ≤ DEX {actor.dexterity})"
+            )
+        value = product_of(probability, damage)
         rationale = (
-            f"P(land) {probability:.0%} x {damage:.1f} expected damage on {enemy.name}"
+            f"{cast_note}{aim_note} — P(land) {score_text(probability)} "
+            f"x {score_text(damage)} expected damage on {enemy.name} "
+            f"({spell.damage} less {stops} armour stops) = {score_text(value)}"
         )
         candidates.append(
             Candidate(
@@ -357,28 +444,46 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
         name = actions.ALL_OPTIONS[letter]
         if letter in ("g", "p"):
             candidates.append(
-                Candidate(letter, name, STAND_UP_SCORE, "Prone: must stand up")
+                Candidate(
+                    letter,
+                    name,
+                    STAND_UP_SCORE,
+                    f"Prone: must stand up, flat = {score_text(STAND_UP_SCORE)}",
+                )
             )
         elif letter == "a":
             if enemy is None:
                 candidates.append(
-                    Candidate(letter, name, 0.0, "No enemies remain to close on")
+                    Candidate(
+                        letter, name, 0.0, "No enemies remain to close on = 0.000"
+                    )
                 )
             else:
                 distance = combat_math.figure_distance(actor, enemy)
+                # Each band says which side of the line the distance fell on,
+                # so a bare 0.5 is no longer an unexplained half (#301).
                 if distance <= 1:
-                    # Already adjacent — moving accomplishes nothing.
                     score = 0.0
+                    band = "already adjacent, so moving gains nothing"
                 elif distance <= actor.move_jog:
-                    score = MOVE_BASE_SCORE / 2
+                    score = round_score(MOVE_BASE_SCORE / 2)
+                    band = (
+                        f"within a {actor.move_jog}-hex jog, so half of "
+                        f"{score_text(MOVE_BASE_SCORE)}"
+                    )
                 else:
-                    score = MOVE_BASE_SCORE
+                    score = round_score(MOVE_BASE_SCORE)
+                    band = (
+                        f"beyond a {actor.move_jog}-hex jog, so the full "
+                        f"{score_text(MOVE_BASE_SCORE)}"
+                    )
                 candidates.append(
                     Candidate(
                         letter,
                         name,
                         score,
-                        f"Close the {distance} hexes to {enemy.name}",
+                        f"Close the {distance} hexes to {enemy.name}: "
+                        f"{band} = {score_text(score)}",
                         target_id=enemy.combatant_id,
                     )
                 )
@@ -387,7 +492,10 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
             distance = combat_math.figure_distance(actor, enemy)
             if distance > actor.move_jog + 1:
                 score = 0.0
-                rationale = f"{enemy.name} is beyond charge reach ({distance} hexes)"
+                rationale = (
+                    f"{enemy.name} is {distance} hexes away, beyond the "
+                    f"{actor.move_jog + 1}-hex charge reach = 0.000"
+                )
             score, rationale = _beast_caution(actor, hurt, score, rationale)
             candidates.append(
                 Candidate(
@@ -402,13 +510,15 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
             missile_threats = [
                 other for other in state.enemies_of(actor) if other.weapon.is_missile
             ]
-            score = DODGE_BASE_SCORE * len(missile_threats)
+            score = product_of(DODGE_BASE_SCORE, len(missile_threats))
             candidates.append(
                 Candidate(
                     letter,
                     name,
                     score,
-                    f"{len(missile_threats)} missile threat(s); +4 TN vs missiles",
+                    f"+4 TN vs missiles; {len(missile_threats)} missile "
+                    f"threat(s) x {score_text(DODGE_BASE_SCORE)} each "
+                    f"= {score_text(score)}",
                 )
             )
         elif letter == "f" and enemy is not None:
@@ -445,18 +555,35 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
             # can barely dent you, defending is worth almost nothing and the
             # AI keeps swinging instead.
             incoming = _incoming_melee_threat(state, actor)
-            score = DEFEND_BASE_SCORE * min(1.0, incoming / 2.0)
-            rationale = f"+4 TN vs melee; ~{incoming:.1f} expected incoming damage"
+            threat_scale = min(1.0, incoming / 2.0)
+            score = product_of(DEFEND_BASE_SCORE, threat_scale)
+            rationale = (
+                f"+4 TN vs melee; {score_text(DEFEND_BASE_SCORE)} base "
+                f"x {score_text(threat_scale)} threat scale "
+                f"({score_text(incoming)} expected incoming damage / 2, "
+                f"capped at 1.000) = {score_text(score)}"
+            )
             if actor.is_beast and hurt:
                 # The one exception to the no-turtling stance above: a
                 # badly wounded beast (body gauge) guards itself.
-                score += WOUNDED_BEAST_DEFEND_BONUS
-                rationale += "; wounded beast guards itself"
+                score = round_score(score + WOUNDED_BEAST_DEFEND_BONUS)
+                rationale += (
+                    f", + {score_text(WOUNDED_BEAST_DEFEND_BONUS)} wounded beast "
+                    f"guarding itself = {score_text(score)}"
+                )
             candidates.append(Candidate(letter, name, score, rationale))
         elif letter == "n":
-            score = DISENGAGE_BASE_SCORE * (4 if hurt else 1)
+            urgency = 4 if hurt else 1
+            score = product_of(DISENGAGE_BASE_SCORE, urgency)
             candidates.append(
-                Candidate(letter, name, score, "Step away instead of attacking")
+                Candidate(
+                    letter,
+                    name,
+                    score,
+                    f"Step away instead of attacking: "
+                    f"{score_text(DISENGAGE_BASE_SCORE)} base x {urgency} "
+                    f"({'hurt' if hurt else 'unhurt'}) = {score_text(score)}",
+                )
             )
         elif letter in ("h", "r"):
             candidates.extend(_cast_candidates(state, actor, letter))
