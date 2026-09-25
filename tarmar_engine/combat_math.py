@@ -114,8 +114,14 @@ def attack_numbers(
       action, whatever the attacker's readied-weapon skill level.
     * ``ignore_defender_bonuses`` drops the defender's shield, active-spell
       TN bonus, dodge modifier, and Defend/Dodge state — a Squeeze target
-      "gets no Dodge/Defend bonus against it — they're already held," and a
-      grappled figure gains no benefit from a shield per the same section.
+      "gets no Dodge/Defend bonus against it — they're already held."
+
+    A fifth is not an override at all but a fact read off the defender: a
+    defender whose ``grappled_by`` is set loses its shield and its
+    Defend/Dodge stance against **every** attacker, not only its captor,
+    because "gain any benefit from a shield, or Dodge/Defend" is on the same
+    section's list of what a held figure cannot do (#13). Its DEX dodge
+    modifier and any active-spell TN bonus are not on that list and stand.
     """
     distance = figure_distance(attacker, defender)
     arc = hexes.arc_of(defender.position, defender.facing, attacker.position)
@@ -140,8 +146,18 @@ def attack_numbers(
         situational=situational,
     )
 
+    # hand-to-hand-and-grappling.md, "Being Grappled": among what a held
+    # figure cannot do is "gain any benefit from a shield, or Dodge/Defend".
+    # That describes the held figure's own state, not who is swinging at it,
+    # so it binds a third party's blow as much as the captor's Squeeze —
+    # derived here from ``grappled_by`` rather than left to the one call site
+    # that passed ``ignore_defender_bonuses`` (#13). The page takes away the
+    # shield and the two defensive stances and nothing else, so a Shield
+    # spell already up and the defender's DEX dodge modifier both stand.
+    defender_is_held = defender.grappled_by is not None
+
     defend_dodge = 0
-    if not ignore_defender_bonuses:
+    if not ignore_defender_bonuses and not defender_is_held:
         if ranged and defender.dodging:
             defend_dodge = hexes.DEFEND_DODGE_TN_BONUS
         if not ranged and defender.defending:
@@ -151,7 +167,8 @@ def attack_numbers(
         shield_and_spell_bonus = 0
         defender_dodge = 0
     else:
-        shield_and_spell_bonus = defender.shield_bonus + spell_tn_bonus(defender)
+        shield_bonus = 0 if defender_is_held else defender.shield_bonus
+        shield_and_spell_bonus = shield_bonus + spell_tn_bonus(defender)
         defender_dodge = combat.dodge_modifier(defender.dexterity)
 
     target = (

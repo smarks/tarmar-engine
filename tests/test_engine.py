@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 from unittest import TestCase
 
-from tarmar_engine import engine, policy
+from tarmar_engine import combat_math, engine, policy
 from tarmar_engine.state import BattleState, WeaponState
 
 from .test_state import make_combatant
@@ -714,6 +714,32 @@ class GrappleTurnChoicesTest(TestCase):
         self.assertEqual(attack_roll["payload"]["target_number"], 13)
         self.assertEqual(held.fatigue, held.max_fatigue - 1)  # 1d6-2 = [3] = 1
         self.assertIn("squeezes", events_of_type(events, "action")[0]["message"])
+
+    def test_a_third_party_swings_past_a_held_figures_shield(self):
+        """The same rule the Squeeze already honoured, now honoured by
+        anyone else's blow too (#13): a grappled figure gains no benefit
+        from a shield, whoever is attacking it.
+        """
+        state = duel_state()
+        held, captor = state.by_id(1), state.by_id(2)
+        held.grappled_by = 2
+        captor.grappling = 1
+        held.shield_bonus = 3
+        held.defending = True
+        third_party = make_combatant(3, q=-1, r=0, facing=0, team="green")
+        state.combatants.append(third_party)
+        third_party.chosen_target = 1
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[13], [3]]), events.append)
+        runner.melee_attack(third_party)
+        attack_roll = events_of_type(events, "roll")[0]
+        # Striking/None base 13 + the held figure's own DEX dodge modifier;
+        # neither the shield's 3 nor Defend's 4 is added.
+        unheld = make_combatant(1, q=0, r=0, facing=0)
+        self.assertEqual(
+            attack_roll["payload"]["target_number"],
+            combat_math.attack_numbers(third_party, unheld).target_number,
+        )
 
     def test_release_ends_the_grapple(self):
         state = duel_state()
