@@ -544,6 +544,8 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"fatal_chain": list(combatant.fatal_chain)},
             )
+            # A corpse neither holds nor is held (#11).
+            self._release_grapples_involving(combatant)
 
     def move_towards_target(self, combatant: CombatantState) -> None:
         """Phase-3 movement for MOVE (run) and CHARGE ATTACK (jog).
@@ -1040,6 +1042,19 @@ class TurnRunner:
 
     def disengage_step(self, combatant: CombatantState) -> None:
         """Option n: move one hex away from adjacent enemies instead of attacking."""
+        if self.profile.grapple.locks_movement(
+            combatant.grappled_by, combatant.grappling
+        ):
+            # "Escaping": Struggle Free (4d6 <= effective DEX) is the way out
+            # of a hold. A plain Disengage must not walk a locked figure out
+            # of the shared hex with the hold still standing (#11).
+            self.emit(
+                "info",
+                f"{combatant.name} is locked in a grapple and must "
+                "struggle free rather than disengage",
+                actor=combatant.name,
+            )
+            return
         enemies = self.state.enemies_of(combatant)
         adjacent = [
             enemy for enemy in enemies if combat_math.figures_adjacent(combatant, enemy)
@@ -1219,6 +1234,36 @@ class TurnRunner:
             },
         )
 
+    def _release_grapples_involving(self, combatant: CombatantState) -> None:
+        """End every hold ``combatant`` is part of, as captor or as captive.
+
+        hand-to-hand-and-grappling.md locks both sides "to the shared hex
+        until the grapple ends" and publishes no case in which a figure that
+        has left the fight keeps holding, or keeps being held. Called
+        wherever a combatant stops being ``active`` — unconsciousness and
+        death — so a hold never outlives one of its two parties (#11).
+        """
+        held_id = combatant.grappling
+        if held_id is not None:
+            held = self.state.by_id(held_id)
+            self._end_grapple(
+                combatant,
+                held,
+                message=f"{combatant.name} can hold {held.name} no longer; "
+                "the grapple ends",
+                actor_name=combatant.name,
+            )
+        captor_id = combatant.grappled_by
+        if captor_id is not None:
+            captor = self.state.by_id(captor_id)
+            self._end_grapple(
+                captor,
+                combatant,
+                message=f"{captor.name} no longer holds {combatant.name}; "
+                "the grapple ends",
+                actor_name=captor.name,
+            )
+
     def grapple_struggle_free(self, combatant: CombatantState) -> None:
         """Struggle Free (letter v): "the same roll as a plain HTH
         Disengage" — 4d6 <= effective DEX. Success stands the figure up and
@@ -1270,6 +1315,11 @@ class TurnRunner:
         if grappler_id is None:
             return
         grappler = self.state.by_id(grappler_id)
+        if not grappler.active:
+            # A captor who was felled earlier in this phase is holding
+            # nobody; end the stale hold rather than swinging at a body (#11).
+            self._release_grapples_involving(grappler)
+            return
         self.resolve_attack(
             combatant,
             grappler,
@@ -1288,6 +1338,11 @@ class TurnRunner:
         if target_id is None:
             return
         target = self.state.by_id(target_id)
+        if not target.active:
+            # A target felled earlier in this phase is out of the fight; end
+            # the stale hold rather than squeezing a body every turn (#11).
+            self._release_grapples_involving(target)
+            return
         self.resolve_attack(
             combatant,
             target,
@@ -1505,6 +1560,8 @@ class TurnRunner:
             actor=combatant.name,
             payload={"unconscious": True, "chain": list(chain)},
         )
+        # A figure that has stopped fighting neither holds nor is held (#11).
+        self._release_grapples_involving(combatant)
 
 
 def run_turn(

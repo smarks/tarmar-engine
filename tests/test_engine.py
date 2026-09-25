@@ -716,6 +716,135 @@ class GrappleTurnChoicesTest(TestCase):
         self.assertIn("holds still", events_of_type(events, "action")[0]["message"])
 
 
+class GrappleEndsWhenACombatantLeavesTheFightTest(TestCase):
+    """A hold ends the moment either side stops fighting (#11).
+
+    hand-to-hand-and-grappling.md locks both combatants "to the shared hex
+    until the grapple ends" and names only Struggle Free and Release as the
+    ways out, publishing no case in which a felled figure keeps holding or
+    keeps being held. Before this, nothing cleared ``grappling``/
+    ``grappled_by`` on death or unconsciousness, so a grappler holding a
+    corpse stayed movement-locked and squeezing for the rest of the battle
+    and two such pairs made a battle that could not end.
+    """
+
+    def _held_pair(self):
+        state = duel_state()
+        captor, captive = state.by_id(1), state.by_id(2)
+        captor.grappling = 2
+        captive.grappled_by = 1
+        return state, captor, captive
+
+    def test_a_captive_falling_unconscious_frees_the_captor(self):
+        state, captor, captive = self._held_pair()
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
+        captive.fatigue = 0
+        runner.check_unconsciousness(captive, [])
+        self.assertFalse(captive.conscious)
+        self.assertIsNone(captor.grappling)
+        self.assertIsNone(captive.grappled_by)
+        grapple_ended = [
+            event
+            for event in events_of_type(events, "status")
+            if event["payload"].get("grapple_ended")
+        ]
+        self.assertEqual(len(grapple_ended), 1)
+
+    def test_a_captor_falling_unconscious_frees_the_captive(self):
+        state, captor, captive = self._held_pair()
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
+        captor.body = 0
+        runner.check_unconsciousness(captor, [])
+        self.assertIsNone(captor.grappling)
+        self.assertIsNone(captive.grappled_by)
+
+    def test_death_in_the_survival_save_ends_the_hold(self):
+        state, captor, captive = self._held_pair()
+        # Deep below zero and already out: a save is due, and 6+6+6 fails it.
+        captive.conscious = False
+        captive.fatigue = -captive.max_fatigue - 5
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
+        runner.survival_saves()
+        self.assertFalse(captive.alive)
+        self.assertIsNone(captor.grappling)
+        self.assertIsNone(captive.grappled_by)
+
+    def test_a_captor_holding_a_corpse_is_free_to_move_and_fight_on(self):
+        """The whole defect end to end: the captor rejoins the battle rather
+        than spending every remaining turn squeezing a body it cannot let go
+        of, so the last team standing can actually be the last one standing.
+        """
+        state = duel_state()
+        captor, captive = state.by_id(1), state.by_id(2)
+        captor.team, captive.team = "red", "blue"
+        survivor = make_combatant(3, q=5, r=0, facing=3, team="blue")
+        state.combatants.append(survivor)
+        captor.grappling = 2
+        captive.grappled_by = 1
+        captive.conscious = False
+        captive.fatigue = -captive.max_fatigue - 5
+
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
+        runner.survival_saves()
+        self.assertFalse(captive.alive)
+
+        captor_start = captor.position
+        events.clear()
+        runner = engine.TurnRunner(state, SeededStubRoller(17), events.append)
+        order = [captor, survivor]
+        runner.phase_initial_movement(order, policy.choose_option)
+        runner.phase_actions()
+        self.assertNotEqual(captor.position, captor_start)
+        squeezes = [
+            event
+            for event in events_of_type(events, "action")
+            if "squeezes" in event["message"]
+        ]
+        self.assertEqual(squeezes, [])
+        standing_teams = {
+            combatant.team for combatant in state.combatants if combatant.active
+        }
+        self.assertEqual(standing_teams, {"red", "blue"})
+
+    def test_a_squeeze_on_a_felled_target_stops_and_ends_the_hold(self):
+        """Belt and braces for a hold that reached Phase 5 already stale —
+        a consumer driving the verbs itself can still get here."""
+        state, captor, captive = self._held_pair()
+        captive.alive = False
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[18], [4]]), events.append)
+        runner.grapple_squeeze(captor)
+        self.assertIsNone(captor.grappling)
+        self.assertIsNone(captive.grappled_by)
+        self.assertEqual(events_of_type(events, "roll"), [])
+
+    def test_strike_back_at_a_felled_captor_stops_and_ends_the_hold(self):
+        state, captor, captive = self._held_pair()
+        captor.conscious = False
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[18], [4]]), events.append)
+        runner.grapple_strike_back(captive)
+        self.assertIsNone(captor.grappling)
+        self.assertIsNone(captive.grappled_by)
+        self.assertEqual(events_of_type(events, "roll"), [])
+
+    def test_a_grapple_locked_figure_cannot_plain_disengage_out_of_the_hold(self):
+        """Struggle Free is the published way out; a plain Disengage must not
+        walk a held figure out of the shared hex with the hold still on."""
+        state, captor, captive = self._held_pair()
+        start = captive.position
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
+        runner.disengage_step(captive)
+        self.assertEqual(captive.position, start)
+        self.assertEqual(captive.grappled_by, 1)
+        self.assertIn("struggle free", events_of_type(events, "info")[0]["message"])
+
+
 class GrappleMovementLockTest(TestCase):
     def test_grappled_pair_does_not_move_in_phases_3_or_4(self):
         state = duel_state()
