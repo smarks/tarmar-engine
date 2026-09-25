@@ -590,6 +590,43 @@ class GrappleAttemptTest(TestCase):
             events_of_type(events, "status")[0]["message"],
         )
 
+    def test_the_injury_band_applies_to_the_grapple_roll(self):
+        """injury-thresholds-death.md prices a badly hurt figure at -1/-2 on
+        *all* rolls; the grapple attempt was the one attack path that skipped
+        it, so a fighter at 3 of 40 Fatigue punched at -2 and grabbed at +0
+        (#12). Bonus 5 less the -2 band is 3, so die 10 now falls one short
+        of TN 14 where it used to land.
+        """
+        state = duel_state()
+        attacker = state.by_id(1)
+        attacker.chosen_target = 2
+        attacker.fatigue = 3
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[10]]), events.append)
+        runner.attempt_grapple(attacker)
+        self.assertIsNone(attacker.grappling)
+        self.assertIn(
+            "fails to grapple", events_of_type(events, "action")[0]["message"]
+        )
+
+    def test_the_injury_band_and_off_balance_stack_on_a_grapple(self):
+        """The same two penalties a plain attack already carried together."""
+        state = duel_state()
+        attacker = state.by_id(1)
+        attacker.chosen_target = 2
+        attacker.fatigue = 3  # -2 band
+        attacker.off_balance = True  # -2, and spent by the attempt
+        events = []
+        # Bonus 5 less 4 is 1: die 12 is one short of TN 14, die 13 lands.
+        runner = engine.TurnRunner(state, ScriptedRoller([[12]]), events.append)
+        runner.attempt_grapple(attacker)
+        self.assertIsNone(attacker.grappling)
+        self.assertFalse(attacker.off_balance)
+
+    def test_a_healthy_grappler_is_unpenalized(self):
+        state, _events = self._attempt([[9]])
+        self.assertEqual(state.by_id(1).grappling, 2)
+
     def test_cannot_grapple_an_already_held_target(self):
         state = duel_state()
         attacker, defender = state.by_id(1), state.by_id(2)

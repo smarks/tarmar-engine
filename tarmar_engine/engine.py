@@ -807,6 +807,24 @@ class TurnRunner:
         self.face_towards(combatant, target.position)
         self.resolve_attack(combatant, target, ranged=True)
 
+    def _attack_roll_penalty(self, attacker: CombatantState) -> int:
+        """The situational penalty any attack roll owes — and spends.
+
+        Two bands, both of them properties of the attacker rather than of
+        the blow: the off-balance -2 left by a fumble or a critical grapple,
+        consumed by the next action it touches, and
+        injury-thresholds-death.md's -1/-2 for a badly hurt figure (#296).
+        The grapple attempt applied only the first and so grabbed at full
+        bonus while the same fighter punched at -2 (#12); one helper for
+        both callers so the next attack path cannot drift again.
+        """
+        penalty = 0
+        if attacker.off_balance:
+            penalty = combat_math.OFF_BALANCE_PENALTY
+            attacker.off_balance = False
+        penalty += self.profile.reactions.injury_penalty(attacker)
+        return penalty
+
     def resolve_attack(
         self,
         attacker: CombatantState,
@@ -836,13 +854,7 @@ class TurnRunner:
             ignore_attacker_skill=weapon_override is not None,
             ignore_defender_bonuses=ignore_defender_bonuses,
         )
-        situational_penalty = 0
-        if attacker.off_balance:
-            situational_penalty = combat_math.OFF_BALANCE_PENALTY
-            attacker.off_balance = False
-        # injury-thresholds-death.md's -1/-2 band (#296).
-        situational_penalty += self.profile.reactions.injury_penalty(attacker)
-        bonus = numbers.bonus - situational_penalty
+        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
         # The three dice are thrown first and logged after, so each one can
         # carry the verdict the resolver reaches — the d20 line says "hit",
         # not just a number a reader has to adjudicate themselves (#301).
@@ -1109,11 +1121,7 @@ class TurnRunner:
             extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_attacker_skill=True,
         )
-        situational_penalty = 0
-        if attacker.off_balance:
-            situational_penalty = combat_math.OFF_BALANCE_PENALTY
-            attacker.off_balance = False
-        bonus = numbers.bonus - situational_penalty
+        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
         record, attack_sequence = self.roll(
             "1d20",
             purpose="grapple attempt",
