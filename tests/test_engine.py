@@ -635,8 +635,12 @@ class GrappleAttemptTest(TestCase):
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[9]]), events.append)
         runner.attempt_grapple(attacker)
-        self.assertEqual(events, [])
+        self.assertEqual(events_of_type(events, "roll"), [])
         self.assertIsNone(attacker.grappling)
+        # A refusal is an outcome the player has to be able to read (#14).
+        self.assertIn(
+            "already held", events_of_type(events, "info")[0]["message"]
+        )
 
     def test_cannot_attempt_while_already_grappling(self):
         state = duel_state()
@@ -646,8 +650,65 @@ class GrappleAttemptTest(TestCase):
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[9]]), events.append)
         runner.attempt_grapple(attacker)
-        self.assertEqual(events, [])
+        self.assertEqual(events_of_type(events, "roll"), [])
         self.assertIsNone(defender.grappled_by)
+        self.assertIn(
+            "already in a hold", events_of_type(events, "info")[0]["message"]
+        )
+
+
+class GrappleRefusalIsLoggedTest(TestCase):
+    """Every refused grapple writes a line (#14).
+
+    Options are chosen in Phase 3 and enacted in Phase 5, with everybody's
+    movement in between, so a declared ATTEMPT HTH can arrive at a target
+    that has stepped away or that someone else grabbed first. Each of
+    attempt_grapple's refusals used to be a bare ``return``, leaving the
+    player a Forecast line and then nothing at all for the turn — where the
+    comparable melee path already writes "X's charge fell short of Y".
+    """
+
+    def _refuse(self, prepare):
+        state = duel_state()
+        attacker, defender = state.by_id(1), state.by_id(2)
+        attacker.chosen_target = 2
+        prepare(attacker, defender)
+        events = []
+        runner = engine.TurnRunner(state, ScriptedRoller([[9]]), events.append)
+        runner.attempt_grapple(attacker)
+        self.assertEqual(events_of_type(events, "roll"), [])
+        self.assertIsNone(attacker.grappling)
+        info = events_of_type(events, "info")
+        self.assertEqual(len(info), 1)
+        return info[0]
+
+    def test_no_target_chosen_is_logged(self):
+        def clear_the_target(attacker, _defender):
+            attacker.chosen_target = None
+
+        info = self._refuse(clear_the_target)
+        self.assertIn("no one to close on", info["message"])
+
+    def test_a_target_that_stepped_away_is_logged(self):
+        def walk_the_target_out_of_reach(_attacker, defender):
+            defender.position = (5, 0)
+
+        info = self._refuse(walk_the_target_out_of_reach)
+        self.assertIn("could not close on", info["message"])
+
+    def test_a_target_that_has_been_felled_is_logged(self):
+        def fell_the_target(_attacker, defender):
+            defender.conscious = False
+
+        info = self._refuse(fell_the_target)
+        self.assertIn("could not close on", info["message"])
+
+    def test_an_attacker_already_held_is_logged(self):
+        def put_the_attacker_in_someone_elses_grip(attacker, _defender):
+            attacker.grappled_by = 77
+
+        info = self._refuse(put_the_attacker_in_someone_elses_grip)
+        self.assertIn("already in a hold", info["message"])
 
 
 class GrappleTurnChoicesTest(TestCase):

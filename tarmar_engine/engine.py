@@ -1103,15 +1103,58 @@ class TurnRunner:
         target off-balance (no confirm roll — there is no damage to double);
         a natural 1 fumbles onto the grapple-specific table
         (:meth:`apply_grapple_fumble`)."""
+        # Options are chosen in Phase 3 and enacted in Phase 5, with
+        # everyone's movement in between, so a declared attempt can arrive at
+        # a target that stepped away, was felled, or was grabbed by somebody
+        # else first. Each refusal says so, the way melee_attack's "charge
+        # fell short" line already did, rather than leaving the player a
+        # Forecast line and an otherwise empty turn (#14).
         target_id = attacker.chosen_target
         if target_id is None:
+            self.emit(
+                "info",
+                f"{attacker.name} has no one to close on and the grapple "
+                "attempt comes to nothing",
+                actor=attacker.name,
+                payload={"grapple_refused": "no_target"},
+            )
             return
         defender = self.state.by_id(target_id)
         if not defender.active or not combat_math.figures_adjacent(attacker, defender):
+            self.emit(
+                "info",
+                f"{attacker.name} could not close on {defender.name} "
+                "to grapple",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "out_of_reach",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         if hexes.figure_locked_by_grapple(attacker.grappled_by, attacker.grappling):
+            self.emit(
+                "info",
+                f"{attacker.name} is already in a hold and cannot grapple "
+                f"{defender.name}",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "attacker_held",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         if hexes.figure_locked_by_grapple(defender.grappled_by, defender.grappling):
+            self.emit(
+                "info",
+                f"{defender.name} is already held and {attacker.name} "
+                "cannot take a grip",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "target_held",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         numbers = combat_math.attack_numbers(
             attacker,
