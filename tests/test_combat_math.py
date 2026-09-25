@@ -3,6 +3,7 @@
 from unittest import TestCase
 
 from tarmar_engine import combat_math
+from tarmar_engine import resolution as combat
 from tarmar_engine.state import BattleState, WeaponState
 
 from .test_state import make_combatant
@@ -162,6 +163,69 @@ class HthOverrideTest(TestCase):
         self.assertLess(held.target_number, normal.target_number)
         # Only the matrix base (Striking/None = 13) is left.
         self.assertEqual(held.target_number, 13)
+
+
+class GrappledDefenderTest(TestCase):
+    """A held figure's shield and Dodge/Defend are gone for everybody (#13).
+
+    hand-to-hand-and-grappling.md, "Being Grappled", lists among what a
+    grappled figure **cannot** do: "gain any benefit from a shield, or
+    Dodge/Defend". That is a statement about the held figure's own state,
+    not about who is swinging at it, so a third combatant's blow has to
+    ignore them as much as the captor's Squeeze does. Before this, only
+    grapple_squeeze passed ignore_defender_bonuses, and attack_numbers never
+    looked at grappled_by, so a held figure kept its shield against
+    everybody except its captor.
+    """
+
+    def setUp(self):
+        self.attacker = make_combatant(1, q=-1, r=0, facing=0)
+        self.defender = make_combatant(2, q=0, r=0, facing=3)  # faces the attacker
+        self.defender.shield_bonus = 2
+
+    def test_a_third_party_faces_no_shield_on_a_held_figure(self):
+        free = combat_math.attack_numbers(self.attacker, self.defender)
+        self.defender.grappled_by = 99  # held by someone other than the attacker
+        held = combat_math.attack_numbers(self.attacker, self.defender)
+        self.assertEqual(held.target_number, free.target_number - 2)
+
+    def test_a_held_figure_gets_no_defend_or_dodge_bonus_either(self):
+        self.defender.defending = True
+        self.defender.dodging = True
+        self.defender.grappled_by = 99
+        held = combat_math.attack_numbers(self.attacker, self.defender)
+        undefended = make_combatant(2, q=0, r=0, facing=3)
+        undefended.shield_bonus = 2
+        undefended.grappled_by = 99
+        self.assertEqual(
+            held.target_number,
+            combat_math.attack_numbers(self.attacker, undefended).target_number,
+        )
+
+    def test_the_page_takes_the_shield_and_nothing_else(self):
+        """A Shield *spell* already up is not on the page's list, and the
+        DEX dodge modifier is not the Dodge action — both still count."""
+        self.defender.grappled_by = 99
+        plain = combat_math.attack_numbers(self.attacker, self.defender)
+        self.defender.active_spells = ["shield"]
+        warded = combat_math.attack_numbers(self.attacker, self.defender)
+        self.assertEqual(warded.target_number, plain.target_number + 1)
+        unarmoured_dodge = combat.dodge_modifier(self.defender.dexterity)
+        self.assertEqual(
+            plain.target_number,
+            combat.target_number("Striking", "None", defender_dodge=unarmoured_dodge),
+        )
+
+    def test_a_grappler_is_not_itself_stripped(self):
+        """``grappling`` is the captor's side of the hold; the page strips
+        the captive, and says nothing about the captor's own shield."""
+        self.defender.grappling = 99
+        held = combat_math.attack_numbers(self.attacker, self.defender)
+        bare = make_combatant(2, q=0, r=0, facing=3)
+        self.assertEqual(
+            held.target_number,
+            combat_math.attack_numbers(self.attacker, bare).target_number + 2,
+        )
 
 
 class ExpectedDamageTest(TestCase):

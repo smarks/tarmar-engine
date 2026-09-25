@@ -544,6 +544,8 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"fatal_chain": list(combatant.fatal_chain)},
             )
+            # A corpse neither holds nor is held (#11).
+            self._release_grapples_involving(combatant)
 
     def move_towards_target(self, combatant: CombatantState) -> None:
         """Phase-3 movement for MOVE (run) and CHARGE ATTACK (jog).
@@ -805,6 +807,24 @@ class TurnRunner:
         self.face_towards(combatant, target.position)
         self.resolve_attack(combatant, target, ranged=True)
 
+    def _attack_roll_penalty(self, attacker: CombatantState) -> int:
+        """The situational penalty any attack roll owes — and spends.
+
+        Two bands, both of them properties of the attacker rather than of
+        the blow: the off-balance -2 left by a fumble or a critical grapple,
+        consumed by the next action it touches, and
+        injury-thresholds-death.md's -1/-2 for a badly hurt figure (#296).
+        The grapple attempt applied only the first and so grabbed at full
+        bonus while the same fighter punched at -2 (#12); one helper for
+        both callers so the next attack path cannot drift again.
+        """
+        penalty = 0
+        if attacker.off_balance:
+            penalty = combat_math.OFF_BALANCE_PENALTY
+            attacker.off_balance = False
+        penalty += self.profile.reactions.injury_penalty(attacker)
+        return penalty
+
     def resolve_attack(
         self,
         attacker: CombatantState,
@@ -834,13 +854,7 @@ class TurnRunner:
             ignore_attacker_skill=weapon_override is not None,
             ignore_defender_bonuses=ignore_defender_bonuses,
         )
-        situational_penalty = 0
-        if attacker.off_balance:
-            situational_penalty = combat_math.OFF_BALANCE_PENALTY
-            attacker.off_balance = False
-        # injury-thresholds-death.md's -1/-2 band (#296).
-        situational_penalty += self.profile.reactions.injury_penalty(attacker)
-        bonus = numbers.bonus - situational_penalty
+        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
         # The three dice are thrown first and logged after, so each one can
         # carry the verdict the resolver reaches — the d20 line says "hit",
         # not just a number a reader has to adjudicate themselves (#301).
@@ -1040,6 +1054,19 @@ class TurnRunner:
 
     def disengage_step(self, combatant: CombatantState) -> None:
         """Option n: move one hex away from adjacent enemies instead of attacking."""
+        if self.profile.grapple.locks_movement(
+            combatant.grappled_by, combatant.grappling
+        ):
+            # "Escaping": Struggle Free (4d6 <= effective DEX) is the way out
+            # of a hold. A plain Disengage must not walk a locked figure out
+            # of the shared hex with the hold still standing (#11).
+            self.emit(
+                "info",
+                f"{combatant.name} is locked in a grapple and must "
+                "struggle free rather than disengage",
+                actor=combatant.name,
+            )
+            return
         enemies = self.state.enemies_of(combatant)
         adjacent = [
             enemy for enemy in enemies if combat_math.figures_adjacent(combatant, enemy)
@@ -1076,15 +1103,58 @@ class TurnRunner:
         target off-balance (no confirm roll — there is no damage to double);
         a natural 1 fumbles onto the grapple-specific table
         (:meth:`apply_grapple_fumble`)."""
+        # Options are chosen in Phase 3 and enacted in Phase 5, with
+        # everyone's movement in between, so a declared attempt can arrive at
+        # a target that stepped away, was felled, or was grabbed by somebody
+        # else first. Each refusal says so, the way melee_attack's "charge
+        # fell short" line already did, rather than leaving the player a
+        # Forecast line and an otherwise empty turn (#14).
         target_id = attacker.chosen_target
         if target_id is None:
+            self.emit(
+                "info",
+                f"{attacker.name} has no one to close on and the grapple "
+                "attempt comes to nothing",
+                actor=attacker.name,
+                payload={"grapple_refused": "no_target"},
+            )
             return
         defender = self.state.by_id(target_id)
         if not defender.active or not combat_math.figures_adjacent(attacker, defender):
+            self.emit(
+                "info",
+                f"{attacker.name} could not close on {defender.name} "
+                "to grapple",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "out_of_reach",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         if hexes.figure_locked_by_grapple(attacker.grappled_by, attacker.grappling):
+            self.emit(
+                "info",
+                f"{attacker.name} is already in a hold and cannot grapple "
+                f"{defender.name}",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "attacker_held",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         if hexes.figure_locked_by_grapple(defender.grappled_by, defender.grappling):
+            self.emit(
+                "info",
+                f"{defender.name} is already held and {attacker.name} "
+                "cannot take a grip",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "target_held",
+                    "target": defender.combatant_id,
+                },
+            )
             return
         numbers = combat_math.attack_numbers(
             attacker,
@@ -1094,11 +1164,7 @@ class TurnRunner:
             extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_attacker_skill=True,
         )
-        situational_penalty = 0
-        if attacker.off_balance:
-            situational_penalty = combat_math.OFF_BALANCE_PENALTY
-            attacker.off_balance = False
-        bonus = numbers.bonus - situational_penalty
+        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
         record, attack_sequence = self.roll(
             "1d20",
             purpose="grapple attempt",
@@ -1219,6 +1285,36 @@ class TurnRunner:
             },
         )
 
+    def _release_grapples_involving(self, combatant: CombatantState) -> None:
+        """End every hold ``combatant`` is part of, as captor or as captive.
+
+        hand-to-hand-and-grappling.md locks both sides "to the shared hex
+        until the grapple ends" and publishes no case in which a figure that
+        has left the fight keeps holding, or keeps being held. Called
+        wherever a combatant stops being ``active`` — unconsciousness and
+        death — so a hold never outlives one of its two parties (#11).
+        """
+        held_id = combatant.grappling
+        if held_id is not None:
+            held = self.state.by_id(held_id)
+            self._end_grapple(
+                combatant,
+                held,
+                message=f"{combatant.name} can hold {held.name} no longer; "
+                "the grapple ends",
+                actor_name=combatant.name,
+            )
+        captor_id = combatant.grappled_by
+        if captor_id is not None:
+            captor = self.state.by_id(captor_id)
+            self._end_grapple(
+                captor,
+                combatant,
+                message=f"{captor.name} no longer holds {combatant.name}; "
+                "the grapple ends",
+                actor_name=captor.name,
+            )
+
     def grapple_struggle_free(self, combatant: CombatantState) -> None:
         """Struggle Free (letter v): "the same roll as a plain HTH
         Disengage" — 4d6 <= effective DEX. Success stands the figure up and
@@ -1270,6 +1366,11 @@ class TurnRunner:
         if grappler_id is None:
             return
         grappler = self.state.by_id(grappler_id)
+        if not grappler.active:
+            # A captor who was felled earlier in this phase is holding
+            # nobody; end the stale hold rather than swinging at a body (#11).
+            self._release_grapples_involving(grappler)
+            return
         self.resolve_attack(
             combatant,
             grappler,
@@ -1288,6 +1389,11 @@ class TurnRunner:
         if target_id is None:
             return
         target = self.state.by_id(target_id)
+        if not target.active:
+            # A target felled earlier in this phase is out of the fight; end
+            # the stale hold rather than squeezing a body every turn (#11).
+            self._release_grapples_involving(target)
+            return
         self.resolve_attack(
             combatant,
             target,
@@ -1505,6 +1611,8 @@ class TurnRunner:
             actor=combatant.name,
             payload={"unconscious": True, "chain": list(chain)},
         )
+        # A figure that has stopped fighting neither holds nor is held (#11).
+        self._release_grapples_involving(combatant)
 
 
 def run_turn(
