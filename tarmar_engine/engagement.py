@@ -13,9 +13,10 @@ footprint — with the differences isolated to three hooks:
 * whether a single multi-hex engager suffices regardless of the count
   (:attr:`EngagementRules.multi_hex_always_engages`).
 
-:class:`TarmarEngagement` is the pre-seam behavior exactly — it delegates to
-``combat_math.is_engaged`` / ``hexes.figure_engaged`` so the refactor cannot
-drift. :class:`MeleeStyleEngagement` ports melee's structural engagement
+:class:`TarmarEngagement` delegates to ``combat_math.is_engaged`` (itself
+over ``hexes.figure_engaged``), where only armed, standing enemies engage
+(tarmar-studio #820), so the engine and the AI cannot drift.
+:class:`MeleeStyleEngagement` ports melee's structural engagement
 (``engine/facing.py``): strictly one engager per enemy, downed (prone or
 felled) figures engage no one, and large figures need two distinct engagers
 to be pinned. Melee conditions with no counterpart in the package state
@@ -28,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from . import hexes
+from . import combat_math, hexes
 from .state import BattleState, CombatantState
 
 
@@ -74,22 +75,24 @@ class EngagementRules:
 
 
 class TarmarEngagement(EngagementRules):
-    """movement.md's engagement table, unchanged from the pre-seam engine.
+    """movement.md's engagement table.
 
     Thresholds come from the figure's size band (1 / 3–6 / 7+ hexes), a
-    single multi-hex engager always suffices, and any active enemy engages
-    (Tarmar's table publishes no prone/unarmed exemption for engagers).
-    Delegates to the drift-guarded ``hexes.figure_engaged`` so this class and
-    the geometry module cannot disagree.
+    single multi-hex engager always suffices, and an enemy engages only when
+    it is armed and standing: the table's one-hex row reads "In an armed
+    enemy's front hex", and a prone figure's hexes "all count as rear", so
+    it has no front hex to engage through (tarmar-studio #820). Delegates to
+    ``combat_math.is_engaged`` — the function the AI's menu reads — so the
+    engine and the policy cannot disagree.
     """
 
     multi_hex_always_engages = True
 
+    def counts_as_engager(self, enemy: CombatantState) -> bool:
+        return combat_math.engages(enemy)
+
     def is_engaged(self, state: BattleState, actor: CombatantState) -> bool:
-        enemies = [
-            (enemy.front_hexes, enemy.size_hexes) for enemy in state.enemies_of(actor)
-        ]
-        return hexes.figure_engaged(actor.footprint, actor.size_hexes, enemies)
+        return combat_math.is_engaged(state, actor)
 
     def threshold(self, actor: CombatantState) -> int:
         return hexes.engagement_threshold(actor.size_hexes)

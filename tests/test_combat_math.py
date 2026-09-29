@@ -245,8 +245,11 @@ class ExpectedDamageTest(TestCase):
         self.assertGreater(combat_math.expected_damage("2d6-2", 5), 0.5)
 
     def test_crit_repetitions_roll_the_dice_twice_against_one_armour(self):
+        # attack-rolls.md rolls the damage *dice* twice; the +2 counts once
+        # (tarmar-studio #824). E[4d6] 14 + 2 - 2 stops = 14. The old 16
+        # added the modifier twice — the bug #824 reports.
         self.assertAlmostEqual(
-            combat_math.expected_damage("2d6+2", 2, repetitions=2), 16.0
+            combat_math.expected_damage("2d6+2", 2, repetitions=2), 14.0
         )
 
     def test_expected_attack_damage_uses_hybrid_stop_rule(self):
@@ -261,10 +264,11 @@ class ExpectedDamageTest(TestCase):
         )
         plated = make_combatant(2, armour_tier="Heavy", stops=5)
         # Hybrid rule: Heavy Striking vs Heavy armour applies stops // 2 = 2;
-        # one roll expects 7, the 1-in-20 crit path adds (16 - 7) / 20.
+        # one roll expects 7, the 1-in-20 crit path adds (14 - 7) / 20 — the
+        # crit's dice doubled and its +2 counted once (#824; this pinned 16).
         self.assertAlmostEqual(
             combat_math.expected_attack_damage(smasher, plated),
-            7.0 + 9.0 / 20,
+            7.0 + 7.0 / 20,
         )
 
 

@@ -20,22 +20,28 @@ normal scoring entirely with a fixed default: a held figure always attempts
 Struggle Free, and a grappler always Squeezes. Neither weighs Hold
 Still/Strike Back or Maintain/Release against anything — they are only
 listed as zero-score candidates so the decision log still shows what else
-was on the table. Beasts never attempt a grapple at all (no hands to hold
-with); this is consistent with the rest of their melee-only subset. Casting
-while grappled is never offered — the engine has no per-spell Spell Mastery
-data (hand-to-hand-and-grappling.md's gesture/verbal exemption needs it), so
-rather than guess which spells would qualify, both grapple participants are
-restricted to their fixed lists, which have no casting option in them.
+was on the table. A held figure's list also carries DRAW DAGGER when it has
+one to draw, and a cast for each spell known at Spell Mastery 3 — both at
+zero, for a player to choose. Beasts never attempt a grapple at all (no
+hands to hold with); this is consistent with the rest of their melee-only
+subset.
+
+**The menu is the legal menu.** A game that lets a person choose (tarmar-
+studio's manual control) offers exactly these candidates, so every option
+the rules allow appears here even when the AI would never take it: Sprint,
+DROP, the yielded variants of the movement options, and a weapon option
+with nothing to rearm score 0 and sit after the options the AI scores.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import actions, combat_math
+from . import actions, combat_math, hexes, weapons
 from . import resolution as combat
+from .dice import parse_dice_expression
 from .spells import get_spell
-from .state import BattleState, CombatantState
+from .state import BattleState, CombatantState, WeaponState
 
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
@@ -54,6 +60,12 @@ WOUNDED_BEAST_DEFEND_BONUS = 0.8
 # docstring). The AI never spends its turn attempting one.
 GRAPPLE_ATTEMPT_SCORE = 0.0
 GRAPPLE_TACTICS_RATIONALE = "grapple tactics out of scope"
+# Getting a weapon back into an empty (or wrong) hand: flat, above any
+# bare-handed or bow-in-melee alternative the menu leaves such a figure.
+REARM_SCORE = 1.5
+# Options offered for a player to choose that the AI does not take: Sprint's
+# 6 Fatigue a turn, going prone, drawing a dagger mid-hold.
+PLAYER_ONLY_SCORE = 0.0
 
 #: Decimal places every score and every factor behind it is printed to.
 #: Scores are *built* from factors already rounded to this precision (see
@@ -362,7 +374,41 @@ def _grappled_decision(state: BattleState, actor: CombatantState) -> Decision:
             target_id=grappler_id,
         ),
     ]
+    # The same page's other two: a dagger to draw (#822), and a spell cast
+    # with neither gestures nor words (Spell Mastery 3, #821). Listed for a
+    # player to choose; the fixed default above stands.
+    if not actor.weapon.hth_usable and any(
+        spare.hth_usable for spare in actor.spare_weapons
+    ):
+        candidates.append(
+            Candidate(
+                "u",
+                actions.GRAPPLED_EXTRA_ACTIONS["u"],
+                PLAYER_ONLY_SCORE,
+                "Roll 3d6 ≤ DEX to ready a dagger to strike back with "
+                f"({GRAPPLE_TACTICS_RATIONALE})",
+                target_id=grappler_id,
+            )
+        )
+    candidates += _mastery_three_casts(state, actor)
     return Decision(chosen=candidates[0], candidates=candidates)
+
+
+def _mastery_three_casts(state: BattleState, actor: CombatantState) -> list[Candidate]:
+    """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
+    return [
+        Candidate(
+            candidate.letter,
+            candidate.name,
+            PLAYER_ONLY_SCORE,
+            f"Spell Mastery 3: cast without gestures or words "
+            f"({GRAPPLE_TACTICS_RATIONALE}; {candidate.rationale})",
+            target_id=candidate.target_id,
+            spell_key=candidate.spell_key,
+        )
+        for candidate in _cast_candidates(state, actor, "r")
+        if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
+    ]
 
 
 def _grappler_decision(state: BattleState, actor: CombatantState) -> Decision:
@@ -398,7 +444,121 @@ def _grappler_decision(state: BattleState, actor: CombatantState) -> Decision:
             target_id=target_id,
         ),
     ]
+    # The grappler's hands are full too ("holding on or being held"): a
+    # spell known at Spell Mastery 3 is on its list, for a player (#821).
+    candidates += _mastery_three_casts(state, actor)
     return Decision(chosen=candidates[0], candidates=candidates)
+
+
+@dataclass(frozen=True)
+class RetreatChoice:
+    """Where a forced retreat pushes its victim, and whether the pusher follows."""
+
+    destination: tuple[int, int]
+    advance: bool
+
+
+def choose_retreat(
+    state: BattleState,
+    pusher: CombatantState,
+    victim: CombatantState,
+    destinations: list[tuple[int, int]],
+    may_advance: bool,
+) -> RetreatChoice:
+    """The AI's forced-retreat choice (special-combat-situations.md, #779).
+
+    The rules let the pusher push "in any direction" and "Choose to advance
+    ... or stand still". The AI takes the first hex offered — straight back
+    whenever that is clear, as the engine always pushed — and follows the
+    victim in unless it fights with a missile weapon, which wants the room.
+    """
+    return RetreatChoice(
+        destination=destinations[0],
+        advance=may_advance and not pusher.weapon.is_missile,
+    )
+
+
+def _mean_damage(weapon: WeaponState) -> float:
+    count, sides, modifier = parse_dice_expression(weapon.damage)
+    return count * (sides + 1) / 2 + modifier
+
+
+def best_weapon(
+    actor: CombatantState, choices: list[WeaponState]
+) -> WeaponState | None:
+    """The weapon the engine readies when an option leaves the pick to it.
+
+    READY WEAPON, CHANGE WEAPON and PICK UP WEAPON carry no weapon on the
+    menu, so the figure takes the one it is best with: highest Weapon-skill
+    level, then highest mean damage, then catalog order.
+    """
+    usable = [choice for choice in choices if choice.item_id]
+    if not usable:
+        return None
+    return max(
+        usable,
+        key=lambda weapon: (
+            actor.weapon_skills.get(weapon.item_id, 0),
+            _mean_damage(weapon),
+        ),
+    )
+
+
+def weapons_in_reach(state: BattleState, actor: CombatantState) -> list[WeaponState]:
+    """Weapons lying in the actor's hex or next to it."""
+    return [
+        lying.weapon
+        for lying in state.ground_weapons
+        if hexes.distance(lying.position, actor.position) <= 1
+    ]
+
+
+def _hth_targets(state: BattleState, actor: CombatantState) -> list[CombatantState]:
+    """Adjacent enemies an HTH entry condition admits (#823), lowest id first."""
+    return sorted(
+        (
+            enemy
+            for enemy in state.enemies_of(actor)
+            if combat_math.hth_entry_reason(state, actor, enemy) is not None
+        ),
+        key=lambda enemy: enemy.combatant_id,
+    )
+
+
+def _hth_strike_forecast(
+    state: BattleState, actor: CombatantState, defender: CombatantState
+) -> tuple[float, str]:
+    """Score a standalone HTH strike (t): bare hands or a dagger, +4."""
+    dagger = actor.weapon.hth_usable
+    numbers = combat_math.attack_numbers(
+        actor,
+        defender,
+        ranged=False,
+        weapon_class=None if dagger else "Striking",
+        extra_situational=hexes.HTH_TO_HIT_BONUS,
+        ignore_attacker_skill=not dagger,
+    )
+    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
+    damage_expression = (
+        actor.weapon.damage if dagger else combat_math.bare_handed_expression(actor)
+    )
+    stops = combat.applied_armour_stops(
+        defender.stops,
+        actor.weapon.weapon_class if dagger else "Striking",
+        defender.armour_tier,
+    )
+    damage = combat_math.expected_damage(damage_expression, stops)
+    score = product_of(probability, damage)
+    reason = combat_math.hth_entry_reason(state, actor, defender)
+    held = f"the {actor.weapon.name}" if dagger else "bare hands"
+    rationale = (
+        f"in close ({reason}) with {held}, "
+        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
+        f"— P(hit) {score_text(probability)} x {score_text(damage)} expected "
+        f"damage ({damage_expression} less {stops} armour stops) "
+        f"= {score_text(score)}"
+    )
+    return score, rationale
 
 
 def choose_option(state: BattleState, actor: CombatantState) -> Decision:
@@ -427,21 +587,48 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
     # them neither), so their legal letters are the melee-only subset —
     # a/b/c plus j/k/n when engaged.
     # Beasts have no hands to grapple with — the melee-only subset above
-    # already excludes them from missiles/spells for the same reason.
-    can_grapple = engaged and not actor.is_beast and bool(adjacent_enemies)
+    # already excludes them from missiles/spells for the same reason. A
+    # grapple, like any HTH, needs one of "Entering Hand-to-Hand"'s
+    # conditions against its target (#823).
+    hth_targets = [] if actor.is_beast else _hth_targets(state, actor)
+    can_grapple = engaged and bool(hth_targets)
+    melee_weapon = weapons.has_melee_weapon(actor)
+    in_reach = weapons_in_reach(state, actor)
+    spares = [spare for spare in actor.spare_weapons if spare.item_id]
     letters = actions.legal_actions(
         engaged=engaged,
         prone=actor.prone,
-        has_missile=actor.weapon.is_missile,
+        has_missile=weapons.can_shoot(actor),
         has_spells=bool(actor.spells) and actor.mana > 0,
         has_melee_target=enemy is not None and not actor.weapon.is_missile,
         can_grapple=can_grapple,
+        can_run=actor.move_run > 0,
+        can_sprint=actor.move_sprint > 0,
+        has_melee_weapon=melee_weapon,
+        has_last_shot=engaged
+        and weapons.is_fired_missile(actor.weapon)
+        and actor.weapon.reload_turns_left == 0
+        and not actor.last_shot_spent,
+        can_strike_hth=bool(hth_targets)
+        and (actor.weapon.item_id == "" or actor.weapon.hth_usable),
+        can_pick_up=not actor.is_beast and bool(in_reach),
+        can_change_weapon=engaged
+        and not actor.is_beast
+        and any(not spare.is_missile for spare in spares),
+        can_ready_weapon=not engaged and not actor.is_beast and bool(spares),
+        can_drop=not actor.is_beast,
+        with_yields=True,
+    )
+    # A figure left without the weapon its fighting needs — bare hands after
+    # a fumble or a throw, or a bow once engaged — wants to rearm (#780).
+    needs_weapon = not actor.is_beast and (
+        actor.weapon.item_id == "" or (engaged and actor.weapon.is_missile)
     )
 
     hurt = _hurt_fraction(actor) < HURT_THRESHOLD
     candidates: list[Candidate] = []
     for letter in letters:
-        name = actions.ALL_OPTIONS[letter]
+        name = actions.option_name(letter)
         if letter in ("g", "p"):
             candidates.append(
                 Candidate(
@@ -511,6 +698,16 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
                 other for other in state.enemies_of(actor) if other.weapon.is_missile
             ]
             score = product_of(DODGE_BASE_SCORE, len(missile_threats))
+            # DODGE moves "Jog or less" (movement.md, #819): the AI closes on
+            # the nearest missile threat while dodging it.
+            closing_on = min(
+                missile_threats,
+                key=lambda other: (
+                    combat_math.figure_distance(actor, other),
+                    other.combatant_id,
+                ),
+                default=None,
+            )
             candidates.append(
                 Candidate(
                     letter,
@@ -518,11 +715,30 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
                     score,
                     f"+4 TN vs missiles; {len(missile_threats)} missile "
                     f"threat(s) x {score_text(DODGE_BASE_SCORE)} each "
-                    f"= {score_text(score)}",
+                    f"= {score_text(score)}"
+                    + (
+                        f", jogging toward {closing_on.name}"
+                        if closing_on is not None
+                        else ""
+                    ),
+                    target_id=None if closing_on is None else closing_on.combatant_id,
                 )
             )
         elif letter == "f" and enemy is not None:
             score, rationale = _missile_score(actor, enemy)
+            if (
+                actor.weapon.is_thrown
+                and not actor.weapon.is_missile
+                and not any(not spare.is_missile for spare in spares)
+            ):
+                # A hand weapon that can be thrown (dagger, spear, mace) is
+                # this figure's only one: the AI keeps it rather than end the
+                # turn bare-handed. Still on the menu for a player (#812).
+                score = PLAYER_ONLY_SCORE
+                rationale = (
+                    f"{rationale}; but the {actor.weapon.name} is the only hand "
+                    f"weapon carried, so the AI keeps it = {score_text(score)}"
+                )
             candidates.append(
                 Candidate(
                     letter,
@@ -587,11 +803,12 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
             )
         elif letter in ("h", "r"):
             candidates.extend(_cast_candidates(state, actor, letter))
-        elif letter == "o" and adjacent_enemies:
-            # Deterministic target pick (lowest id) — score is always 0, so
-            # this candidate never wins a comparison against a real attack;
-            # it only exists to show the AI considered and declined it.
-            target = min(adjacent_enemies, key=lambda enemy: enemy.combatant_id)
+        elif letter == "o" and hth_targets:
+            # Deterministic target pick (lowest id among the enemies an HTH
+            # entry condition admits, #823) — score is always 0, so this
+            # candidate never wins a comparison against a real attack; it
+            # only exists to show the AI considered and declined it.
+            target = hth_targets[0]
             candidates.append(
                 Candidate(
                     letter,
@@ -601,6 +818,104 @@ def choose_option(state: BattleState, actor: CombatantState) -> Decision:
                     target_id=target.combatant_id,
                 )
             )
+
+        elif letter == "sprint" and enemy is not None:
+            candidates.append(
+                Candidate(
+                    letter,
+                    actions.option_name(letter),
+                    PLAYER_ONLY_SCORE,
+                    f"Sprint up to {actor.move_sprint} hexes toward {enemy.name} "
+                    f"for 6 Fatigue; the AI keeps to the run = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}",
+                    target_id=enemy.combatant_id,
+                )
+            )
+        elif letter == "d":
+            candidates.append(
+                Candidate(
+                    letter,
+                    name,
+                    PLAYER_ONLY_SCORE,
+                    f"Go prone where you stand; the AI does not = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}",
+                )
+            )
+        elif letter == "l" and enemy is not None:
+            shot_target = min(
+                adjacent_enemies or [enemy],
+                key=lambda other: other.combatant_id,
+            )
+            score, rationale = _missile_score(actor, shot_target)
+            candidates.append(
+                Candidate(
+                    letter,
+                    name,
+                    score,
+                    f"One last shot at {shot_target.name}, the bow ready before "
+                    f"the engagement: {rationale}",
+                    target_id=shot_target.combatant_id,
+                )
+            )
+        elif letter == "t" and hth_targets:
+            best = None
+            for defender in hth_targets:
+                score, rationale = _hth_strike_forecast(state, actor, defender)
+                candidate = Candidate(
+                    letter,
+                    name,
+                    score,
+                    f"Strike {defender.name} {rationale}",
+                    target_id=defender.combatant_id,
+                )
+                if best is None or candidate.score > best.score:
+                    best = candidate
+            if best is not None:
+                candidates.append(best)
+        elif letter in ("e", "m", "q"):
+            pool = {
+                "e": spares,
+                "m": [spare for spare in spares if not spare.is_missile],
+                "q": in_reach,
+            }[letter]
+            choice = best_weapon(actor, pool)
+            if choice is None:
+                continue
+            score = REARM_SCORE if needs_weapon else PLAYER_ONLY_SCORE
+            reason = (
+                f"rearm with the {choice.name}"
+                if needs_weapon
+                else f"the {choice.name} is on offer but the hand is not empty"
+            )
+            candidates.append(
+                Candidate(
+                    letter,
+                    name,
+                    score,
+                    f"{reason} = {score_text(score)}",
+                )
+            )
+        elif actions.is_yielded(letter):
+            base = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.letter == actions.base_option(letter)
+                ),
+                None,
+            )
+            if base is not None:
+                candidates.append(
+                    Candidate(
+                        letter,
+                        actions.option_name(letter),
+                        base.score,
+                        f"As {base.name}, moving in Final Movement instead: "
+                        f"{base.rationale}",
+                        target_id=base.target_id,
+                        spell_key=base.spell_key,
+                    )
+                )
 
     if not candidates:
         candidates = [Candidate("a", "MOVE", 0.0, "Nothing else is legal")]

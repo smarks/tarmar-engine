@@ -30,11 +30,10 @@ BARE_HANDED_DAMAGE_TABLE: tuple[tuple[int, str], ...] = (
 )
 
 # Unarmed strikes have no catalog row; they resolve on the matrix as a
-# Striking attack (one-handed blows — the closest published class). A plain
-# standalone unarmed strike outside a grapple (HTH option t on its own) is
-# still out of scope for v1; t is implemented only as a grappled figure's
-# Strike Back (tarmar_engine.engine.grapple_strike_back) and reuses this
-# same class.
+# Striking attack (hand-to-hand-and-grappling.md: "bare hands resolve on the
+# **Striking** row"). Every bare-handed blow is an HTH action (option t):
+# a grappled figure's Strike Back, a grappler's Squeeze, and a standalone
+# strike once an HTH entry condition holds (tarmar-studio #815/#823).
 UNARMED_WEAPON_CLASS = "Striking"
 
 
@@ -48,7 +47,14 @@ def bare_handed_damage(strength: int) -> str:
 
 @dataclass
 class WeaponState:
-    """The readied weapon as the engine sees it. ``item_id`` empty = unarmed."""
+    """A weapon as the engine sees it. ``item_id`` empty = unarmed.
+
+    The rate fields carry weapons.md's Notes column for missile weapons
+    (tarmar-studio #781); :func:`tarmar_engine.weapons.missile_rate_from_note`
+    reads them off the published note so a game never retypes the numbers.
+    Their defaults — never a second shot, loaded every turn — are the
+    behaviour of every weapon the table gives no note.
+    """
 
     item_id: str = ""
     name: str = "bare hands"
@@ -57,6 +63,39 @@ class WeaponState:
     str_req: int = 0
     is_missile: bool = False
     is_thrown: bool = False
+    #: A dagger: usable at HTH range ("Bare hands or dagger", the HTH table),
+    #: and what DRAW DAGGER (u) readies.
+    hth_usable: bool = False
+    #: attack-rolls.md fumble 6: "weapon takes stress (breaks on a second
+    #: fumble)". The stress belongs to the weapon, so it travels with it.
+    stressed: bool = False
+    #: weapons.md "2 shots/turn if adjDEX N+": N, or 0 for never.
+    double_shot_dex: int = 0
+    #: weapons.md crossbow notes: turns per shot at base (2 = every other
+    #: turn, 3 = every 3rd turn); 1 = every turn.
+    reload_turns: int = 1
+    #: …and the adjDEX that shortens it ("every if 14+"), with the cycle it
+    #: shortens to. 0 = no quicker cycle.
+    quick_reload_dex: int = 0
+    quick_reload_turns: int = 1
+    #: Turns until this weapon is loaded again (0 = loaded). It belongs to
+    #: the weapon, so a fired crossbow dropped and picked up is still
+    #: unloaded (review of #781).
+    reload_turns_left: int = 0
+
+
+@dataclass
+class GroundWeapon:
+    """A weapon lying in a hex: dropped by a fumble, dropped to change or pick
+    up another, or thrown (tarmar-studio #780/#812)."""
+
+    q: int
+    r: int
+    weapon: WeaponState = field(default_factory=WeaponState)
+
+    @property
+    def position(self) -> tuple[int, int]:
+        return (self.q, self.r)
 
 
 @dataclass
@@ -91,12 +130,35 @@ class CombatantState:
     shield_bonus: int = 0
     move_walk: int = 4
     move_jog: int = 7
+    #: movement.md gait distances. A gait the figure may not use — chainmail
+    #: and heavier "Cannot Run or Sprint", a Medium load likewise, leather
+    #: "Cannot Sprint" (armor-and-shields.md, movement.md) — is 0, and the
+    #: option that needs it is not offered (tarmar-studio #778/#818). Sprint
+    #: defaults to 0 so a game that has not seated a sprint distance gets
+    #: none, rather than one invented here.
     move_run: int = 12
+    move_sprint: int = 0
+    #: movement.md's Movement Modifier (CON + STR + DEX modifiers). Read by
+    #: the HTH entry condition "has a lower movement modifier than you".
+    movement_modifier: int = 0
+    #: Weapons carried but not in hand — slung, sheathed, a spare dagger.
+    #: READY WEAPON (e), CHANGE WEAPON (m) and DRAW DAGGER (u) take from here.
+    spare_weapons: list[WeaponState] = field(default_factory=list)
+    #: Effective Weapon-skill level with each weapon by ``item_id``: what a
+    #: figure's skill becomes when it readies, changes to or picks up that
+    #: weapon. A weapon missing from the map is used at level 0; the engine
+    #: records the readied weapon's level here whenever it leaves the hand.
+    weapon_skills: dict[str, int] = field(default_factory=dict)
     # Magic.
     max_mana: int = 0
     mana: int = 0
     spells: list[str] = field(default_factory=list)
     active_spells: list[str] = field(default_factory=list)
+    #: spell-mastery.md level per spell key (2 = no gestures, 3 = no verbal
+    #: incantation). A spell missing from the map is at level 1. A grappled
+    #: caster renews only level 2+ spells and casts only level 3+ ones
+    #: (tarmar-studio #821).
+    spell_mastery: dict[str, int] = field(default_factory=dict)
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
@@ -113,9 +175,18 @@ class CombatantState:
     conscious: bool = True
     prone: bool = False
     # Fumble state (attack-rolls.md §7): off-balance costs −2 on the next
-    # action; a stressed weapon breaks on a second fumble.
+    # action, whatever that action is (tarmar-studio #811). Weapon stress
+    # lives on the weapon (``WeaponState.stressed``).
     off_balance: bool = False
-    weapon_stressed: bool = False
+    # Whether this engagement's One Last Shot has been taken — reset the
+    # first turn the figure starts disengaged (tarmar-studio #776). A
+    # crossbow's reload is the weapon's own (``WeaponState``).
+    last_shot_spent: bool = False
+    # Enemies this figure is in hand-to-hand with: entered by a grapple
+    # attempt or an HTH strike, kept while the two stay adjacent. Inside it
+    # neither needs an entry condition again, and a strike with bare hands
+    # or a dagger (t) takes the HTH +4 (hand-to-hand-and-grappling.md; #867).
+    hth_with: list[int] = field(default_factory=list)
     defending: bool = False  # Defend chosen this turn (+4 TN vs melee)
     dodging: bool = False  # Dodge chosen this turn (+4 TN vs missiles)
     yielded: bool = False  # yielded initial movement, moves in phase 4
@@ -135,6 +206,15 @@ class CombatantState:
     moved_this_turn: bool = False
     dealt_damage_this_turn: bool = False
     took_damage_this_turn: bool = False
+    # special-combat-situations.md's Forced Retreat: "If you dealt physical
+    # hits and took none". A landed weapon or bare-handed blow, whatever the
+    # armour stopped; spells are not physical hits (tarmar-studio #813).
+    dealt_physical_hit_this_turn: bool = False
+    took_physical_hit_this_turn: bool = False
+    # Enemies this figure was adjacent to when it disengaged (option n) this
+    # turn: a slower one may still strike it, at the adjDEX difference
+    # (special-combat-situations.md, tarmar-studio #777).
+    disengaged_from: list[int] = field(default_factory=list)
     # Post-armour damage taken this turn, as a count. Feeds the profile
     # seam's reaction and retreat mechanics (tarmar_engine.reactions /
     # tarmar_engine.retreat); the Tarmar profile maintains it but keys no
@@ -160,6 +240,13 @@ class CombatantState:
     @position.setter
     def position(self, value: tuple[int, int]) -> None:
         self.q, self.r = value
+
+    @property
+    def weapon_stressed(self) -> bool:
+        """Is the readied weapon stressed? Read-only: the stress is the
+        weapon's own (``WeaponState.stressed``) since v0.9.5, and this name
+        stays for every reader of the old field."""
+        return self.weapon.stressed
 
     @property
     def active(self) -> bool:
@@ -197,6 +284,9 @@ class CombatantState:
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
         self.took_damage_this_turn = False
+        self.dealt_physical_hit_this_turn = False
+        self.took_physical_hit_this_turn = False
+        self.disengaged_from = []
         self.hits_this_turn = 0
         self.retreat_push_targets_this_turn = []
 
@@ -209,6 +299,8 @@ class BattleState:
     turn: int = 0
     next_sequence: int = 1
     combatants: list[CombatantState] = field(default_factory=list)
+    #: Weapons lying on the field (tarmar-studio #780).
+    ground_weapons: list[GroundWeapon] = field(default_factory=list)
 
     def active_combatants(self) -> list[CombatantState]:
         return [combatant for combatant in self.combatants if combatant.active]
@@ -253,10 +345,24 @@ class BattleState:
         for raw_entry in data.get("combatants", []):
             entry = dict(raw_entry)
             weapon = WeaponState(**entry.pop("weapon", {}))
-            combatants.append(CombatantState(weapon=weapon, **entry))
+            # Before v0.9.5 the stress flag sat on the combatant; a snapshot
+            # written then carries it there, and it belongs to the weapon.
+            if entry.pop("weapon_stressed", False):
+                weapon.stressed = True
+            spares = [WeaponState(**spare) for spare in entry.pop("spare_weapons", [])]
+            combatants.append(
+                CombatantState(weapon=weapon, spare_weapons=spares, **entry)
+            )
+        ground = [
+            GroundWeapon(
+                q=lying["q"], r=lying["r"], weapon=WeaponState(**lying["weapon"])
+            )
+            for lying in data.get("ground_weapons", [])
+        ]
         return cls(
             arena_radius=data.get("arena_radius", 8),
             turn=data.get("turn", 0),
             next_sequence=data.get("next_sequence", 1),
             combatants=combatants,
+            ground_weapons=ground,
         )

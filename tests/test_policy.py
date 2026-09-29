@@ -2,7 +2,7 @@
 
 from unittest import TestCase
 
-from tarmar_engine import policy
+from tarmar_engine import actions, policy
 from tarmar_engine.state import BattleState, WeaponState
 
 from .test_state import make_combatant
@@ -194,10 +194,11 @@ class ChooseOptionTest(TestCase):
 
 class GrappleChoiceTest(TestCase):
     def test_engaged_fighter_considers_but_declines_grapple(self):
+        # The target is slower, so "Entering Hand-to-Hand" admits o (#823).
         state = BattleState(
             combatants=[
                 make_combatant(1, q=0, r=0, facing=0),
-                make_combatant(2, q=1, r=0, facing=3),
+                make_combatant(2, q=1, r=0, facing=3, movement_modifier=-1),
             ]
         )
         decision = policy.choose_option(state, state.by_id(1))
@@ -282,7 +283,11 @@ class BeastPolicyTest(TestCase):
             ],
         )
         decision = policy.choose_option(state, state.by_id(1))
-        letters = {candidate.letter for candidate in decision.candidates}
+        # A yielded MOVE/CHARGE/DODGE is the same option moved to Final
+        # Movement (#819); read each back to the option it performs.
+        letters = {
+            actions.base_option(candidate.letter) for candidate in decision.candidates
+        }
         self.assertTrue(letters <= {"a", "b", "c"})
 
     def test_healthy_beast_attacks(self):

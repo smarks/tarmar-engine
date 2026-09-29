@@ -31,16 +31,18 @@ class TarmarForcedRetreatTest(TestCase):
         self.rules = TarmarForcedRetreat()
 
     def test_pusher_eligible_requires_dealt_and_untouched(self):
+        # special-combat-situations.md: "dealt physical hits and took none"
+        # (#813) — the flags are the physical-hit ones now.
         _, first, _ = duel()
         self.assertFalse(self.rules.pusher_eligible(first))
-        first.dealt_damage_this_turn = True
+        first.dealt_physical_hit_this_turn = True
         self.assertTrue(self.rules.pusher_eligible(first))
-        first.took_damage_this_turn = True
+        first.took_physical_hit_this_turn = True
         self.assertFalse(self.rules.pusher_eligible(first))
 
     def test_grappled_pusher_is_exempt(self):
         _, first, _ = duel()
-        first.dealt_damage_this_turn = True
+        first.dealt_physical_hit_this_turn = True
         first.grappling = 2
         self.assertFalse(self.rules.pusher_eligible(first))
 

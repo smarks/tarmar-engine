@@ -43,9 +43,9 @@ modelled here):
   guards this). Grappling (issue #231) instead treats an already-engaged,
   adjacent pair as close enough to attempt and resolve HTH actions in place;
   :func:`figure_locked_by_grapple` is what actually keeps a grappled pair
-  from drifting apart once the attempt lands. Plain standalone unarmed
-  strikes (HTH option t on its own, ``o``'s entry preconditions, and ``u``
-  DRAW DAGGER) remain unimplemented.
+  from drifting apart once the attempt lands. A standalone HTH strike (t)
+  and the grapple attempt (o) both need one of "Entering Hand-to-Hand"'s
+  conditions (``combat_math.hth_entry_reason``).
 """
 
 from __future__ import annotations

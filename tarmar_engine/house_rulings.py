@@ -1,0 +1,294 @@
+"""Numbers and readings the engine uses that no rules page states.
+
+tarmar-studio #826 asked, for each figure the battle engine uses with no
+page behind it, for "Spencer's ruling or a line on the rules page, and then
+a drift test". This module is the engine's record of those: each entry says
+what the engine does, where, and on what authority — a page the pass found,
+or a ruling made under the standing rule (the page as written governs;
+where it is silent, the reading closest to it) and **marked for Spencer**,
+who may overrule any of them. ``tests/test_house_rulings.py`` pins every
+value here to the code that uses it, so a change to either side fails.
+
+The 2026-09-29 pass's own rulings (#776, #779, #813, #814, #816, #821,
+#824) are recorded here too, so every reading the engine makes on the
+pages' silences sits in one place.
+
+The Tarmar-studio adapter's numbers (a beast's 4:7:12 gaits, the one-hex
+floor on a gait, the 50-turn stalemate) live in that repository and are not
+recorded here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+#: Authority for an entry.
+PAGE = "page"
+RULING = "ruling — marked for Spencer"
+TACTIC = "AI tactic, not a rule — marked for Spencer"
+
+
+@dataclass(frozen=True)
+class HouseRuling:
+    """One number or reading, with where it lives and why."""
+
+    key: str
+    reading: str
+    value: Any
+    where: str
+    authority: str
+    issue: str
+
+
+HOUSE_RULINGS: tuple[HouseRuling, ...] = (
+    HouseRuling(
+        "spell_magnitudes",
+        "Spell effects: Fire Missile 1d6, Fire Ball 2d6 to one target (the "
+        "description's area is not modelled), Lightning Bolt 3d6, Heal 1d6 "
+        "Fatigue to the caster only, Fatigue 1d6+1, Wound 1d6 to Body, "
+        "Shield +1 TN, Blur -2 to hit. schools-of-magic.md names the spells "
+        "and levels; no page gives these numbers.",
+        {
+            "fire_missile": "1d6",
+            "fire_ball": "2d6",
+            "lightning_bolt": "3d6",
+            "heal": "1d6",
+            "fatigue": "1d6+1",
+            "wound": "1d6",
+            "shield_tn_bonus": 1,
+            "blur_attacker_penalty": 2,
+        },
+        "tarmar_engine/spells.py SPELLS",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "spell_damage_armour",
+        "Damage from a spell that does not ignore armour is reduced by the "
+        "target's armour stops, as a weapon's is.",
+        True,
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "megahex_step",
+        "One megahex of missile range spans 3 hexes centre to centre "
+        "(movement.md defines the 7-hex megahex, not the step).",
+        3,
+        "tarmar_engine/hexes.py HEXES_PER_MEGAHEX_STEP",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "walk_slow_step",
+        "The phase-4 step of a missile or cast option is at most 2 hexes.",
+        2,
+        "tarmar_engine/engine.py WALK_SLOW_MAX",
+        PAGE + ": movement.md, 'Walk (slow) | Up to 2 hex'",
+        "#826",
+    ),
+    HouseRuling(
+        "preferred_standoff",
+        "An archer or caster uses its phase-4 step to open the range to 3 "
+        "hexes from the nearest enemy.",
+        3,
+        "tarmar_engine/engine.py PREFERRED_STANDOFF",
+        TACTIC,
+        "#826",
+    ),
+    HouseRuling(
+        "plate_cracking_rounding",
+        "Plate-cracking's 'ignores **half** the armour's stops' rounds the "
+        "stops that still apply down (stops // 2), in the attacker's favour.",
+        "stops // 2",
+        "tarmar_rules damage_after_armour; tarmar_engine/resolution.py",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "forced_retreat_physical_hits",
+        "Forced retreat needs physical hits dealt and none taken: a weapon or "
+        "bare-handed blow that gets damage past the armour. A blow the armour "
+        "stops entirely is not one, and spells never are (derived-pools.md "
+        "'normal hits reduce Fatigue'; turn-sequence.md 'dealt damage').",
+        ("dealt_physical_hit_this_turn", "took_physical_hit_this_turn"),
+        "tarmar_engine/retreat.py TarmarForcedRetreat.pusher_eligible",
+        RULING,
+        "#813",
+    ),
+    HouseRuling(
+        "forced_retreat_choice",
+        "The pusher chooses the hex ('any direction') and whether to advance; "
+        "the AI pushes straight back when that hex is clear and advances "
+        "unless it holds a missile weapon.",
+        "policy.choose_retreat",
+        "tarmar_engine/policy.py choose_retreat",
+        PAGE + " (the choice); " + TACTIC + " (the AI's pick)",
+        "#779",
+    ),
+    HouseRuling(
+        "unconscious_caster_spells_end",
+        "An unconscious caster renews nothing, so its continuing spells end "
+        "(read from casting-spells.md's 'Unrenewed spells end immediately.'; "
+        "no page speaks of an unconscious caster).",
+        True,
+        "tarmar_engine/engine.py phase_renew_spells",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "squeeze_defences",
+        "Squeeze strips the held target's shield, Defend stance, DEX dodge "
+        "modifier and Shield-spell TN bonus: the page's 'no Dodge/Defend "
+        "bonus' is read as the DEX dodge, since option c DODGE covers "
+        "missiles only. A third party's blow on a held figure keeps the DEX "
+        "dodge and the spell.",
+        ("shield", "defend stance", "dex dodge", "spell tn bonus"),
+        "tarmar_engine/engine.py grapple_squeeze; combat_math.attack_numbers",
+        RULING,
+        "#826",
+    ),
+    HouseRuling(
+        "one_last_shot_per_engagement",
+        "ONE LAST SHOT is one shot per engagement: taken, it returns only "
+        "after the figure starts a turn disengaged.",
+        1,
+        "tarmar_engine/engine.py missile_attack, _start_of_turn_missile_state",
+        RULING,
+        "#776",
+    ),
+    HouseRuling(
+        "critical_modifier_once",
+        "A critical rolls the damage dice twice and adds the modifier once; "
+        "a confirmed severe critical's 'triple damage' rolls the dice three "
+        "times, modifier once.",
+        {"critical_dice_rolls": 2, "severe_dice_rolls": 3, "modifier_counts": 1},
+        "tarmar_engine/engine.py resolve_attack; combat_math.expected_damage",
+        RULING,
+        "#824",
+    ),
+    HouseRuling(
+        "stressed_weapon_second_fumble",
+        "A stressed weapon breaks on any second fumble; an off-balance result "
+        "on that fumble applies as well.",
+        True,
+        "tarmar_engine/engine.py apply_fumble",
+        RULING,
+        "#814",
+    ),
+    HouseRuling(
+        "mana_on_failure",
+        "A spell's mana is spent on success, on a 17 ('mana lost') and on an "
+        "18 (Runaway 'drains mana equal to original casting cost'); every "
+        "other failure keeps it.",
+        frozenset({17, 18}),
+        "tarmar_engine/engine.py CASTING_MANA_LOST_ROLLS",
+        RULING,
+        "#816",
+    ),
+    HouseRuling(
+        "grappled_casting_mastery",
+        "In a grapple, holder and held alike, a spell is cast only at Spell "
+        "Mastery 3 (no gestures and no words) and renewed at 2 or better; "
+        "either side is offered its Mastery 3 casts.",
+        {"cast": 3, "renew": 2},
+        "tarmar_engine/engine.py cast_spell, phase_renew_spells",
+        RULING + " (cast: the grappling page's 'no hand gestures and no "
+        "verbal component'; the HTH table's 'no-gesture spell' would allow 2)",
+        "#821",
+    ),
+    HouseRuling(
+        "engagers_are_armed_standing",
+        "Only an armed, standing enemy engages: a held weapon or a beast's "
+        "natural ones, any weapon including a bow.",
+        True,
+        "tarmar_engine/combat_math.py engages",
+        PAGE + ": movement.md 'armed enemy'; " + RULING + " (beasts are armed)",
+        "#820",
+    ),
+    HouseRuling(
+        "pick_up_when_disengaged",
+        "PICK UP WEAPON is offered disengaged as well as engaged.",
+        True,
+        "tarmar_engine/actions.py legal_actions",
+        PAGE + ": movement.md Stand Still row lists 'Pick Up Weapon'",
+        "#780",
+    ),
+    HouseRuling(
+        "thrown_weapon_lands",
+        "A thrown weapon lands in its target's hex, hit or miss.",
+        "target hex",
+        "tarmar_engine/engine.py missile_attack",
+        RULING,
+        "#812",
+    ),
+    HouseRuling(
+        "reload_alongside_other_options",
+        "A crossbow reloads over the turns its note names while the figure "
+        "takes other options.",
+        True,
+        "tarmar_engine/engine.py _start_of_turn_missile_state",
+        RULING,
+        "#781",
+    ),
+    HouseRuling(
+        "slower_enemy_strikes_disengager",
+        "A slower enemy that was adjacent when a figure disengaged, and that "
+        "chose to attack it, strikes it a hex away at the adjDEX gap.",
+        "target.dexterity - attacker.dexterity",
+        "tarmar_engine/engine.py _strike_at_disengager",
+        PAGE + ": special-combat-situations.md; " + RULING + " (who qualifies)",
+        "#777",
+    ),
+)
+
+
+HOUSE_RULINGS += (
+    HouseRuling(
+        "dodge_closes_on_missile_threat",
+        "DODGE's 'Jog or less' is spent closing on the nearest enemy holding "
+        "a missile weapon; with none, the dodger stands.",
+        "nearest missile threat",
+        "tarmar_engine/policy.py choose_option (letter c)",
+        TACTIC,
+        "#819",
+    ),
+    HouseRuling(
+        "arena_edge_is_a_wall",
+        "The open arena's edge is the only wall: a target whose rear hex lies "
+        "outside the arena has its back to the wall for HTH entry.",
+        "rear hex outside the arena",
+        "tarmar_engine/combat_math.py hth_entry_reason",
+        RULING,
+        "#823",
+    ),
+    HouseRuling(
+        "hth_by_agreement",
+        "'or they simply agree' is read off the board: an enemy that has "
+        "itself chosen ATTEMPT HTH or an HTH strike at the actor this turn, "
+        "or two bare-handed figures, enter hand-to-hand; bare hands against "
+        "an armed figure keep the entry conditions. Once in, the pair need no "
+        "condition until they part, and a partner striking with bare hands or "
+        "a dagger (t) takes the HTH +4; an armed partner keeps its weapon at "
+        "its normal bonus. Whether an armed partner must drop to bare hands or "
+        "a dagger in hand-to-hand is carried to tarmar-studio #867.",
+        ("they close in too", "both bare-handed"),
+        "tarmar_engine/combat_math.py hth_entry_reason; engine.py _enter_hth",
+        RULING,
+        "#867",
+    ),
+)
+
+
+def ruling(key: str) -> HouseRuling:
+    """Look one entry up by key.
+
+    Raises:
+        KeyError: for a key no entry carries.
+    """
+    for entry in HOUSE_RULINGS:
+        if entry.key == key:
+            return entry
+    raise KeyError(key)
