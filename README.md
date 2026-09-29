@@ -179,6 +179,66 @@ wizard to 0 ST — hiding a legal cast behind the AI's caution would offer less
 than the queue accepts. `ai.cast_st_for` is the one affordability rule both
 read.
 
+## The battle-rules pass (v0.9.5)
+
+tarmar-studio #776–#826 (and #867's agreement rule) held the Tarmar profile
+to its rules pages. A v0.9.4 snapshot still loads. **An adapter that fills
+none of the new fields does not play as before**: these changes take effect
+on the default path, with no field set:
+
+- bare-handed figures have no plain attack (`j`/`b`); they fight through
+  HTH (`t`), which needs an entry condition, except that two bare-handed
+  figures, or an enemy closing on you, enter it by agreement (#815, #823,
+  #867). Inside hand-to-hand only a partner using bare hands or a dagger
+  strikes at +4; an armed partner keeps its weapon at its normal bonus,
+  and whether it must drop to `t` is carried to tarmar-studio #867;
+- an engaged figure holding a bow gets One Last Shot (`l`), not a bow-club
+  `j` (#776, #815);
+- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823);
+- a forced retreat pushes into any clear hex, the save only when none is
+  clear (#779); a push needs damage past the armour, never a spell (#813);
+- the injury band applies to initiative and the retreat save (#817);
+- a critical adds the damage modifier once (#824);
+- a dropped weapon lies in its hex and the figure picks it up (`q`) (#780);
+- a second fumble on a stressed weapon breaks it whatever the roll (#814);
+- off-balance is spent by the next action, whatever it is (#811);
+- mana is kept on an ordinary failed cast (#816);
+- prone and unarmed enemies do not engage (#820);
+- a slower enemy strikes a disengaging figure at the adjDEX gap (#777);
+- an unconscious caster's spells end (#826);
+- the menu gains yielded movement, DODGE jogs toward a missile threat, and
+  DROP is offered (#819).
+
+Pinning 0.9.5 in tarmar-studio (at 4e3aee2) fails 22 of its tests, each
+because it pinned one of these changes. 17 are the studio's copies of engine
+tests (draw dagger unimplemented, #822; crit expectations, #824; retreat
+setups, #813/#779; grapple setups, #823; the engaged archer defending,
+#776; the beast and grapple menus, #819/#823). Two control-mode grapple
+tests and a dice-fidelity grapple test need an HTH entry condition in
+their setup (#823). The dice-fidelity blocked retreat needs its victim
+boxed in (#779). The seed-42 golden battle's hash moves: it ends at turn
+61, not 143, and its first changed decision is an archer no longer engaged
+by a bare-handed figure (#820/#815).
+
+What a consuming game now fills in:
+
+| Field | What it carries |
+|---|---|
+| `move_run` / `move_sprint` | the gait distances; **0 bars the gait** (chainmail, a Medium load: "Cannot Run or Sprint"). `move_sprint` defaults to 0. |
+| `movement_modifier` | movement.md's modifier, read by the HTH entry condition "lower movement modifier" |
+| `spare_weapons`, `weapon_skills` | weapons carried but not in hand, and the figure's effective Weapon-skill level with each weapon by `item_id` |
+| `spell_mastery` | Spell Mastery level per spell key (a grappled caster renews at 2+, casts at 3+) |
+| `WeaponState.hth_usable` | a dagger (HTH strikes, DRAW DAGGER) |
+| `WeaponState.double_shot_dex` / `reload_turns` / `quick_reload_*` | missile rates; `tarmar_engine.weapons.missile_rate_from_note` reads them off weapons.md's Notes cell |
+
+The menu (`policy.choose_option`'s candidates) is the legal menu, and gains
+keys a manual player can pick: `sprint`, the yielded movers (`a_yield`,
+`sprint_yield`, `b_yield`, `c_yield`), `d`, `e`, `l`, `m`, `q`, standalone
+`t`, and `u` for a held figure. `run_turn` takes an optional
+`choose_retreat` for the pusher's forced-retreat choices.
+`tarmar_engine.house_rulings` records every reading the engine makes where a
+page is silent, each marked for Spencer.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

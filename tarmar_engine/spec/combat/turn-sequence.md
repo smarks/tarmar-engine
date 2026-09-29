@@ -7,7 +7,7 @@
 | 3     | **Initial Movement** | Initiative order           | Move or yield; movement stops upon engagement              |
 | 4     | **Final Movement**   | Initiative order           | Those who yielded now move                                 |
 | 5     | **Actions**          | adjDEX (high→low)          | Execute chosen action                                      |
-| 6     | **Forced Retreat**   | —                          | Those who dealt damage and took none may push enemies back |
+| 6     | **Forced Retreat**   | —                          | Those who dealt physical hits (damage past the armour) and took none may push enemies back |
 
 Each combatant rolls their own initiative: 1d6 plus their adjDEX modifier,
 rerolled every turn. Phases 3 and 4 run in descending order of that total;
