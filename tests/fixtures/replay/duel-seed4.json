@@ -1,0 +1,789 @@
+[
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 1,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 2,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 1,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Aldo initiative 1d6: [2] +1 = 3"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 3,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 0,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Brin initiative 1d6: [3] = 3"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 4,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    1,
+    2
+   ]
+  },
+  "message": "Movement order: Aldo, Brin"
+ },
+ {
+  "turn": 1,
+  "phase": 2,
+  "sequence": 5,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 6,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 7,
+  "event_type": "decision",
+  "actor": "Aldo",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 3.308,
+    "score_text": "3.308",
+    "rationale": "Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Aldo chooses ATTACK (j): Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 8,
+  "event_type": "decision",
+  "actor": "Brin",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.572,
+    "score_text": "2.572",
+    "rationale": "Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Brin chooses ATTACK (j): Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572"
+ },
+ {
+  "turn": 1,
+  "phase": 4,
+  "sequence": 9,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 10,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 11,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    4
+   ],
+   "modifier": 1,
+   "total": 5,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Aldo attack 1d20: [4] +1 = 5 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 12,
+  "event_type": "action",
+  "actor": "Aldo",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 11,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Aldo attacks Brin with Broadsword at 1 hex (d20 +1 vs TN 13): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 13,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    13
+   ],
+   "modifier": 0,
+   "total": 13,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Brin attack 1d20: [13] = 13 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 14,
+  "event_type": "action",
+  "actor": "Brin",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 13,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 14
+  },
+  "message": "Brin attacks Aldo with Broadsword at 1 hex (d20 +0 vs TN 14): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 6,
+  "sequence": 15,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 16,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 17,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    4
+   ],
+   "modifier": 1,
+   "total": 5,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Aldo initiative 1d6: [4] +1 = 5"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 18,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 0,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Brin initiative 1d6: [2] = 2"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 19,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    1,
+    2
+   ]
+  },
+  "message": "Movement order: Aldo, Brin"
+ },
+ {
+  "turn": 2,
+  "phase": 2,
+  "sequence": 20,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 21,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 22,
+  "event_type": "decision",
+  "actor": "Aldo",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 3.308,
+    "score_text": "3.308",
+    "rationale": "Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Aldo chooses ATTACK (j): Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 23,
+  "event_type": "decision",
+  "actor": "Brin",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.572,
+    "score_text": "2.572",
+    "rationale": "Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Brin chooses ATTACK (j): Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572"
+ },
+ {
+  "turn": 2,
+  "phase": 4,
+  "sequence": 24,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 25,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 26,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Aldo attack 1d20: [3] +1 = 4 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 27,
+  "event_type": "action",
+  "actor": "Aldo",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 26,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Aldo attacks Brin with Broadsword at 1 hex (d20 +1 vs TN 13): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 28,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    3
+   ],
+   "modifier": 0,
+   "total": 3,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Brin attack 1d20: [3] = 3 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 29,
+  "event_type": "action",
+  "actor": "Brin",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 28,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 14
+  },
+  "message": "Brin attacks Aldo with Broadsword at 1 hex (d20 +0 vs TN 14): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 30,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 31,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 32,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Aldo initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 33,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    4
+   ],
+   "modifier": 0,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Brin initiative 1d6: [4] = 4"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 34,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    2,
+    1
+   ]
+  },
+  "message": "Movement order: Brin, Aldo"
+ },
+ {
+  "turn": 3,
+  "phase": 2,
+  "sequence": 35,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 36,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 37,
+  "event_type": "decision",
+  "actor": "Brin",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.572,
+    "score_text": "2.572",
+    "rationale": "Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Brin chooses ATTACK (j): Strike Aldo: Broadsword at 1 hex, d20 +0 vs TN 14 — P(hit) 0.350 (7 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.572"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 38,
+  "event_type": "decision",
+  "actor": "Aldo",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 3.308,
+    "score_text": "3.308",
+    "rationale": "Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Aldo chooses ATTACK (j): Strike Brin: Broadsword at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.308"
+ },
+ {
+  "turn": 3,
+  "phase": 4,
+  "sequence": 39,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 40,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 41,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    18
+   ],
+   "modifier": 1,
+   "total": 19,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Aldo attack 1d20: [18] +1 = 19 vs TN 13 (need 13+) — hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 42,
+  "event_type": "action",
+  "actor": "Aldo",
+  "payload": {
+   "target": 2,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 41,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Aldo attacks Brin with Broadsword at 1 hex (d20 +1 vs TN 13): hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 43,
+  "event_type": "roll",
+  "actor": "Aldo",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    3,
+    1
+   ],
+   "modifier": 0,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Aldo damage 2d6: [3, 1] = 4"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 44,
+  "event_type": "damage",
+  "actor": "Aldo",
+  "payload": {
+   "target": 2,
+   "net": 4,
+   "raw": 4,
+   "stopped": 0,
+   "fatigue": 36,
+   "body": 27,
+   "chain": [
+    41,
+    43
+   ]
+  },
+  "message": "Brin takes 4 damage (4 rolled less 0 stopped by armour; fatigue 36/40)"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 45,
+  "event_type": "roll",
+  "actor": "Brin",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    8
+   ],
+   "modifier": 0,
+   "total": 8,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Brin attack 1d20: [8] = 8 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 46,
+  "event_type": "action",
+  "actor": "Brin",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 45,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 14
+  },
+  "message": "Brin attacks Aldo with Broadsword at 1 hex (d20 +0 vs TN 14): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 47,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 48,
+  "event_type": "movement",
+  "actor": "Aldo",
+  "payload": {
+   "victim": 2,
+   "victim_to": [
+    2,
+    0
+   ],
+   "pusher_to": [
+    1,
+    0
+   ]
+  },
+  "message": "Aldo forces Brin back a hex and advances"
+ }
+]
