@@ -460,11 +460,24 @@ class UnconsciousnessAndDeathTest(TestCase):
             self.assertNotEqual(event["actor"], dead_name)
 
 
+def _box_in(state, *cells):
+    """Fill the rim victim's two open side hexes, so no retreat hex is left.
+
+    These tests put the victim on the rim so the hex straight behind is off
+    the arena. Until tarmar-studio #779 that alone left "no retreat hex";
+    the rule pushes "in any direction", so the side hexes are filled too.
+    """
+    for offset, cell in enumerate(cells):
+        state.combatants.append(
+            make_combatant(90 + offset, q=cell[0], r=cell[1], team="walls")
+        )
+
+
 class ForcedRetreatTest(TestCase):
     def test_push_back_and_advance(self):
         state = duel_state()
         pusher, victim = state.by_id(1), state.by_id(2)
-        pusher.dealt_damage_this_turn = True
+        pusher.dealt_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
@@ -478,7 +491,8 @@ class ForcedRetreatTest(TestCase):
         pusher, victim = state.by_id(1), state.by_id(2)
         victim.position = (6, 0)  # on the arena rim
         pusher.position = (5, 0)
-        pusher.dealt_damage_this_turn = True
+        _box_in(state, (6, -1), (5, 1))
+        pusher.dealt_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
@@ -491,7 +505,8 @@ class ForcedRetreatTest(TestCase):
         pusher, victim = state.by_id(1), state.by_id(2)
         victim.position = (6, 0)
         pusher.position = (5, 0)
-        pusher.dealt_damage_this_turn = True
+        _box_in(state, (6, -1), (5, 1))
+        pusher.dealt_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[2, 2, 2]]), events.append)
@@ -502,8 +517,8 @@ class ForcedRetreatTest(TestCase):
     def test_taking_damage_forfeits_the_push(self):
         state = duel_state()
         pusher = state.by_id(1)
-        pusher.dealt_damage_this_turn = True
-        pusher.took_damage_this_turn = True
+        pusher.dealt_physical_hit_this_turn = True
+        pusher.took_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
@@ -523,6 +538,9 @@ class GrappleAttemptTest(TestCase):
         state = duel_state()
         attacker = state.by_id(1)
         attacker.chosen_target = 2
+        # "Entering Hand-to-Hand" needs a way in (#823): the defender is the
+        # slower figure. Movement modifier touches no roll these tests pin.
+        state.by_id(2).movement_modifier = -1
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(faces_queue), events.append)
         runner.attempt_grapple(attacker)
@@ -600,6 +618,7 @@ class GrappleAttemptTest(TestCase):
         state = duel_state()
         attacker = state.by_id(1)
         attacker.chosen_target = 2
+        state.by_id(2).movement_modifier = -1  # a way in (#823)
         attacker.fatigue = 3
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[10]]), events.append)
@@ -614,6 +633,7 @@ class GrappleAttemptTest(TestCase):
         state = duel_state()
         attacker = state.by_id(1)
         attacker.chosen_target = 2
+        state.by_id(2).movement_modifier = -1  # a way in (#823)
         attacker.fatigue = 3  # -2 band
         attacker.off_balance = True  # -2, and spent by the attempt
         events = []
@@ -1365,6 +1385,9 @@ class ActionPhaseRemapTest(TestCase):
         archer = state.by_id(1)
         archer.chosen_letter = "f"
         archer.chosen_target = 2
+        # This engagement's One Last Shot is already spent (#776), so an
+        # archer caught before loosing still defends.
+        archer.last_shot_spent = True
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
         runner.missile_attack(archer)
@@ -1568,7 +1591,7 @@ class MultiHexFigureTest(TestCase):
             ],
         )
         pusher = state.by_id(1)
-        pusher.dealt_damage_this_turn = True
+        pusher.dealt_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
@@ -1588,7 +1611,7 @@ class MultiHexFigureTest(TestCase):
             ],
         )
         pusher = state.by_id(1)
-        pusher.dealt_damage_this_turn = True
+        pusher.dealt_physical_hit_this_turn = True
         pusher.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)

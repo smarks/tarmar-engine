@@ -5,11 +5,13 @@ through unhurt shove that enemy back one hex — but the eligibility and the
 blocked-hex outcome differ, so this is a profile hook rather than shared
 code:
 
-* :class:`TarmarForcedRetreat` — special-combat-situations.md, unchanged
-  from the pre-seam engine: eligibility is dealt-any-damage-and-took-none,
-  the victim is the turn's chosen target, and a victim with no retreat hex
-  rolls 3d6 ≤ DEX or falls prone. The TurnRunner keeps doing the pushing
-  and event emission; this class supplies the decisions.
+* :class:`TarmarForcedRetreat` — special-combat-situations.md: eligibility
+  is "dealt physical hits and took none", the victim is the turn's chosen
+  target, it may be pushed "back 1 hex in any direction" (any clear
+  neighbour, :meth:`TarmarForcedRetreat.retreat_hexes`), and only a victim
+  with no clear hex at all rolls 3d6 ≤ DEX or falls prone. The TurnRunner
+  keeps doing the pushing and event emission, and asks its retreat chooser
+  which hex and whether to advance; this class supplies the rules.
 * :class:`MeleeStyleForcedRetreat` — melee's structural mechanics
   (``engine/state.py`` ``_ForceRetreatMixin``): only *melee* damage arms a
   push, per specific target hit (a missile or thrown hit never does), each
@@ -56,9 +58,19 @@ class ForcedRetreatRules:
         """Whom the eligible pusher shoves, or ``None``."""
         raise NotImplementedError
 
+    def retreat_hexes(
+        self,
+        state: BattleState,
+        pusher: CombatantState,
+        victim: CombatantState,
+    ) -> list[tuple[int, int]]:
+        """Every hex the victim may be pushed into, best first; empty when
+        it is blocked in and must take the save."""
+        raise NotImplementedError
+
 
 class TarmarForcedRetreat(ForcedRetreatRules):
-    """The six-phase engine's phase-6 semantics, verbatim."""
+    """The six-phase engine's phase-6 semantics (special-combat-situations.md)."""
 
     #: A victim with no clear retreat hex rolls this to keep its feet…
     blocked_save_dice: str = "3d6"
@@ -68,14 +80,59 @@ class TarmarForcedRetreat(ForcedRetreatRules):
         return victim.dexterity
 
     def pusher_eligible(self, combatant: CombatantState) -> bool:
-        """Dealt damage this turn, took none, and is not in a grapple.
+        """Dealt physical hits this turn, took none, and is not in a grapple.
 
+        special-combat-situations.md: "If you dealt physical hits and took
+        none". A physical hit is a weapon or bare-handed blow that gets
+        damage past the armour; a blow the armour stops entirely is not one,
+        and neither is a spell (tarmar-studio #813 — coordinator's ruling
+        under the standing rule, reading derived-pools.md's "normal hits
+        reduce Fatigue" and turn-sequence.md's "dealt damage"; Spencer may
+        overrule).
         hand-to-hand-and-grappling.md exempts both sides of a hold: there is
         no hex to push someone into while you're holding them.
         """
         if hexes.figure_locked_by_grapple(combatant.grappled_by, combatant.grappling):
             return False
-        return combatant.dealt_damage_this_turn and not combatant.took_damage_this_turn
+        return (
+            combatant.dealt_physical_hit_this_turn
+            and not combatant.took_physical_hit_this_turn
+        )
+
+    def retreat_hexes(
+        self,
+        state: BattleState,
+        pusher: CombatantState,
+        victim: CombatantState,
+    ) -> list[tuple[int, int]]:
+        """Every hex the victim may be pushed into, best first.
+
+        "Push enemy back 1 hex in any direction": any neighbour of the
+        victim's hex where its whole footprint lands clear and in the arena
+        (tarmar-studio #779). Ordered straight back first — the one hex the
+        engine used to try — then farthest from the pusher, then direction
+        order, so the default choice is the old push wherever that was open.
+        """
+        occupied = state.occupied_hexes() - set(victim.footprint)
+        straight_back = hexes.add(
+            victim.position, hexes.direction_towards(pusher.position, victim.position)
+        )
+
+        def fits(anchor: tuple[int, int]) -> bool:
+            return all(
+                cell not in occupied and hexes.in_arena(cell, state.arena_radius)
+                for cell in hexes.footprint(anchor, victim.facing, victim.size_hexes)
+            )
+
+        clear = [cell for cell in hexes.neighbors(victim.position) if fits(cell)]
+        return sorted(
+            clear,
+            key=lambda cell: (
+                cell != straight_back,
+                -hexes.distance(pusher.position, cell),
+                hexes.neighbors(victim.position).index(cell),
+            ),
+        )
 
     def victim_of(
         self, state: BattleState, combatant: CombatantState

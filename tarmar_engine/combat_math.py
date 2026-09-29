@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import hexes
+from . import hexes, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .spells import get_spell
@@ -59,12 +59,83 @@ def figures_adjacent(a: CombatantState, b: CombatantState) -> bool:
     return hexes.figures_adjacent(a.footprint, b.footprint)
 
 
+def engages(enemy: CombatantState) -> bool:
+    """Can ``enemy`` engage anyone? movement.md: "In an armed enemy's front
+    hex" — so armed (a weapon in hand, or a beast's natural ones) — and a
+    prone figure has no front hexes ("Prone/crawling: All hexes count as
+    rear"). tarmar-studio #820."""
+    return enemy.active and not enemy.prone and weapons.is_armed(enemy)
+
+
 def is_engaged(state: BattleState, actor: CombatantState) -> bool:
-    """Is ``actor`` engaged per movement.md's table, footprints included?"""
+    """Is ``actor`` engaged per movement.md's table, footprints included?
+
+    Only enemies that :func:`engages` count. The Tarmar engagement seam
+    (``engagement.TarmarEngagement``) reads this same function, so the AI's
+    menu and the engine's movement stop cannot disagree.
+    """
     enemies = [
-        (enemy.front_hexes, enemy.size_hexes) for enemy in state.enemies_of(actor)
+        (enemy.front_hexes, enemy.size_hexes)
+        for enemy in state.enemies_of(actor)
+        if engages(enemy)
     ]
     return hexes.figure_engaged(actor.footprint, actor.size_hexes, enemies)
+
+
+def hth_entry_reason(
+    state: BattleState, actor: CombatantState, target: CombatantState
+) -> str | None:
+    """Why ``actor`` may enter HTH with ``target``, or ``None`` if it may not.
+
+    hand-to-hand-and-grappling.md, "Entering Hand-to-Hand": "only if one of
+    these holds: the enemy has their back to a wall, is down/prone/kneeling,
+    has a lower movement modifier than you, you're attacking from their
+    rear, or they simply agree" (tarmar-studio #823). The open arena's only
+    wall is its edge: a target whose rear hex lies outside the arena has its
+    back to it. Kneeling is not a state the engine keeps.
+
+    Agreement (#867, coordinator's ruling under the standing rule; Spencer
+    may overrule) is read off the board in two cases: an enemy that has
+    itself chosen to close with the actor this turn (ATTEMPT HTH or an HTH
+    strike aimed at it), and two bare-handed figures, whose only fighting
+    is hand-to-hand. A bare-handed figure against an armed one keeps the
+    conditions. A pair already in hand-to-hand needs none; a partner that
+    strikes with bare hands or a dagger (t) takes the HTH +4, while an armed
+    partner keeps its weapon at its normal bonus (whether it must drop to
+    t is carried to tarmar-studio #867).
+    """
+    if not figures_adjacent(actor, target):
+        return None
+    if target.combatant_id in actor.hth_with:
+        return "already in hand-to-hand"
+    if target.prone:
+        return "they are down"
+    if hexes.arc_of(target.position, target.facing, actor.position) == "rear":
+        return "from their rear"
+    behind = hexes.add(target.position, (target.facing + 3) % 6)
+    if not hexes.in_arena(behind, state.arena_radius):
+        return "their back is to the wall"
+    if target.movement_modifier < actor.movement_modifier:
+        return "they are slower"
+    if (
+        target.chosen_letter in ("o", "t")
+        and target.chosen_target == actor.combatant_id
+    ):
+        return "they close in too"
+    if _bare_handed(actor) and _bare_handed(target):
+        return "both bare-handed"
+    return None
+
+
+def _bare_handed(combatant: CombatantState) -> bool:
+    return not combatant.is_beast and combatant.weapon.item_id == ""
+
+
+def bare_handed_expression(combatant: CombatantState) -> str:
+    """special-combat-situations.md's Bare-Handed Damage at the figure's STR."""
+    from .state import bare_handed_damage
+
+    return bare_handed_damage(combatant.strength)
 
 
 def spell_tn_bonus(defender: CombatantState) -> int:
@@ -114,7 +185,9 @@ def attack_numbers(
       action, whatever the attacker's readied-weapon skill level.
     * ``ignore_defender_bonuses`` drops the defender's shield, active-spell
       TN bonus, dodge modifier, and Defend/Dodge state — a Squeeze target
-      "gets no Dodge/Defend bonus against it — they're already held."
+      "gets no Dodge/Defend bonus against it — they're already held." DODGE
+      (c) covers missiles only, so the line is read as the DEX dodge
+      (tarmar-studio #826, coordinator's ruling; Spencer may overrule).
 
     A fifth is not an override at all but a fact read off the defender: a
     defender whose ``grappled_by`` is set loses its shield and its
@@ -129,10 +202,14 @@ def attack_numbers(
 
     range_penalty = 0
     if ranged:
-        if attacker.weapon.is_missile:
-            range_penalty = hexes.missile_range_penalty(distance)
-        else:
+        # A throwable weapon thrown — a dagger, a javelin, a thrown rock,
+        # whatever row of the matrix it resolves on — takes dex-adjustments.md's
+        # "Range (Thrown Weapons): −1 to hit per hex"; bows, slings and
+        # crossbows take the megahex table (tarmar-studio #812).
+        if attacker.weapon.is_thrown:
             range_penalty = hexes.thrown_range_penalty(distance)
+        else:
+            range_penalty = hexes.missile_range_penalty(distance)
     situational += range_penalty
     if not ignore_defender_bonuses:
         situational -= spell_attacker_penalty(defender)
@@ -211,11 +288,13 @@ def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -
     below the stops but still gets damage through on high rolls, and an AI
     scoring with a clamped mean would (wrongly) never attack heavy armour.
     ``repetitions`` models a critical's multiple damage rolls — the dice
-    multiply, armour comes off the summed total once (§7/§8).
+    multiply, the damage modifier counts once, and armour comes off the
+    summed total once (attack-rolls.md: "roll the weapon's damage dice
+    **twice**"; tarmar-studio #824).
     """
     count, sides, modifier = parse_dice_expression(expression)
     distribution = _sum_distribution(count * repetitions, sides)
-    total_modifier = modifier * repetitions - stops_applied
+    total_modifier = modifier - stops_applied
     return sum(
         max(0, total + total_modifier) * probability
         for total, probability in distribution.items()

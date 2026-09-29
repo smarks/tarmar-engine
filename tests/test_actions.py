@@ -10,9 +10,11 @@ class ImplementedLettersTest(TestCase):
         self.assertLessEqual({"o", "t", "v"}, actions.IMPLEMENTED)
         self.assertLessEqual(actions.IMPLEMENTED, set(actions.ALL_OPTIONS))
 
-    def test_draw_dagger_remains_unimplemented(self):
-        # Equipment-ready state the simulator does not model, same as e/m/q.
-        self.assertNotIn("u", actions.IMPLEMENTED)
+    def test_draw_dagger_is_implemented(self):
+        # Was test_draw_dagger_remains_unimplemented, which pinned the gap
+        # tarmar-studio #822 reports ("no DRAW DAGGER option either"): u now
+        # readies a drawn dagger for Strike Back, with e/m/q beside it (#780).
+        self.assertIn("u", actions.IMPLEMENTED)
 
 
 class GrappleActionDictsTest(TestCase):

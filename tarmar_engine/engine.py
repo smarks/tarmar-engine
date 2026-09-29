@@ -34,26 +34,33 @@ Phase map (turn-sequence.md):
 Rules gaps deliberately noted rather than invented: bleeding from a severe
 critical is reported as a status event but not ticked (the rules publish no
 rate — same stance as ``tarmar_rules``'s report-only flags), and
-casting's "very low and very high rolls have special effects — your GM will
-tell you" (casting-spells.md) has no table to implement. The grapple
-sub-flow (option o and the grapple-only t/v — ``tarmar_engine.actions``
-module docstring) never literally shares a hex with the enemy the way
-"Entering Hand-to-Hand" describes; it treats an already-adjacent, engaged
-pair as HTH range instead, since merging footprints would break every
-occupied-hex invariant the rest of the engine relies on. Casting while
-grappled is refused outright rather than modelled against Spell Mastery
-levels the engine does not track (``battle.policy`` module docstring).
+mana-pool.md's special casting results beyond the 16–18 failure verdict
+(Runaway, the 3–5 bonus effects) are not modelled (tarmar-studio #825).
+HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
+literally shares a hex with the enemy the way "Entering Hand-to-Hand"
+describes; it treats an adjacent pair as HTH range instead, since merging
+footprints would break every occupied-hex invariant the rest of the engine
+relies on. A caster in a grapple casts only a spell known at Spell Mastery 3
+and renews only one known at 2 or better (``CombatantState.spell_mastery``).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
-from . import combat_math, hexes
+from . import actions, combat_math, hexes, policy, weapons
 from . import resolution as combat
+from .dice import parse_dice_expression
 from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, get_spell
-from .state import BattleState, CombatantState, WeaponState, bare_handed_damage
+from .state import (
+    BattleState,
+    CombatantState,
+    GroundWeapon,
+    WeaponState,
+    bare_handed_damage,
+)
 
 # turn-sequence.md phase table: number -> name. Drift-guarded against the
 # markdown by battle/tests/test_rules_drift.py.
@@ -74,14 +81,40 @@ SPRINT_FATIGUE_COST = 6
 # (fumble/bad fumble/catastrophic), regardless of the caster's attribute.
 # The low-end 3-5 specials are GM-flavour narration only and do not change
 # the success/failure verdict (Spencer's ruling on #292's scope) — the
-# engine tracks none of Runaway's or mana-loss's state.
+# engine tracks none of Runaway's state (tarmar-studio #825).
 CASTING_FUMBLE_ROLL_FLOOR = 16
+
+# mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative effect",
+# and 18 "triggers Runaway", whose first effect (runaway.md) is that the
+# "Spell drains mana equal to original casting cost". Those are the failures
+# the pages say cost mana: a spell's mana is paid when it succeeds or on a
+# 17 or 18, and any other failure keeps it (tarmar-studio #816,
+# coordinator's ruling under the standing rule; Spencer may overrule).
+# Runaway's later turns are not modelled (#825).
+CASTING_MANA_LOST_ROLLS = frozenset({17, 18})
+
+# Gait by movement option: the gait each phase-3/4 mover moves at
+# (movement.md's Speed table; action-options.md's Move column). DODGE is
+# "Jog or less" and moves toward the missile threat it dodges (#819).
+MOVEMENT_GAITS: dict[str, str] = {
+    "a": "run",
+    "sprint": "sprint",
+    "b": "jog",
+    "c": "jog",
+}
+GAIT_FATIGUE_COSTS: dict[str, int] = {
+    "run": RUN_FATIGUE_COST,
+    "sprint": SPRINT_FATIGUE_COST,
+}
 
 # Distance archers/casters try to keep open with their phase-4 adjustment.
 PREFERRED_STANDOFF = 3
 WALK_SLOW_MAX = 2
 
 EventSink = Callable[[dict], None]
+#: Chooses a forced retreat's hex and whether the pusher advances:
+#: ``(state, pusher, victim, hexes, may_advance) -> RetreatChoice``.
+RetreatChooser = Callable[..., "policy.RetreatChoice"]
 
 
 class TurnRunner:
@@ -99,12 +132,21 @@ class TurnRunner:
         roller,
         sink: EventSink,
         profile: RulesProfile | None = None,
+        choose_retreat: RetreatChooser | None = None,
     ) -> None:
         self.state = state
         self.roller = roller
         self.sink = sink
         self.profile = profile or TARMAR
         self.phase = 0
+        # special-combat-situations.md lets the pusher choose the retreat hex
+        # and whether to advance (#779); the default is the AI's choice.
+        self.choose_retreat = choose_retreat or policy.choose_retreat
+        # The combatant whose phase-5 action is being taken off-balance: the
+        # fumble's "−2 to your next action" lands on that one action, whatever
+        # it is, and is spent by it (#811).
+        self._off_balance_actor: int | None = None
+        self._acting = False
 
     # ------------------------------------------------------------------ events
     def emit(
@@ -260,6 +302,7 @@ class TurnRunner:
         self.state.turn += 1
         for combatant in self.state.combatants:
             combatant.reset_for_turn()
+        self._start_of_turn_missile_state()
 
         order = self.phase_initiative()
         self.phase_renew_spells()
@@ -268,7 +311,29 @@ class TurnRunner:
         self.phase_actions()
         self.phase_forced_retreat()
 
-    # Phase 1 -----------------------------------------------------------------
+    def _start_of_turn_missile_state(self) -> None:
+        """A crossbow comes a turn closer to loaded; a figure that starts the
+        turn disengaged has a fresh One Last Shot for its next engagement."""
+        for combatant in self.state.combatants:
+            # The weapon in hand is reloaded; one slung or on the ground is not.
+            if combatant.weapon.reload_turns_left > 0:
+                combatant.weapon = replace(
+                    combatant.weapon,
+                    reload_turns_left=combatant.weapon.reload_turns_left - 1,
+                )
+            if combatant.active and not self.profile.engagement.is_engaged(
+                self.state, combatant
+            ):
+                combatant.last_shot_spent = False
+            # Hand-to-hand lasts while the pair stays adjacent and fighting.
+            combatant.hth_with = [
+                other_id
+                for other_id in combatant.hth_with
+                if combatant.active
+                and self.state.by_id(other_id).active
+                and combat_math.figures_adjacent(combatant, self.state.by_id(other_id))
+            ]
+
     def phase_initiative(self) -> list[CombatantState]:
         self.begin_phase(
             1,
@@ -277,11 +342,14 @@ class TurnRunner:
         )
         rolls: dict[int, int] = {}
         for combatant in self.state.active_combatants():
+            # injury-thresholds-death.md: "−2 to all rolls" (or −1) — the
+            # initiative roll among them (#817).
             record, _sequence = self.roll(
                 "1d6",
                 purpose="initiative",
                 actor=combatant.name,
-                modifier=combatant.dex_bonus,
+                modifier=combatant.dex_bonus
+                - self.profile.reactions.injury_penalty(combatant),
             )
             rolls[combatant.combatant_id] = record.total
         # Descending total; ties to the higher adjDEX, then stable order.
@@ -301,28 +369,45 @@ class TurnRunner:
             )
         return order
 
-    # Phase 2 -----------------------------------------------------------------
     def phase_renew_spells(self) -> None:
         self.begin_phase(2, "Renew Spells", "DEX+INT+WIS order, high to low")
         casters = sorted(
-            (c for c in self.state.active_combatants() if c.active_spells),
+            (c for c in self.state.combatants if c.alive and c.active_spells),
             key=lambda c: (-c.renewal_order_key, c.combatant_id),
         )
         for caster in casters:
             for key in list(caster.active_spells):
                 spell = get_spell(key)
-                if caster.grappled_by is not None:
-                    # hand-to-hand-and-grappling.md: "A grappled caster can
-                    # only renew a spell that needs no gestures (Spell
-                    # Mastery 2+); anything else lapses." The engine tracks
-                    # no per-spell Spell Mastery level (a data-model gap —
-                    # see actions.py's GRAPPLED_ACTIONS docstring), so rather
-                    # than guess which spells would qualify, every active
-                    # spell conservatively lapses while grappled.
+                if not caster.active:
+                    # casting-spells.md: "Unrenewed spells end immediately."
+                    # An unconscious caster renews nothing (#826).
                     caster.active_spells.remove(key)
                     self.emit(
                         "status",
-                        f"{caster.name} is grappled and cannot sustain "
+                        f"{caster.name} is unconscious and cannot renew "
+                        f"{spell.name}; it ends",
+                        actor=caster.name,
+                        payload={"spell": key, "ended": True, "unconscious": True},
+                    )
+                    continue
+                if (
+                    self.profile.grapple.locks_movement(
+                        caster.grappled_by, caster.grappling
+                    )
+                    and caster.spell_mastery.get(key, 1) < 2
+                ):
+                    # hand-to-hand-and-grappling.md: "A grappled caster can
+                    # only renew a spell that needs no gestures (Spell
+                    # Mastery 2+); anything else lapses." (#821) Both sides
+                    # of a hold have their hands full ("holding on or being
+                    # held"), so the grappler too — coordinator's ruling.
+                    caster.active_spells.remove(key)
+                    held = "is grappled" if caster.grappled_by is not None else (
+                        "is holding a grapple"
+                    )
+                    self.emit(
+                        "status",
+                        f"{caster.name} {held} and cannot sustain "
                         f"{spell.name}; it lapses",
                         actor=caster.name,
                         payload={"spell": key, "ended": True, "grappled": True},
@@ -346,7 +431,6 @@ class TurnRunner:
                         payload={"spell": key, "ended": True},
                     )
 
-    # Phase 3 -----------------------------------------------------------------
     def phase_initial_movement(self, order, choose_option) -> None:
         self.begin_phase(3, "Initial Movement", "initiative order; move or yield")
         for combatant in order:
@@ -379,9 +463,15 @@ class TurnRunner:
                 # locked to the shared hex until the grapple ends." Neither
                 # Initial nor Final Movement applies.
                 continue
-            if decision.chosen.letter in ("a", "b"):
-                self.move_towards_target(combatant)
+            option = actions.base_option(decision.chosen.letter)
+            if option in MOVEMENT_GAITS and not actions.is_yielded(
+                decision.chosen.letter
+            ):
+                self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
             else:
+                # Everyone else yields: a yielded mover (#819) takes its
+                # movement in phase 4, the missile/cast options their
+                # walk-slow step, and the rest stand.
                 combatant.yielded = True
 
     # Phase 4 -----------------------------------------------------------------
@@ -390,10 +480,12 @@ class TurnRunner:
         for combatant in order:
             if not combatant.active or not combatant.yielded:
                 continue
-            if combatant.chosen_letter in ("f", "h", "r"):
+            option = actions.base_option(combatant.chosen_letter)
+            if option in MOVEMENT_GAITS and actions.is_yielded(combatant.chosen_letter):
+                self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+            elif option in ("f", "h", "r"):
                 self.kite_step(combatant)
 
-    # Phase 5 -----------------------------------------------------------------
     def phase_actions(self) -> None:
         self.begin_phase(5, "Actions", "adjusted-DEX order, high to low")
         order = sorted(
@@ -446,10 +538,20 @@ class TurnRunner:
         combatant.facing = new_facing
 
     def push_back(self, pusher: CombatantState, victim: CombatantState) -> None:
-        away = hexes.direction_towards(pusher.position, victim.position)
-        destination = hexes.add(victim.position, away)
-        if not self._footprint_clear(victim, destination, victim.facing):
-            save_target = self.profile.retreat.blocked_save_target(victim)
+        """special-combat-situations.md's Forced Retreat, steps 1–3.
+
+        "Push enemy back 1 hex in any direction", "Choose to advance into
+        vacated hex or stand still", and only when there is no retreat hex
+        at all, "enemy rolls 3d6 ≤ DEX or falls" (#779). The hex and the
+        advance are the retreat chooser's; the rules offer the choices.
+        """
+        destinations = self.profile.retreat.retreat_hexes(self.state, pusher, victim)
+        if not destinations:
+            # injury-thresholds-death.md's "−2 to all rolls" reaches the
+            # save too (#817).
+            save_target = self.profile.retreat.blocked_save_target(
+                victim
+            ) - self.profile.reactions.injury_penalty(victim)
             record, _sequence = self.roll(
                 self.profile.retreat.blocked_save_dice,
                 purpose="retreat save",
@@ -477,13 +579,25 @@ class TurnRunner:
                 )
             return
         vacated = victim.position
+        # A multi-hex pusher cannot follow one hex cleanly, so it may not
+        # advance; a single-hex pusher may, unless the victim's shifted body
+        # still covers the vacated hex.
+        choice = self.choose_retreat(
+            self.state,
+            pusher,
+            victim,
+            destinations,
+            hexes.footprint_size_class(pusher.size_hexes) == 1,
+        )
+        if choice.destination not in destinations:
+            raise ValueError(
+                f"{choice.destination} is not a hex {victim.name} can be pushed into"
+            )
+        destination = choice.destination
         victim.position = destination
-        # The pusher may advance into the vacated hex (the rules make it a
-        # choice; the simulator always advances). A multi-hex pusher stays —
-        # its whole body cannot follow one hex cleanly — and a multi-hex
-        # victim's shifted body may still cover the vacated hex.
         advanced = (
-            hexes.footprint_size_class(pusher.size_hexes) == 1
+            choice.advance
+            and hexes.footprint_size_class(pusher.size_hexes) == 1
             and vacated not in victim.footprint
         )
         if advanced:
@@ -547,19 +661,37 @@ class TurnRunner:
             # A corpse neither holds nor is held (#11).
             self._release_grapples_involving(combatant)
 
-    def move_towards_target(self, combatant: CombatantState) -> None:
-        """Phase-3 movement for MOVE (run) and CHARGE ATTACK (jog).
+    def _gait_allowance(self, combatant: CombatantState, gait: str) -> int:
+        """Hexes the figure may cover at ``gait`` (0 = a gait it may not use).
+
+        movement.md: CHARGE ATTACK and DODGE move at "Jog or less", so a
+        figure barred from jogging (a Heavy load) moves at its walk.
+        """
+        if gait == "sprint":
+            return combatant.move_sprint
+        if gait == "run":
+            return combatant.move_run
+        if gait == "jog":
+            return combatant.move_jog if combatant.move_jog > 0 else combatant.move_walk
+        return combatant.move_walk
+
+    def move_towards_target(self, combatant: CombatantState, gait: str = "") -> None:
+        """Movement toward the chosen target at the option's gait.
 
         Steps one hex at a time toward the chosen target, stopping the moment
         the mover becomes engaged (movement.md: figures stop immediately when
-        engaged). Running costs fatigue (movement.md); jogging is free in
-        combat.
+        engaged). Running costs 1 Fatigue and sprinting 6 (movement.md);
+        jogging is free in combat. ``gait`` defaults to the chosen option's
+        (MOVE runs, CHARGE ATTACK jogs).
         """
         if combatant.chosen_target is None:
             return
         target = self.state.by_id(combatant.chosen_target)
-        gait = "run" if combatant.chosen_letter == "a" else "jog"
-        allowance = combatant.move_run if gait == "run" else combatant.move_jog
+        if not gait:
+            gait = MOVEMENT_GAITS.get(
+                actions.base_option(combatant.chosen_letter), "jog"
+            )
+        allowance = self._gait_allowance(combatant, gait)
         start = combatant.position
         steps = 0
         for _step in range(allowance):
@@ -597,8 +729,11 @@ class TurnRunner:
                 "hexes": steps,
             },
         )
-        if gait == "run":
-            self.apply_fatigue_cost(combatant, RUN_FATIGUE_COST, "running")
+        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
+        if cost:
+            self.apply_fatigue_cost(
+                combatant, cost, "running" if gait == "run" else "sprinting"
+            )
 
     def kite_step(self, combatant: CombatantState) -> None:
         """Phase-4 walk-slow adjustment: open distance to the nearest enemy."""
@@ -667,7 +802,40 @@ class TurnRunner:
 
     # ------------------------------------------------------------ action phase
     def execute_action(self, combatant: CombatantState) -> None:
-        letter = combatant.chosen_letter
+        """Take one combatant's phase-5 action.
+
+        A figure off-balance from a fumble takes this action at −2, whatever
+        it is, and the penalty is spent by it (attack-rolls.md: "−2 to your
+        next action"; #811).
+        """
+        self._acting = True
+        self._off_balance_actor = None
+        if combatant.off_balance:
+            combatant.off_balance = False
+            self._off_balance_actor = combatant.combatant_id
+        try:
+            self._execute_option(combatant)
+        finally:
+            self._acting = False
+            self._off_balance_actor = None
+
+    def _off_balance_penalty(self, combatant: CombatantState) -> int:
+        """The off-balance −2 owed by the action being taken, else 0.
+
+        Inside a phase-5 action the flag was taken up when the action began,
+        so a fumble during the action leaves the next one owing it. A roll
+        method called on its own, outside any action (a caller resolving one
+        attack), spends the flag on that roll, as it always has.
+        """
+        if combatant.combatant_id == self._off_balance_actor:
+            return combat_math.OFF_BALANCE_PENALTY
+        if not self._acting and combatant.off_balance:
+            combatant.off_balance = False
+            return combat_math.OFF_BALANCE_PENALTY
+        return 0
+
+    def _execute_option(self, combatant: CombatantState) -> None:
+        letter = actions.base_option(combatant.chosen_letter)
         if letter in ("g", "p"):
             combatant.prone = False
             self.emit(
@@ -677,7 +845,7 @@ class TurnRunner:
                 payload={"letter": letter},
             )
             return
-        if letter == "a":
+        if letter in ("a", "sprint"):
             return  # movement only
         if letter == "c":
             combatant.dodging = True
@@ -688,6 +856,18 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"dodging": True},
             )
+            return
+        if letter == "d":
+            self.drop_prone(combatant)
+            return
+        if letter == "e":
+            self.ready_weapon(combatant)
+            return
+        if letter == "m":
+            self.change_weapon(combatant)
+            return
+        if letter == "q":
+            self.pick_up_weapon(combatant)
             return
         if letter == "k":
             combatant.defending = True
@@ -708,8 +888,14 @@ class TurnRunner:
         if letter == "v":  # Struggle Free (only ever chosen while grappled)
             self.grapple_struggle_free(combatant)
             return
-        if letter == "t":  # Strike Back (only ever chosen while grappled)
-            self.grapple_strike_back(combatant)
+        if letter == "t":
+            if combatant.grappled_by is not None:
+                self.grapple_strike_back(combatant)
+            else:
+                self.hth_strike(combatant)
+            return
+        if letter == "u":
+            self.draw_dagger(combatant)
             return
         if letter == "hold_still":
             self.emit(
@@ -755,6 +941,9 @@ class TurnRunner:
             return
         if letter == "f":
             self.missile_attack(combatant)
+            return
+        if letter == "l":
+            self.missile_attack(combatant, last_shot=True)
 
     def _living_target(self, combatant: CombatantState) -> CombatantState | None:
         """The chosen target if still a valid mark, else the nearest active enemy."""
@@ -778,6 +967,9 @@ class TurnRunner:
         if target is None:
             return
         if not combat_math.figures_adjacent(combatant, target):
+            if combatant.combatant_id in target.disengaged_from:
+                self._strike_at_disengager(combatant, target)
+                return
             self.emit(
                 "info",
                 f"{combatant.name}'s charge fell short of {target.name}",
@@ -788,42 +980,136 @@ class TurnRunner:
         self.face_towards(combatant, target.position)
         self.resolve_attack(combatant, target, ranged=False)
 
-    def missile_attack(self, combatant: CombatantState) -> None:
+    def _strike_at_disengager(
+        self, attacker: CombatantState, target: CombatantState
+    ) -> None:
+        """special-combat-situations.md, Disengaging: "Slower enemies attack
+        at penalty = difference in adjDEX" (#777).
+
+        The disengager stepped away at its own place in the adjDEX order, so
+        a slower enemy it was next to reaches it now, a hex off, at a to-hit
+        penalty of the gap between their adjDEX. (A faster one struck before
+        the step; an equal one strikes at no penalty.)
+        """
+        penalty = max(0, target.dexterity - attacker.dexterity)
+        self.emit(
+            "info",
+            f"{attacker.name} strikes at {target.name} as they disengage "
+            f"({-penalty:+d} to hit: adjDEX {attacker.dexterity} against "
+            f"{target.dexterity})",
+            actor=attacker.name,
+            payload={"disengage_strike": True, "penalty": penalty},
+        )
+        attacker.chosen_target = target.combatant_id
+        self.face_towards(attacker, target.position)
+        self.resolve_attack(attacker, target, ranged=False, extra_situational=-penalty)
+
+    def missile_attack(
+        self, combatant: CombatantState, *, last_shot: bool = False
+    ) -> None:
+        """MISSILE ATTACK (f) and ONE LAST SHOT (l).
+
+        An archer who chose f and was engaged before it could loose — charged
+        in movement — takes One Last Shot instead when its missile weapon was
+        ready before the engagement (action-options.md: "Fire missile (if
+        ready before engaged)"; #776); otherwise it defends, as before. A bow
+        in quick enough hands looses twice (weapons.md "2 shots/turn if
+        adjDEX N+"), a crossbow then needs its turns to reload, and a thrown
+        weapon leaves the hand and lies where it fell (#781/#812).
+        """
         target = self._living_target(combatant)
         if target is None:
             return
-        if self.profile.engagement.is_engaged(self.state, combatant):
-            # One Last Shot (l) needs "ready before engaged" state the engine
-            # does not track; the archer defends instead.
-            combatant.defending = True
+        engaged = self.profile.engagement.is_engaged(self.state, combatant)
+        if engaged and not last_shot:
+            if self._has_last_shot(combatant):
+                self.emit(
+                    "info",
+                    f"{combatant.name} is engaged before loosing and takes "
+                    "One Last Shot",
+                    actor=combatant.name,
+                    payload={"last_shot": True},
+                )
+                last_shot = True
+            else:
+                combatant.defending = True
+                self.emit(
+                    "status",
+                    f"{combatant.name} is engaged before loosing and defends instead",
+                    actor=combatant.name,
+                    payload={"defending": True},
+                )
+                return
+        if not weapons.can_shoot(combatant):
             self.emit(
-                "status",
-                f"{combatant.name} is engaged before loosing and defends instead",
+                "info",
+                f"{combatant.name} has nothing ready to loose",
                 actor=combatant.name,
-                payload={"defending": True},
             )
             return
-        combatant.chosen_target = target.combatant_id
-        self.face_towards(combatant, target.position)
-        self.resolve_attack(combatant, target, ranged=True)
+        weapon = combatant.weapon
+        shots = 1 if last_shot else weapons.shots_per_turn(weapon, combatant.dexterity)
+        for shot in range(shots):
+            if shot:
+                if combatant.weapon is not weapon or not combatant.active:
+                    break  # fumbled the bow away, or felled mid-volley
+                target = self._living_target(combatant)
+                if target is None:
+                    break
+                self.emit(
+                    "info",
+                    f"{combatant.name} looses a second shot this turn "
+                    f"(adjDEX {combatant.dexterity}, {weapon.double_shot_dex}+ "
+                    f"for a {weapon.name})",
+                    actor=combatant.name,
+                    payload={"second_shot": True},
+                )
+            combatant.chosen_target = target.combatant_id
+            self.face_towards(combatant, target.position)
+            self.resolve_attack(combatant, target, ranged=True)
+            if weapon.is_thrown and combatant.weapon is weapon:
+                self._weapon_leaves_hand(combatant, lands_at=target.position)
+                self.emit(
+                    "status",
+                    f"{combatant.name}'s {weapon.name} lands in {target.name}'s hex",
+                    actor=combatant.name,
+                    payload={"thrown": True, "lands_at": list(target.position)},
+                )
+                break
+        if last_shot:
+            combatant.last_shot_spent = True
+        if combatant.weapon is weapon:
+            cycle = weapons.reload_cycle(weapon, combatant.dexterity)
+            if cycle > 1:
+                combatant.weapon = replace(weapon, reload_turns_left=cycle)
+                self.emit(
+                    "status",
+                    f"{combatant.name} must reload the {weapon.name}: it shoots "
+                    f"again in {cycle} turns",
+                    actor=combatant.name,
+                    payload={"reload_turns": cycle},
+                )
+
+    def _has_last_shot(self, combatant: CombatantState) -> bool:
+        """A fired missile weapon, loaded, and this engagement's shot unspent."""
+        return (
+            weapons.is_fired_missile(combatant.weapon)
+            and combatant.weapon.reload_turns_left == 0
+            and not combatant.last_shot_spent
+        )
 
     def _attack_roll_penalty(self, attacker: CombatantState) -> int:
-        """The situational penalty any attack roll owes — and spends.
+        """The situational penalty any attack roll owes.
 
         Two bands, both of them properties of the attacker rather than of
-        the blow: the off-balance -2 left by a fumble or a critical grapple,
-        consumed by the next action it touches, and
-        injury-thresholds-death.md's -1/-2 for a badly hurt figure (#296).
-        The grapple attempt applied only the first and so grabbed at full
-        bonus while the same fighter punched at -2 (#12); one helper for
-        both callers so the next attack path cannot drift again.
+        the blow: the off-balance -2 owed by the action being taken (#811 —
+        it lands on the whole action, both shots of a double shot included),
+        and injury-thresholds-death.md's -1/-2 for a badly hurt figure
+        (#296). One helper for every attack path so none can drift (#12).
         """
-        penalty = 0
-        if attacker.off_balance:
-            penalty = combat_math.OFF_BALANCE_PENALTY
-            attacker.off_balance = False
-        penalty += self.profile.reactions.injury_penalty(attacker)
-        return penalty
+        return self._off_balance_penalty(
+            attacker
+        ) + self.profile.reactions.injury_penalty(attacker)
 
     def resolve_attack(
         self,
@@ -937,16 +1223,24 @@ class TurnRunner:
         damage_total = 0
         damage_sequences: list[int] = []
         rolls_due = result["damage_multiplier"]
+        # attack-rolls.md: a critical rolls "the weapon's damage **dice**
+        # twice" (a confirmed severe one, three times); the damage modifier
+        # is added once, with the first roll (#824 — the severe case's
+        # "triple damage" read the same way: coordinator's ruling under the
+        # standing rule, Spencer may overrule).
+        count, sides, modifier = parse_dice_expression(weapon.damage)
+        dice_only = weapon.damage if modifier == 0 else f"{count}d{sides}"
         for repetition in range(rolls_due):
+            outcome = None
+            if rolls_due > 1:
+                outcome = f"critical damage roll {repetition + 1} of {rolls_due}"
+                if repetition and modifier:
+                    outcome += ", dice only: the modifier counts once"
             damage_record, damage_sequence = self.roll(
-                weapon.damage,
+                weapon.damage if repetition == 0 else dice_only,
                 purpose="damage",
                 actor=attacker.name,
-                outcome=(
-                    None
-                    if rolls_due == 1
-                    else f"critical damage roll {repetition + 1} of {rolls_due}"
-                ),
+                outcome=outcome,
             )
             damage_total += damage_record.total
             damage_sequences.append(damage_sequence)
@@ -958,6 +1252,15 @@ class TurnRunner:
             weapon.weapon_class,
             defender.armour_tier,
         )
+        if net > 0:
+            # #813: a physical hit is a weapon or bare-handed blow that gets
+            # damage past the armour (derived-pools.md "normal hits reduce
+            # Fatigue"; turn-sequence.md "dealt damage"). A blow the armour
+            # stops entirely is not one, and neither is a spell.
+            # Coordinator's ruling under the standing rule; Spencer may
+            # overrule.
+            attacker.dealt_physical_hit_this_turn = True
+            defender.took_physical_hit_this_turn = True
         self.apply_damage(
             attacker,
             defender,
@@ -1004,7 +1307,18 @@ class TurnRunner:
                 payload={"fumble": "off_balance"},
             )
             return
-        if key == "off_balance":
+        if acting_weapon.stressed and acting_weapon is attacker.weapon:
+            # attack-rolls.md: "weapon takes stress (breaks on a second
+            # fumble)" — any second fumble, whatever its own roll (#814).
+            # The roll's own result still lands where there is anything left
+            # for it to act on: an off-balance roll leaves the fumbler
+            # off-balance as well.
+            message = f"{attacker.name}'s {attacker.weapon.name} breaks (second fumble)"
+            self._weapon_leaves_hand(attacker, lands_at=None)
+            if key == "off_balance":
+                attacker.off_balance = True
+                message += f" and they are off-balance ({detail['effect']})"
+        elif key == "off_balance":
             attacker.off_balance = True
             message = f"{attacker.name} is off-balance ({detail['effect']})"
         elif key == "drop_weapon":
@@ -1012,21 +1326,16 @@ class TurnRunner:
                 f"{attacker.name} drops their {attacker.weapon.name} "
                 "and fights bare-handed"
             )
-            attacker.weapon = self._unarmed_weapon(attacker)
-            attacker.weapon_skill_level = 0
+            # It lies in the fumbler's hex, to be picked up again (#780).
+            self._weapon_leaves_hand(attacker, lands_at=attacker.position)
         else:  # weapon_stress
-            if attacker.weapon_stressed:
-                message = (
-                    f"{attacker.name}'s {attacker.weapon.name} breaks (second fumble)"
-                )
-                attacker.weapon = self._unarmed_weapon(attacker)
-                attacker.weapon_skill_level = 0
-            else:
-                attacker.weapon_stressed = True
-                message = (
-                    f"{attacker.name}'s {attacker.weapon.name} takes stress "
-                    f"({detail['effect']})"
-                )
+            # A new value, never an in-place edit: a caller may seat one
+            # WeaponState object in several hands.
+            attacker.weapon = replace(attacker.weapon, stressed=True)
+            message = (
+                f"{attacker.name}'s {attacker.weapon.name} takes stress "
+                f"({detail['effect']})"
+            )
         self.emit(
             "status",
             message,
@@ -1037,6 +1346,131 @@ class TurnRunner:
     @staticmethod
     def _unarmed_weapon(combatant: CombatantState) -> WeaponState:
         return WeaponState(damage=bare_handed_damage(combatant.strength))
+
+    # ------------------------------------------------------------- weapons
+    def _weapon_leaves_hand(
+        self, combatant: CombatantState, *, lands_at: tuple[int, int] | None
+    ) -> None:
+        """The readied weapon leaves the hand: onto a hex, or gone (broken).
+
+        Its skill level is remembered, so readying it again restores it.
+        """
+        weapon = combatant.weapon
+        if weapon.item_id:
+            combatant.weapon_skills[weapon.item_id] = combatant.weapon_skill_level
+            if lands_at is not None:
+                self.state.ground_weapons.append(
+                    GroundWeapon(q=lands_at[0], r=lands_at[1], weapon=weapon)
+                )
+        combatant.weapon = self._unarmed_weapon(combatant)
+        combatant.weapon_skill_level = 0
+
+    @staticmethod
+    def _take_up(combatant: CombatantState, weapon: WeaponState) -> None:
+        """Ready ``weapon`` at the figure's skill with it."""
+        combatant.weapon = weapon
+        combatant.weapon_skill_level = combatant.weapon_skills.get(weapon.item_id, 0)
+
+    def ready_weapon(self, combatant: CombatantState) -> None:
+        """READY WEAPON (e): "Re-sling current, ready new weapon" (#780).
+
+        The weapon readied is :func:`policy.best_weapon` among those carried;
+        the one in hand goes back on the figure. Shields are not modelled as
+        readied items (a shield's bonus is a standing fact of the snapshot).
+        """
+        choice = policy.best_weapon(combatant, combatant.spare_weapons)
+        if choice is None:
+            self.emit(
+                "info",
+                f"{combatant.name} has no other weapon to ready",
+                actor=combatant.name,
+            )
+            return
+        combatant.spare_weapons.remove(choice)
+        previous = combatant.weapon
+        if previous.item_id:
+            combatant.weapon_skills[previous.item_id] = combatant.weapon_skill_level
+            combatant.spare_weapons.append(previous)
+        self._take_up(combatant, choice)
+        self.emit(
+            "action",
+            f"{combatant.name} readies their {choice.name}"
+            + (f", slinging the {previous.name}" if previous.item_id else ""),
+            actor=combatant.name,
+            payload={"letter": "e", "weapon": choice.name},
+        )
+
+    def change_weapon(self, combatant: CombatantState) -> None:
+        """CHANGE WEAPON (m): "Drop current, ready new non-missile" (#780)."""
+        choice = policy.best_weapon(
+            combatant,
+            [spare for spare in combatant.spare_weapons if not spare.is_missile],
+        )
+        if choice is None:
+            self.emit(
+                "info",
+                f"{combatant.name} carries no other hand weapon to change to",
+                actor=combatant.name,
+            )
+            return
+        combatant.spare_weapons.remove(choice)
+        previous = combatant.weapon
+        self._weapon_leaves_hand(combatant, lands_at=combatant.position)
+        self._take_up(combatant, choice)
+        self.emit(
+            "action",
+            f"{combatant.name} changes to their {choice.name}"
+            + (f", dropping the {previous.name}" if previous.item_id else ""),
+            actor=combatant.name,
+            payload={"letter": "m", "weapon": choice.name},
+        )
+
+    def weapons_in_reach(self, combatant: CombatantState) -> list[GroundWeapon]:
+        """Weapons lying in the figure's hex or an adjacent one."""
+        return [
+            lying
+            for lying in self.state.ground_weapons
+            if hexes.distance(lying.position, combatant.position) <= 1
+        ]
+
+    def pick_up_weapon(self, combatant: CombatantState) -> None:
+        """PICK UP WEAPON (q): "Drop yours, grab from hex/adjacent" (#780)."""
+        in_reach = self.weapons_in_reach(combatant)
+        choice = policy.best_weapon(combatant, [lying.weapon for lying in in_reach])
+        if choice is None:
+            self.emit(
+                "info",
+                f"{combatant.name} finds no weapon within reach",
+                actor=combatant.name,
+            )
+            return
+        lying = next(entry for entry in in_reach if entry.weapon is choice)
+        self.state.ground_weapons.remove(lying)
+        previous = combatant.weapon
+        self._weapon_leaves_hand(combatant, lands_at=combatant.position)
+        self._take_up(combatant, choice)
+        self.emit(
+            "action",
+            f"{combatant.name} picks up the {choice.name}"
+            + (f", dropping the {previous.name}" if previous.item_id else ""),
+            actor=combatant.name,
+            payload={
+                "letter": "q",
+                "weapon": choice.name,
+                "from": list(lying.position),
+            },
+        )
+
+    def drop_prone(self, combatant: CombatantState) -> None:
+        """DROP (d): "Go prone or kneeling". Kneeling is not a state the
+        engine keeps, so the figure goes prone."""
+        combatant.prone = True
+        self.emit(
+            "action",
+            f"{combatant.name} drops prone",
+            actor=combatant.name,
+            payload={"letter": "d", "prone": True},
+        )
 
     def _step_away_from(
         self, combatant: CombatantState, threat: CombatantState
@@ -1083,6 +1517,8 @@ class TurnRunner:
             )
             return
         start = combatant.position
+        # A slower enemy it leaves behind may still strike it (#777).
+        combatant.disengaged_from = [enemy.combatant_id for enemy in adjacent]
         combatant.position = destination
         combatant.moved_this_turn = True
         self.emit(
@@ -1156,6 +1592,20 @@ class TurnRunner:
                 },
             )
             return
+        if combat_math.hth_entry_reason(self.state, attacker, defender) is None:
+            # "Entering Hand-to-Hand": only against an enemy with its back to
+            # a wall, down, slower, attacked from the rear, or agreeing (#823).
+            self.emit(
+                "info",
+                f"{attacker.name} finds no way in to grapple {defender.name}",
+                actor=attacker.name,
+                payload={
+                    "grapple_refused": "no_entry",
+                    "target": defender.combatant_id,
+                },
+            )
+            return
+        self._enter_hth(attacker, defender)
         numbers = combat_math.attack_numbers(
             attacker,
             defender,
@@ -1260,6 +1710,14 @@ class TurnRunner:
         )
 
     @staticmethod
+    def _enter_hth(first: CombatantState, second: CombatantState) -> None:
+        """The pair is in hand-to-hand from now until they part (#867)."""
+        if second.combatant_id not in first.hth_with:
+            first.hth_with.append(second.combatant_id)
+        if first.combatant_id not in second.hth_with:
+            second.hth_with.append(first.combatant_id)
+
+    @staticmethod
     def _establish_grapple(attacker: CombatantState, defender: CombatantState) -> None:
         attacker.grappling = defender.combatant_id
         defender.grappled_by = attacker.combatant_id
@@ -1323,9 +1781,12 @@ class TurnRunner:
         if grappler_id is None:
             return
         grappler = self.state.by_id(grappler_id)
-        # injury-thresholds-death.md's -1/-2 band (#296).
-        effective_dex = combatant.dexterity - self.profile.reactions.injury_penalty(
-            combatant
+        # injury-thresholds-death.md's -1/-2 band (#296), and an off-balance
+        # figure's −2 on this action (#811).
+        effective_dex = (
+            combatant.dexterity
+            - self.profile.reactions.injury_penalty(combatant)
+            - self._off_balance_penalty(combatant)
         )
         record, _sequence = self.roll(
             "4d6",
@@ -1359,9 +1820,11 @@ class TurnRunner:
         )
 
     def grapple_strike_back(self, combatant: CombatantState) -> None:
-        """Strike Back (letter t): "a normal unarmed strike ... against your
-        captor, at the same HTH +4 both of you already have." Full
-        crit/fumble resolution via :meth:`resolve_attack`, bare-handed."""
+        """Strike Back (letter t): "a normal unarmed strike (or dagger, if
+        already drawn) against your captor, at the same HTH +4 both of you
+        already have." Full crit/fumble resolution via :meth:`resolve_attack`
+        — with the drawn dagger and its own Weapon skill when one is in hand
+        (#822), bare-handed otherwise."""
         grappler_id = combatant.grappled_by
         if grappler_id is None:
             return
@@ -1375,9 +1838,107 @@ class TurnRunner:
             combatant,
             grappler,
             ranged=False,
-            weapon_override=self._unarmed_weapon(combatant),
+            weapon_override=(
+                None if combatant.weapon.hth_usable else self._unarmed_weapon(combatant)
+            ),
             extra_situational=self.profile.grapple.to_hit_bonus,
             verb="strikes back at",
+        )
+
+    def hth_strike(self, combatant: CombatantState) -> None:
+        """HTH ATTACK (t) outside a grapple (#815).
+
+        hand-to-hand-and-grappling.md: bare-handed fighting happens "only
+        ... once you and an enemy share the tight, in-close range HTH
+        requires", entered only under one of "Entering Hand-to-Hand"'s
+        conditions (#823). The strike takes the HTH +4, no Weapon skill
+        bare-handed ("there is no bare-hands entry in the skill catalog"),
+        and a dagger's own skill if one is in hand.
+        """
+        target = None
+        if combatant.chosen_target is not None:
+            candidate = self.state.by_id(combatant.chosen_target)
+            if candidate.active:
+                target = candidate
+        if target is None:
+            self.emit(
+                "info",
+                f"{combatant.name} has no one in reach to close with",
+                actor=combatant.name,
+            )
+            return
+        if combat_math.hth_entry_reason(self.state, combatant, target) is None:
+            self.emit(
+                "info",
+                f"{combatant.name} finds no way in close to {target.name}",
+                actor=combatant.name,
+                payload={"hth_refused": True, "target": target.combatant_id},
+            )
+            return
+        self._enter_hth(combatant, target)
+        self.face_towards(combatant, target.position)
+        # Inside hand-to-hand "both combatants get +4" for bare hands or a
+        # dagger: the struck figure's own HTH strike (t) back takes it too,
+        # with no entry condition needed. An armed partner's weapon attack
+        # (j) keeps its normal bonus; whether it must drop to t is #867's.
+        self.resolve_attack(
+            combatant,
+            target,
+            ranged=False,
+            weapon_override=(
+                None if combatant.weapon.hth_usable else self._unarmed_weapon(combatant)
+            ),
+            extra_situational=self.profile.grapple.to_hit_bonus,
+            verb="closes and strikes",
+        )
+
+    def draw_dagger(self, combatant: CombatantState) -> None:
+        """DRAW DAGGER (u): "Roll 3d6 ≤ DEX to ready dagger" (#822).
+
+        A held figure may not ready a weapon that needs a free hand; the
+        dagger is the one it may draw, and whatever it held falls to its hex.
+        """
+        dagger = next(
+            (spare for spare in combatant.spare_weapons if spare.hth_usable), None
+        )
+        if dagger is None or combatant.weapon.hth_usable:
+            self.emit(
+                "info",
+                f"{combatant.name} has no dagger to draw",
+                actor=combatant.name,
+            )
+            return
+        effective_dex = (
+            combatant.dexterity
+            - self.profile.reactions.injury_penalty(combatant)
+            - self._off_balance_penalty(combatant)
+        )
+        record, _sequence = self.roll(
+            "3d6",
+            purpose="draw dagger",
+            actor=combatant.name,
+            target_number=effective_dex,
+            versus="DEX",
+            roll_under=True,
+            judge=lambda draw: (
+                "fumbles the draw" if draw.total > effective_dex else "draws it"
+            ),
+        )
+        if record.total > effective_dex:
+            self.emit(
+                "info",
+                f"{combatant.name} fails to draw the {dagger.name}",
+                actor=combatant.name,
+            )
+            return
+        combatant.spare_weapons.remove(dagger)
+        self._weapon_leaves_hand(combatant, lands_at=combatant.position)
+        self._take_up(combatant, dagger)
+        self.emit(
+            "action",
+            f"{combatant.name} draws the {dagger.name}",
+            actor=combatant.name,
+            payload={"letter": "u", "weapon": dagger.name},
         )
 
     def grapple_squeeze(self, combatant: CombatantState) -> None:
@@ -1394,6 +1955,12 @@ class TurnRunner:
             # the stale hold rather than squeezing a body every turn (#11).
             self._release_grapples_involving(target)
             return
+        # "The target gets no Dodge/Defend bonus against it — they're
+        # already held." Option c DODGE covers missiles only, so the page's
+        # line can only mean the DEX dodge: Squeeze strips it, with the
+        # shield and the Defend stance (#826 — coordinator's ruling under the
+        # standing rule; Spencer may overrule). A Shield spell's TN bonus
+        # goes with them, as it always has.
         self.resolve_attack(
             combatant,
             target,
@@ -1406,6 +1973,24 @@ class TurnRunner:
 
     def cast_spell(self, combatant: CombatantState) -> None:
         spell = get_spell(combatant.chosen_spell)
+        if (
+            self.profile.grapple.locks_movement(
+                combatant.grappled_by, combatant.grappling
+            )
+            and combatant.spell_mastery.get(spell.key, 1) < 3
+        ):
+            # hand-to-hand-and-grappling.md: in a grapple, "Spellcasting is
+            # limited to a spell you can cast with no hand gestures and no
+            # verbal component — Spell Mastery level 2 and 3 respectively"
+            # (#821; both, so level 3 — coordinator's ruling, Spencer may
+            # overrule).
+            self.emit(
+                "info",
+                f"{combatant.name} is locked in a grapple and cannot cast "
+                f"{spell.name} without gestures and words",
+                actor=combatant.name,
+            )
+            return
         if combatant.mana < spell.level:
             self.emit(
                 "info",
@@ -1413,16 +1998,18 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        # casting-spells.md: spells cost mana equal to the spell's level —
-        # paid on the attempt.
-        combatant.mana -= spell.level
         attribute_name = spell.attribute
         base_attribute = (
             combatant.intelligence if attribute_name == "INT" else combatant.wisdom
         )
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
-        # effective attribute the roll checks against.
-        attribute = base_attribute - self.profile.reactions.injury_penalty(combatant)
+        # effective attribute the roll checks against, and so does an
+        # off-balance figure's −2 on this action (#811).
+        attribute = (
+            base_attribute
+            - self.profile.reactions.injury_penalty(combatant)
+            - self._off_balance_penalty(combatant)
+        )
         record, cast_sequence = self.roll(
             "3d6",
             purpose="casting",
@@ -1439,12 +2026,20 @@ class TurnRunner:
         succeeded = (
             record.total <= attribute and record.total < CASTING_FUMBLE_ROLL_FLOOR
         )
+        # casting-spells.md: "Spells cost mana equal to the spell's level";
+        # mana-pool.md names mana lost on a failure only on a 17 (#816).
+        pays = succeeded or record.total in CASTING_MANA_LOST_ROLLS
+        if pays:
+            combatant.mana -= spell.level
+            cost_note = f"{spell.level} mana, {combatant.mana} left"
+        else:
+            cost_note = f"no mana spent, {combatant.mana} left"
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "
             f"(3d6 ≤ {attribute_name} {attribute}): "
             f"{'success' if succeeded else 'failure'} "
-            f"({spell.level} mana, {combatant.mana} left)",
+            f"({cost_note})",
             actor=combatant.name,
             payload={
                 "spell": spell.key,
@@ -1490,6 +2085,7 @@ class TurnRunner:
             # so is the injury-thresholds-death.md -1/-2 band (#296).
             effective_dex = combatant.dexterity
             effective_dex -= self.profile.reactions.injury_penalty(combatant)
+            effective_dex -= self._off_balance_penalty(combatant)
             if target.dodging:
                 effective_dex -= DODGE_DEX_CHECK_PENALTY
             aim_record, _sequence = self.roll(
@@ -1621,10 +2217,14 @@ def run_turn(
     sink: EventSink,
     choose_option,
     profile: RulesProfile | None = None,
+    choose_retreat: RetreatChooser | None = None,
 ) -> None:
     """Run exactly one full turn of the battle. Mutates ``state``.
 
-    ``profile`` selects the rules profile; omitted, the Tarmar profile runs
-    (identical to the pre-seam behavior).
+    ``profile`` selects the rules profile; omitted, the Tarmar profile runs.
+    ``choose_retreat`` picks each forced retreat's hex and whether the pusher
+    advances (#779); omitted, the AI's :func:`policy.choose_retreat` does.
     """
-    TurnRunner(state, roller, sink, profile=profile).run(choose_option)
+    TurnRunner(state, roller, sink, profile=profile, choose_retreat=choose_retreat).run(
+        choose_option
+    )

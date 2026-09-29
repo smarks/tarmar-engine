@@ -1,0 +1,1629 @@
+[
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 1,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 2,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Sword initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 3,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 0,
+   "total": 1,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Spear initiative 1d6: [1] = 1"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 4,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Archer initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 5,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Mage initiative 1d6: [3] +1 = 4"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 6,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    4,
+    1,
+    3,
+    2
+   ]
+  },
+  "message": "Movement order: Mage, Sword, Archer, Spear"
+ },
+ {
+  "turn": 1,
+  "phase": 2,
+  "sequence": 7,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 8,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 9,
+  "event_type": "decision",
+  "actor": "Mage",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 1.313,
+    "score_text": "1.313",
+    "rationale": "Charge Spear: Broadsword at 5 hexes, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Mage chooses CHARGE ATTACK (b): Charge Spear: Broadsword at 5 hexes, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 10,
+  "event_type": "movement",
+  "actor": "Mage",
+  "payload": {
+   "from": [
+    0,
+    5
+   ],
+   "to": [
+    4,
+    1
+   ],
+   "gait": "jog",
+   "hexes": 4
+  },
+  "message": "Mage jogs 4 hex(es) toward Spear"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 11,
+  "event_type": "decision",
+  "actor": "Sword",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 4.41,
+    "score_text": "4.410",
+    "rationale": "Charge Archer: Broadsword at 5 hexes, d20 +5 vs TN 14 — P(hit) 0.600 (12 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 4.410",
+    "target_id": 3,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Sword chooses CHARGE ATTACK (b): Charge Archer: Broadsword at 5 hexes, d20 +5 vs TN 14 — P(hit) 0.600 (12 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 4.410"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 12,
+  "event_type": "movement",
+  "actor": "Sword",
+  "payload": {
+   "from": [
+    -5,
+    0
+   ],
+   "to": [
+    -1,
+    -4
+   ],
+   "gait": "jog",
+   "hexes": 4
+  },
+  "message": "Sword jogs 4 hex(es) toward Archer"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 13,
+  "event_type": "decision",
+  "actor": "Archer",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.181,
+    "score_text": "1.181",
+    "rationale": "Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Archer chooses ATTACK (j): Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 14,
+  "event_type": "decision",
+  "actor": "Spear",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.47,
+    "score_text": "1.470",
+    "rationale": "Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Spear chooses ATTACK (j): Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470"
+ },
+ {
+  "turn": 1,
+  "phase": 4,
+  "sequence": 15,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 16,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 17,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    6
+   ],
+   "modifier": 5,
+   "total": 11,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Sword attack 1d20: [6] +5 = 11 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 18,
+  "event_type": "action",
+  "actor": "Sword",
+  "payload": {
+   "target": 3,
+   "outcome": "miss",
+   "arc": "rear",
+   "ranged": false,
+   "attack_roll": 17,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 5,
+   "target_number": 14
+  },
+  "message": "Sword attacks Archer from the rear with Broadsword at 1 hex (d20 +5 vs TN 14): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 19,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    10
+   ],
+   "modifier": 1,
+   "total": 11,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Archer attack 1d20: [10] +1 = 11 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 20,
+  "event_type": "action",
+  "actor": "Archer",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 19,
+   "weapon": "Small Bow",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Archer attacks Sword with Small Bow at 1 hex (d20 +1 vs TN 13): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 21,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    9
+   ],
+   "modifier": 1,
+   "total": 10,
+   "target_number": 16,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Mage attack 1d20: [9] +1 = 10 vs TN 16 (need 16+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 22,
+  "event_type": "action",
+  "actor": "Mage",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 21,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 16
+  },
+  "message": "Mage attacks Spear with Broadsword at 1 hex (d20 +1 vs TN 16): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 23,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    20
+   ],
+   "modifier": 0,
+   "total": 20,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "critical"
+  },
+  "message": "Spear attack 1d20: [20] = 20 vs TN 13 (need 13+) — critical"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 24,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "confirm",
+   "specification": "1d20",
+   "faces": [
+    7
+   ],
+   "modifier": 0,
+   "total": 7,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "not confirmed, ordinary critical"
+  },
+  "message": "Spear confirm 1d20: [7] = 7 vs TN 13 (need 13+) — not confirmed, ordinary critical"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 25,
+  "event_type": "action",
+  "actor": "Spear",
+  "payload": {
+   "target": 4,
+   "outcome": "critical",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 23,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 13
+  },
+  "message": "Spear attacks Mage with Spear at 1 hex (d20 +0 vs TN 13): critical"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 26,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "damage",
+   "specification": "1d6",
+   "faces": [
+    5
+   ],
+   "modifier": 0,
+   "total": 5,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "critical damage roll 1 of 2"
+  },
+  "message": "Spear damage 1d6: [5] = 5 — critical damage roll 1 of 2"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 27,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "damage",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 0,
+   "total": 1,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "critical damage roll 2 of 2"
+  },
+  "message": "Spear damage 1d6: [1] = 1 — critical damage roll 2 of 2"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 28,
+  "event_type": "damage",
+  "actor": "Spear",
+  "payload": {
+   "target": 4,
+   "net": 6,
+   "raw": 6,
+   "stopped": 0,
+   "fatigue": 34,
+   "body": 27,
+   "chain": [
+    23,
+    26,
+    27
+   ]
+  },
+  "message": "Mage takes 6 damage (6 rolled less 0 stopped by armour; fatigue 34/40)"
+ },
+ {
+  "turn": 1,
+  "phase": 6,
+  "sequence": 29,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 1,
+  "phase": 6,
+  "sequence": 30,
+  "event_type": "movement",
+  "actor": "Spear",
+  "payload": {
+   "victim": 4,
+   "victim_to": [
+    3,
+    2
+   ],
+   "pusher_to": [
+    4,
+    1
+   ]
+  },
+  "message": "Spear forces Mage back a hex and advances"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 31,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 32,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    5
+   ],
+   "modifier": 1,
+   "total": 6,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Sword initiative 1d6: [5] +1 = 6"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 33,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    6
+   ],
+   "modifier": 0,
+   "total": 6,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Spear initiative 1d6: [6] = 6"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 34,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 1,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Archer initiative 1d6: [2] +1 = 3"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 35,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    4
+   ],
+   "modifier": 1,
+   "total": 5,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Mage initiative 1d6: [4] +1 = 5"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 36,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    1,
+    2,
+    4,
+    3
+   ]
+  },
+  "message": "Movement order: Sword, Spear, Mage, Archer"
+ },
+ {
+  "turn": 2,
+  "phase": 2,
+  "sequence": 37,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 38,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 39,
+  "event_type": "decision",
+  "actor": "Sword",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.94,
+    "score_text": "2.940",
+    "rationale": "Strike Archer: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940",
+    "target_id": 3,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Sword chooses ATTACK (j): Strike Archer: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 40,
+  "event_type": "decision",
+  "actor": "Spear",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.47,
+    "score_text": "1.470",
+    "rationale": "Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Spear chooses ATTACK (j): Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 41,
+  "event_type": "decision",
+  "actor": "Mage",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.313,
+    "score_text": "1.313",
+    "rationale": "Strike Spear: Broadsword at 1 hex, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Mage chooses ATTACK (j): Strike Spear: Broadsword at 1 hex, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 42,
+  "event_type": "decision",
+  "actor": "Archer",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.181,
+    "score_text": "1.181",
+    "rationale": "Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Archer chooses ATTACK (j): Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181"
+ },
+ {
+  "turn": 2,
+  "phase": 4,
+  "sequence": 43,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 44,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 45,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    13
+   ],
+   "modifier": 1,
+   "total": 14,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Sword attack 1d20: [13] +1 = 14 vs TN 14 (need 14+) — hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 46,
+  "event_type": "action",
+  "actor": "Sword",
+  "payload": {
+   "target": 3,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 45,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Sword attacks Archer with Broadsword at 1 hex (d20 +1 vs TN 14): hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 47,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    6,
+    5
+   ],
+   "modifier": 0,
+   "total": 11,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Sword damage 2d6: [6, 5] = 11"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 48,
+  "event_type": "damage",
+  "actor": "Sword",
+  "payload": {
+   "target": 3,
+   "net": 11,
+   "raw": 11,
+   "stopped": 0,
+   "fatigue": 29,
+   "body": 27,
+   "chain": [
+    45,
+    47
+   ]
+  },
+  "message": "Archer takes 11 damage (11 rolled less 0 stopped by armour; fatigue 29/40)"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 49,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    12
+   ],
+   "modifier": 1,
+   "total": 13,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Archer attack 1d20: [12] +1 = 13 vs TN 13 (need 13+) — hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 50,
+  "event_type": "action",
+  "actor": "Archer",
+  "payload": {
+   "target": 1,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 49,
+   "weapon": "Small Bow",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Archer attacks Sword with Small Bow at 1 hex (d20 +1 vs TN 13): hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 51,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "damage",
+   "specification": "1d6-1",
+   "faces": [
+    5
+   ],
+   "modifier": -1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Archer damage 1d6-1: [5] -1 = 4"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 52,
+  "event_type": "damage",
+  "actor": "Archer",
+  "payload": {
+   "target": 1,
+   "net": 4,
+   "raw": 4,
+   "stopped": 0,
+   "fatigue": 36,
+   "body": 27,
+   "chain": [
+    49,
+    51
+   ]
+  },
+  "message": "Sword takes 4 damage (4 rolled less 0 stopped by armour; fatigue 36/40)"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 53,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    15
+   ],
+   "modifier": 1,
+   "total": 16,
+   "target_number": 16,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Mage attack 1d20: [15] +1 = 16 vs TN 16 (need 16+) — hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 54,
+  "event_type": "action",
+  "actor": "Mage",
+  "payload": {
+   "target": 2,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 53,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 16
+  },
+  "message": "Mage attacks Spear with Broadsword at 1 hex (d20 +1 vs TN 16): hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 55,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    5,
+    3
+   ],
+   "modifier": 0,
+   "total": 8,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Mage damage 2d6: [5, 3] = 8"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 56,
+  "event_type": "damage",
+  "actor": "Mage",
+  "payload": {
+   "target": 2,
+   "net": 5,
+   "raw": 8,
+   "stopped": 3,
+   "fatigue": 35,
+   "body": 27,
+   "chain": [
+    53,
+    55
+   ]
+  },
+  "message": "Spear takes 5 damage (8 rolled less 3 stopped by armour; fatigue 35/40)"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 57,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    2
+   ],
+   "modifier": 0,
+   "total": 2,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Spear attack 1d20: [2] = 2 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 58,
+  "event_type": "action",
+  "actor": "Spear",
+  "payload": {
+   "target": 4,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 57,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 13
+  },
+  "message": "Spear attacks Mage with Spear at 1 hex (d20 +0 vs TN 13): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 59,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 60,
+  "event_type": "movement",
+  "actor": "Mage",
+  "payload": {
+   "victim": 2,
+   "victim_to": [
+    5,
+    0
+   ],
+   "pusher_to": [
+    4,
+    1
+   ]
+  },
+  "message": "Mage forces Spear back a hex and advances"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 61,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 62,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Sword initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 63,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 0,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Spear initiative 1d6: [3] = 3"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 64,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    4
+   ],
+   "modifier": 1,
+   "total": 5,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Archer initiative 1d6: [4] +1 = 5"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 65,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Mage initiative 1d6: [3] +1 = 4"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 66,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    3,
+    4,
+    2,
+    1
+   ]
+  },
+  "message": "Movement order: Archer, Mage, Spear, Sword"
+ },
+ {
+  "turn": 3,
+  "phase": 2,
+  "sequence": 67,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 68,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 69,
+  "event_type": "decision",
+  "actor": "Archer",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.181,
+    "score_text": "1.181",
+    "rationale": "Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Archer chooses ATTACK (j): Strike Sword: Small Bow at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 2.625 expected damage (1d6-1 less 0 armour stops) = 1.181"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 70,
+  "event_type": "decision",
+  "actor": "Mage",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.313,
+    "score_text": "1.313",
+    "rationale": "Strike Spear: Broadsword at 1 hex, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Mage chooses ATTACK (j): Strike Spear: Broadsword at 1 hex, d20 +1 vs TN 16 — P(hit) 0.300 (6 of 20 faces) x 4.376 expected damage (2d6 less 3 armour stops) = 1.313"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 71,
+  "event_type": "decision",
+  "actor": "Spear",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.47,
+    "score_text": "1.470",
+    "rationale": "Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Spear chooses ATTACK (j): Strike Mage: Spear at 1 hex, d20 +0 vs TN 13 — P(hit) 0.400 (8 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.470"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 72,
+  "event_type": "decision",
+  "actor": "Sword",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.94,
+    "score_text": "2.940",
+    "rationale": "Strike Archer: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940",
+    "target_id": 3,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Sword chooses ATTACK (j): Strike Archer: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940"
+ },
+ {
+  "turn": 3,
+  "phase": 4,
+  "sequence": 73,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 74,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 75,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    13
+   ],
+   "modifier": 1,
+   "total": 14,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Sword attack 1d20: [13] +1 = 14 vs TN 14 (need 14+) — hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 76,
+  "event_type": "action",
+  "actor": "Sword",
+  "payload": {
+   "target": 3,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 75,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Sword attacks Archer with Broadsword at 1 hex (d20 +1 vs TN 14): hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 77,
+  "event_type": "roll",
+  "actor": "Sword",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    4,
+    5
+   ],
+   "modifier": 0,
+   "total": 9,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Sword damage 2d6: [4, 5] = 9"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 78,
+  "event_type": "damage",
+  "actor": "Sword",
+  "payload": {
+   "target": 3,
+   "net": 9,
+   "raw": 9,
+   "stopped": 0,
+   "fatigue": 20,
+   "body": 27,
+   "chain": [
+    75,
+    77
+   ]
+  },
+  "message": "Archer takes 9 damage (9 rolled less 0 stopped by armour; fatigue 20/40)"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 79,
+  "event_type": "roll",
+  "actor": "Archer",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    6
+   ],
+   "modifier": 0,
+   "total": 6,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Archer attack 1d20: [6] = 6 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 80,
+  "event_type": "action",
+  "actor": "Archer",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 79,
+   "weapon": "Small Bow",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 13
+  },
+  "message": "Archer attacks Sword with Small Bow at 1 hex (d20 +0 vs TN 13): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 81,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    18
+   ],
+   "modifier": 1,
+   "total": 19,
+   "target_number": 16,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Mage attack 1d20: [18] +1 = 19 vs TN 16 (need 16+) — hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 82,
+  "event_type": "action",
+  "actor": "Mage",
+  "payload": {
+   "target": 2,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 81,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 16
+  },
+  "message": "Mage attacks Spear with Broadsword at 1 hex (d20 +1 vs TN 16): hit"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 83,
+  "event_type": "roll",
+  "actor": "Mage",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    2,
+    2
+   ],
+   "modifier": 0,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Mage damage 2d6: [2, 2] = 4"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 84,
+  "event_type": "damage",
+  "actor": "Mage",
+  "payload": {
+   "target": 2,
+   "net": 1,
+   "raw": 4,
+   "stopped": 3,
+   "fatigue": 34,
+   "body": 27,
+   "chain": [
+    81,
+    83
+   ]
+  },
+  "message": "Spear takes 1 damage (4 rolled less 3 stopped by armour; fatigue 34/40)"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 85,
+  "event_type": "roll",
+  "actor": "Spear",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    8
+   ],
+   "modifier": 0,
+   "total": 8,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Spear attack 1d20: [8] = 8 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 86,
+  "event_type": "action",
+  "actor": "Spear",
+  "payload": {
+   "target": 4,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 85,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 0,
+   "target_number": 13
+  },
+  "message": "Spear attacks Mage with Spear at 1 hex (d20 +0 vs TN 13): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 87,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 88,
+  "event_type": "movement",
+  "actor": "Sword",
+  "payload": {
+   "victim": 3,
+   "victim_to": [
+    1,
+    -6
+   ],
+   "pusher_to": [
+    0,
+    -5
+   ]
+  },
+  "message": "Sword forces Archer back a hex and advances"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 89,
+  "event_type": "movement",
+  "actor": "Mage",
+  "payload": {
+   "victim": 2,
+   "victim_to": [
+    6,
+    -1
+   ],
+   "pusher_to": [
+    5,
+    0
+   ]
+  },
+  "message": "Mage forces Spear back a hex and advances"
+ }
+]

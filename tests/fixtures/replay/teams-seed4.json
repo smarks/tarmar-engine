@@ -1,0 +1,1389 @@
+[
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 1,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 2,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 1,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red One initiative 1d6: [2] +1 = 3"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 3,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red Two initiative 1d6: [3] +1 = 4"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 4,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue One initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 5,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    6
+   ],
+   "modifier": 1,
+   "total": 7,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue Two initiative 1d6: [6] +1 = 7"
+ },
+ {
+  "turn": 1,
+  "phase": 1,
+  "sequence": 6,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    4,
+    2,
+    1,
+    3
+   ]
+  },
+  "message": "Movement order: Blue Two, Red Two, Red One, Blue One"
+ },
+ {
+  "turn": 1,
+  "phase": 2,
+  "sequence": 7,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 8,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 9,
+  "event_type": "decision",
+  "actor": "Blue Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 2.94,
+    "score_text": "2.940",
+    "rationale": "Charge Red One: Broadsword at 6 hexes, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue Two chooses CHARGE ATTACK (b): Charge Red One: Broadsword at 6 hexes, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 10,
+  "event_type": "movement",
+  "actor": "Blue Two",
+  "payload": {
+   "from": [
+    3,
+    -1
+   ],
+   "to": [
+    -2,
+    -1
+   ],
+   "gait": "jog",
+   "hexes": 5
+  },
+  "message": "Blue Two jogs 5 hex(es) toward Red One"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 11,
+  "event_type": "decision",
+  "actor": "Red Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 0.642,
+    "score_text": "0.642",
+    "rationale": "Charge Blue Two: Spear at 2 hexes, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 1.833 expected damage (1d6 less 2 armour stops) = 0.642",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red Two chooses CHARGE ATTACK (b): Charge Blue Two: Spear at 2 hexes, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 1.833 expected damage (1d6 less 2 armour stops) = 0.642"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 12,
+  "event_type": "movement",
+  "actor": "Red Two",
+  "payload": {
+   "from": [
+    -3,
+    1
+   ],
+   "to": [
+    -2,
+    0
+   ],
+   "gait": "jog",
+   "hexes": 1
+  },
+  "message": "Red Two jogs 1 hex(es) toward Blue Two"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 13,
+  "event_type": "decision",
+  "actor": "Red One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.872,
+    "score_text": "1.872",
+    "rationale": "Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red One chooses ATTACK (j): Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 14,
+  "event_type": "decision",
+  "actor": "Blue One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 3.675,
+    "score_text": "3.675",
+    "rationale": "Charge Red Two: Broadsword at 5 hexes, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue One chooses CHARGE ATTACK (b): Charge Red Two: Broadsword at 5 hexes, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675"
+ },
+ {
+  "turn": 1,
+  "phase": 3,
+  "sequence": 15,
+  "event_type": "movement",
+  "actor": "Blue One",
+  "payload": {
+   "from": [
+    3,
+    0
+   ],
+   "to": [
+    -1,
+    0
+   ],
+   "gait": "jog",
+   "hexes": 4
+  },
+  "message": "Blue One jogs 4 hex(es) toward Red Two"
+ },
+ {
+  "turn": 1,
+  "phase": 4,
+  "sequence": 16,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 17,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 18,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    13
+   ],
+   "modifier": 1,
+   "total": 14,
+   "target_number": 15,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Red One attack 1d20: [13] +1 = 14 vs TN 15 (need 15+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 19,
+  "event_type": "action",
+  "actor": "Red One",
+  "payload": {
+   "target": 4,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 18,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 15
+  },
+  "message": "Red One attacks Blue Two with Broadsword at 1 hex (d20 +1 vs TN 15): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 20,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    16
+   ],
+   "modifier": 1,
+   "total": 17,
+   "target_number": 15,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Red Two attack 1d20: [16] +1 = 17 vs TN 15 (need 15+) — hit"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 21,
+  "event_type": "action",
+  "actor": "Red Two",
+  "payload": {
+   "target": 4,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 20,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 15
+  },
+  "message": "Red Two attacks Blue Two with Spear at 1 hex (d20 +1 vs TN 15): hit"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 22,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "damage",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 0,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red Two damage 1d6: [2] = 2"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 23,
+  "event_type": "damage",
+  "actor": "Red Two",
+  "payload": {
+   "target": 4,
+   "net": 0,
+   "raw": 2,
+   "stopped": 2
+  },
+  "message": "Blue Two's armour stops the blow (2 rolled, all of it stopped)"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 24,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    3
+   ],
+   "modifier": 3,
+   "total": 6,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Blue One attack 1d20: [3] +3 = 6 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 25,
+  "event_type": "action",
+  "actor": "Blue One",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "side",
+   "ranged": false,
+   "attack_roll": 24,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 3,
+   "target_number": 14
+  },
+  "message": "Blue One attacks Red Two from the side with Broadsword at 1 hex (d20 +3 vs TN 14): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 26,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Blue Two attack 1d20: [3] +1 = 4 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 1,
+  "phase": 5,
+  "sequence": 27,
+  "event_type": "action",
+  "actor": "Blue Two",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 26,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Blue Two attacks Red One with Broadsword at 1 hex (d20 +1 vs TN 14): miss"
+ },
+ {
+  "turn": 1,
+  "phase": 6,
+  "sequence": 28,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 29,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 30,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red One initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 31,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    4
+   ],
+   "modifier": 1,
+   "total": 5,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red Two initiative 1d6: [4] +1 = 5"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 32,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    5
+   ],
+   "modifier": 1,
+   "total": 6,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue One initiative 1d6: [5] +1 = 6"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 33,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue Two initiative 1d6: [3] +1 = 4"
+ },
+ {
+  "turn": 2,
+  "phase": 1,
+  "sequence": 34,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    3,
+    2,
+    4,
+    1
+   ]
+  },
+  "message": "Movement order: Blue One, Red Two, Blue Two, Red One"
+ },
+ {
+  "turn": 2,
+  "phase": 2,
+  "sequence": 35,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 36,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 37,
+  "event_type": "decision",
+  "actor": "Blue One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "b",
+    "name": "CHARGE ATTACK",
+    "score": 3.675,
+    "score_text": "3.675",
+    "rationale": "Charge Red Two: Broadsword at 1 hex, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue One chooses CHARGE ATTACK (b): Charge Red Two: Broadsword at 1 hex, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 38,
+  "event_type": "decision",
+  "actor": "Red Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.654,
+    "score_text": "1.654",
+    "rationale": "Strike Blue One: Spear at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.654",
+    "target_id": 3,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red Two chooses ATTACK (j): Strike Blue One: Spear at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.654"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 39,
+  "event_type": "decision",
+  "actor": "Blue Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.94,
+    "score_text": "2.940",
+    "rationale": "Strike Red One: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940",
+    "target_id": 1,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue Two chooses ATTACK (j): Strike Red One: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940"
+ },
+ {
+  "turn": 2,
+  "phase": 3,
+  "sequence": 40,
+  "event_type": "decision",
+  "actor": "Red One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.872,
+    "score_text": "1.872",
+    "rationale": "Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red One chooses ATTACK (j): Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872"
+ },
+ {
+  "turn": 2,
+  "phase": 4,
+  "sequence": 41,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 42,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 43,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    2
+   ],
+   "modifier": 1,
+   "total": 3,
+   "target_number": 15,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Red One attack 1d20: [2] +1 = 3 vs TN 15 (need 15+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 44,
+  "event_type": "action",
+  "actor": "Red One",
+  "payload": {
+   "target": 4,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 43,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 15
+  },
+  "message": "Red One attacks Blue Two with Broadsword at 1 hex (d20 +1 vs TN 15): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 45,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    8
+   ],
+   "modifier": 1,
+   "total": 9,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Red Two attack 1d20: [8] +1 = 9 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 46,
+  "event_type": "action",
+  "actor": "Red Two",
+  "payload": {
+   "target": 3,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 45,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Red Two attacks Blue One with Spear at 1 hex (d20 +1 vs TN 13): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 47,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    17
+   ],
+   "modifier": 1,
+   "total": 18,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "hit"
+  },
+  "message": "Blue One attack 1d20: [17] +1 = 18 vs TN 14 (need 14+) — hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 48,
+  "event_type": "action",
+  "actor": "Blue One",
+  "payload": {
+   "target": 2,
+   "outcome": "hit",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 47,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Blue One attacks Red Two with Broadsword at 1 hex (d20 +1 vs TN 14): hit"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 49,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "damage",
+   "specification": "2d6",
+   "faces": [
+    5,
+    3
+   ],
+   "modifier": 0,
+   "total": 8,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue One damage 2d6: [5, 3] = 8"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 50,
+  "event_type": "damage",
+  "actor": "Blue One",
+  "payload": {
+   "target": 2,
+   "net": 8,
+   "raw": 8,
+   "stopped": 0,
+   "fatigue": 32,
+   "body": 27,
+   "chain": [
+    47,
+    49
+   ]
+  },
+  "message": "Red Two takes 8 damage (8 rolled less 0 stopped by armour; fatigue 32/40)"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 51,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    9
+   ],
+   "modifier": 1,
+   "total": 10,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Blue Two attack 1d20: [9] +1 = 10 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 2,
+  "phase": 5,
+  "sequence": 52,
+  "event_type": "action",
+  "actor": "Blue Two",
+  "payload": {
+   "target": 1,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 51,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Blue Two attacks Red One with Broadsword at 1 hex (d20 +1 vs TN 14): miss"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 53,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 54,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "retreat save",
+   "specification": "3d6",
+   "faces": [
+    2,
+    1,
+    3
+   ],
+   "modifier": 0,
+   "total": 6,
+   "target_number": 12,
+   "versus": "DEX",
+   "roll_under": true,
+   "outcome": "keeps their feet"
+  },
+  "message": "Red Two retreat save 3d6: [2, 1, 3] = 6 vs DEX 12 (need 12 or less) — keeps their feet"
+ },
+ {
+  "turn": 2,
+  "phase": 6,
+  "sequence": 55,
+  "event_type": "info",
+  "actor": "Red Two",
+  "payload": {},
+  "message": "Red Two has no retreat hex but keeps their feet"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 56,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initiative"
+  },
+  "message": "Phase 1: Initiative — every combatant rolls 1d6 + adjDEX modifier"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 57,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    2
+   ],
+   "modifier": 1,
+   "total": 3,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red One initiative 1d6: [2] +1 = 3"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 58,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    1
+   ],
+   "modifier": 1,
+   "total": 2,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Red Two initiative 1d6: [1] +1 = 2"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 59,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    6
+   ],
+   "modifier": 1,
+   "total": 7,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue One initiative 1d6: [6] +1 = 7"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 60,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "initiative",
+   "specification": "1d6",
+   "faces": [
+    3
+   ],
+   "modifier": 1,
+   "total": 4,
+   "target_number": null,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": null
+  },
+  "message": "Blue Two initiative 1d6: [3] +1 = 4"
+ },
+ {
+  "turn": 3,
+  "phase": 1,
+  "sequence": 61,
+  "event_type": "info",
+  "actor": "",
+  "payload": {
+   "order": [
+    3,
+    4,
+    1,
+    2
+   ]
+  },
+  "message": "Movement order: Blue One, Blue Two, Red One, Red Two"
+ },
+ {
+  "turn": 3,
+  "phase": 2,
+  "sequence": 62,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Renew Spells"
+  },
+  "message": "Phase 2: Renew Spells — DEX+INT+WIS order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 63,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Initial Movement"
+  },
+  "message": "Phase 3: Initial Movement — initiative order; move or yield"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 64,
+  "event_type": "decision",
+  "actor": "Blue One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 2.94,
+    "score_text": "2.940",
+    "rationale": "Strike Red Two: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue One chooses ATTACK (j): Strike Red Two: Broadsword at 1 hex, d20 +1 vs TN 14 — P(hit) 0.400 (8 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 2.940"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 65,
+  "event_type": "decision",
+  "actor": "Blue Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 3.675,
+    "score_text": "3.675",
+    "rationale": "Strike Red Two: Broadsword at 1 hex, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675",
+    "target_id": 2,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Blue Two chooses ATTACK (j): Strike Red Two: Broadsword at 1 hex, d20 +3 vs TN 14 — P(hit) 0.500 (10 of 20 faces) x 7.350 expected damage (2d6 less 0 armour stops) = 3.675"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 66,
+  "event_type": "decision",
+  "actor": "Red One",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.872,
+    "score_text": "1.872",
+    "rationale": "Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872",
+    "target_id": 4,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red One chooses ATTACK (j): Strike Blue Two: Broadsword at 1 hex, d20 +1 vs TN 15 — P(hit) 0.350 (7 of 20 faces) x 5.350 expected damage (2d6 less 2 armour stops) = 1.872"
+ },
+ {
+  "turn": 3,
+  "phase": 3,
+  "sequence": 67,
+  "event_type": "decision",
+  "actor": "Red Two",
+  "payload": {
+   "forecast": true,
+   "chosen": {
+    "letter": "j",
+    "name": "ATTACK",
+    "score": 1.654,
+    "score_text": "1.654",
+    "rationale": "Strike Blue One: Spear at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.654",
+    "target_id": 3,
+    "spell_key": ""
+   }
+  },
+  "message": "Forecast — Red Two chooses ATTACK (j): Strike Blue One: Spear at 1 hex, d20 +1 vs TN 13 — P(hit) 0.450 (9 of 20 faces) x 3.675 expected damage (1d6 less 0 armour stops) = 1.654"
+ },
+ {
+  "turn": 3,
+  "phase": 4,
+  "sequence": 68,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Final Movement"
+  },
+  "message": "Phase 4: Final Movement — those who yielded now move"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 69,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Actions"
+  },
+  "message": "Phase 5: Actions — adjusted-DEX order, high to low"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 70,
+  "event_type": "roll",
+  "actor": "Red One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    9
+   ],
+   "modifier": 1,
+   "total": 10,
+   "target_number": 15,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Red One attack 1d20: [9] +1 = 10 vs TN 15 (need 15+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 71,
+  "event_type": "action",
+  "actor": "Red One",
+  "payload": {
+   "target": 4,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 70,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 15
+  },
+  "message": "Red One attacks Blue Two with Broadsword at 1 hex (d20 +1 vs TN 15): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 72,
+  "event_type": "roll",
+  "actor": "Red Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    7
+   ],
+   "modifier": 1,
+   "total": 8,
+   "target_number": 13,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Red Two attack 1d20: [7] +1 = 8 vs TN 13 (need 13+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 73,
+  "event_type": "action",
+  "actor": "Red Two",
+  "payload": {
+   "target": 3,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 72,
+   "weapon": "Spear",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 13
+  },
+  "message": "Red Two attacks Blue One with Spear at 1 hex (d20 +1 vs TN 13): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 74,
+  "event_type": "roll",
+  "actor": "Blue One",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    6
+   ],
+   "modifier": 1,
+   "total": 7,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Blue One attack 1d20: [6] +1 = 7 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 75,
+  "event_type": "action",
+  "actor": "Blue One",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "front",
+   "ranged": false,
+   "attack_roll": 74,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 1,
+   "target_number": 14
+  },
+  "message": "Blue One attacks Red Two with Broadsword at 1 hex (d20 +1 vs TN 14): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 76,
+  "event_type": "roll",
+  "actor": "Blue Two",
+  "payload": {
+   "purpose": "attack",
+   "specification": "1d20",
+   "faces": [
+    10
+   ],
+   "modifier": 3,
+   "total": 13,
+   "target_number": 14,
+   "versus": "TN",
+   "roll_under": false,
+   "outcome": "miss"
+  },
+  "message": "Blue Two attack 1d20: [10] +3 = 13 vs TN 14 (need 14+) — miss"
+ },
+ {
+  "turn": 3,
+  "phase": 5,
+  "sequence": 77,
+  "event_type": "action",
+  "actor": "Blue Two",
+  "payload": {
+   "target": 2,
+   "outcome": "miss",
+   "arc": "side",
+   "ranged": false,
+   "attack_roll": 76,
+   "weapon": "Broadsword",
+   "distance": 1,
+   "to_hit_bonus": 3,
+   "target_number": 14
+  },
+  "message": "Blue Two attacks Red Two from the side with Broadsword at 1 hex (d20 +3 vs TN 14): miss"
+ },
+ {
+  "turn": 3,
+  "phase": 6,
+  "sequence": 78,
+  "event_type": "phase",
+  "actor": "",
+  "payload": {
+   "phase_name": "Forced Retreat"
+  },
+  "message": "Phase 6: Forced Retreat"
+ }
+]
