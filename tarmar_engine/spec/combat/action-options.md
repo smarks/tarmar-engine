@@ -20,7 +20,7 @@
 | Option | Name           | Move        | Action                                     |
 | ------ | -------------- | ----------- | ------------------------------------------ |
 | j      | ATTACK         | Shift/still | Melee attack (non-missile)                 |
-| k      | DEFEND         | Shift/still | +4 to your Target Number (melee/thrown)    |
+| k      | DEFEND         | Shift/still | +4 to your Target Number (melee/non-missile) |
 | l      | ONE LAST SHOT  | Still       | Fire missile (if ready before engaged)     |
 | m      | CHANGE WEAPON  | Shift/still | Drop current, ready new non-missile        |
 | n      | DISENGAGE      | Shift/still | Move 1 hex any direction instead of attack |
