@@ -10,9 +10,11 @@ from pathlib import Path
 from unittest import TestCase
 
 import tarmar_engine
-from tarmar_engine import actions, engine, hexes
+from tarmar_engine import actions, combat_math, engine, hexes
 from tarmar_engine.spells import SPELLS
-from tarmar_engine.state import BARE_HANDED_DAMAGE_TABLE
+from tarmar_engine.state import BARE_HANDED_DAMAGE_TABLE, WeaponState
+
+from .test_state import make_combatant
 
 RULES = Path(tarmar_engine.__file__).resolve().parent / "spec"
 COMBAT = RULES / "combat"
@@ -137,6 +139,50 @@ class SpecialSituationsDriftGuard(TestCase):
         self.assertIn(
             f"+{hexes.DEFEND_DODGE_TN_BONUS}\nto your Target Number", markdown
         )
+
+    def test_defend_covers_the_same_attacks_on_both_pages_and_in_the_code(self):
+        # tarmar-studio #895: action-options.md's k row said "(melee/thrown)"
+        # while special-combat-situations.md's table, and the engine, give
+        # Defend no effect against thrown or missile attacks. Pin all three.
+        options = (COMBAT / "action-options.md").read_text()
+        situations = (
+            COMBAT / "action-options" / "special-combat-situations.md"
+        ).read_text()
+        engaged = _table_rows(options, "## Engaged Figures")
+        defend_row = next(row for row in engaged if row[0] == "k")
+        self.assertIn("non-missile", defend_row[3])
+        self.assertNotIn("thrown", defend_row[3])
+        self.assertIn(
+            "| Defend | Engaged    | Melee and non-missile only |", situations
+        )
+
+        swordsman = make_combatant(1, q=0, r=0, facing=0)
+        # A thrown dagger, from three hexes: the attack Defend does not cover.
+        thrower = make_combatant(
+            3,
+            q=-2,
+            r=0,
+            facing=0,
+            weapon=WeaponState(
+                item_id="dagger",
+                name="Dagger",
+                weapon_class="Piercing",
+                damage="1d6-1",
+                is_thrown=True,
+                hth_usable=True,
+            ),
+        )
+        defender = make_combatant(2, q=1, r=0, facing=3)
+        open_melee = combat_math.attack_numbers(swordsman, defender, ranged=False)
+        open_thrown = combat_math.attack_numbers(thrower, defender, ranged=True)
+        defender.defending = True
+        guarded_melee = combat_math.attack_numbers(swordsman, defender, ranged=False)
+        guarded_thrown = combat_math.attack_numbers(thrower, defender, ranged=True)
+        self.assertEqual(
+            guarded_melee.target_number - open_melee.target_number,
+            hexes.DEFEND_DODGE_TN_BONUS,
+        )
+        self.assertEqual(guarded_thrown.target_number, open_thrown.target_number)
 
     def test_bare_handed_damage_matches_special_combat_situations_md(self):
         markdown = (
