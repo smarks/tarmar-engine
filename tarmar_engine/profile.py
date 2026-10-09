@@ -110,7 +110,8 @@ class RulesProfile:
         self.grapple: GrappleRules = grapple or GrappleRules()
         self.resolution: ResolutionPolicy = resolution or ResolutionPolicy()
         #: Injected magic-mechanics numbers (:mod:`.magic`); ``None`` runs no
-        #: casting success tiers and offers no Push (tarmar-engine #26/#27).
+        #: casting success tiers, offers no Push and bounds no casting by
+        #: Channel (tarmar-engine #26/#27/#29).
         self.magic: MagicRules | None = magic
 
     @property
@@ -138,8 +139,8 @@ class TarmarProfile(RulesProfile):
 
     ``magic`` injects the magic-mechanics numbers (:class:`~.magic.MagicRules`):
     the caller that owns the DM-only canon builds them, and the engine carries
-    only the structure. Omitted, as in :data:`TARMAR`, no casting success tier
-    or Push is in play.
+    only the structure. Omitted, as in :data:`TARMAR`, no casting success tier,
+    Push or Channel is in play.
     """
 
     def __init__(self, magic: MagicRules | None = None) -> None:

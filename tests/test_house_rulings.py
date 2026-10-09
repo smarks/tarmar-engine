@@ -212,3 +212,83 @@ class MagicRulingsTest(TestCase):
             profile=TarmarProfile(magic=lavish),
         )
         self.assertEqual(state.by_id(1).mana, 10)
+
+
+class ChannelRulingsTest(TestCase):
+    """The Channel readings, pinned by probe (tarmar-engine #29)."""
+
+    def test_channel_bounds_whole_casting(self):
+        from .test_channel import CHANNEL_PROFILE, channel_caster
+        from .test_magic import cast
+
+        self.assertEqual(
+            ruling("channel_bounds_whole_casting").value, "spell cost + pushed mana"
+        )
+        # Channel 3: cost 1 + 2 pushed fits, cost 1 + 3 pushed does not.
+        cast(
+            channel_caster({"fire_missile": 2}, wisdom=30),
+            [[3, 3, 3], [3, 3], [2, 2, 2], [5]],
+            profile=CHANNEL_PROFILE,
+            push=2,
+        )
+        with self.assertRaises(ValueError):
+            cast(
+                channel_caster({"fire_missile": 2}),
+                [[3, 3, 3]],
+                profile=CHANNEL_PROFILE,
+                push=3,
+            )
+        # Lightning Bolt's own cost of 3 past a Channel of 1.
+        with self.assertRaises(ValueError):
+            cast(
+                channel_caster({"lightning_bolt": 1}, spells=["lightning_bolt"]),
+                [[3, 3, 3]],
+                profile=CHANNEL_PROFILE,
+                spell="lightning_bolt",
+            )
+
+    def test_channel_unrecorded_level(self):
+        from tarmar_engine.magic import UNRECORDED_SKILL_LEVEL, ChannelDerivation
+        from tarmar_engine.spells import get_spell
+
+        from .test_channel import channel_caster
+
+        self.assertEqual(ruling("channel_unrecorded_level").value, 0)
+        self.assertEqual(UNRECORDED_SKILL_LEVEL, 0)
+        caster = channel_caster({}, skill_levels={}).by_id(1)
+        per_spell = ChannelDerivation(source_skill=None, multiplier=5, offset=0)
+        general = ChannelDerivation(source_skill="tapestry", multiplier=5, offset=0)
+        spell = get_spell("fire_missile")
+        self.assertEqual(per_spell.recorded_level(caster, spell), 0)
+        self.assertEqual(general.recorded_level(caster, spell), 0)
+
+    def test_channel_kind_belongs_to_the_spell(self):
+        from tarmar_engine.spells import get_spell
+
+        from .test_channel import channel_caster, example_channel_rules
+
+        self.assertEqual(ruling("channel_kind_belongs_to_the_spell").value, "per spell")
+        rules = example_channel_rules()
+        first = channel_caster({}, skill_levels={"tapestry": 4}).by_id(1)
+        second = channel_caster({}, skill_levels={"tapestry": 1}).by_id(1)
+        heal = get_spell("heal")
+        self.assertEqual(rules.kind_for(heal), "weft")
+        self.assertEqual(rules.channel_for(first, heal), 4 + 2)
+        self.assertEqual(rules.channel_for(second, heal), 1 + 2)
+
+    def test_channel_not_on_renewal(self):
+        from tarmar_engine import engine
+
+        from .test_channel import CHANNEL_PROFILE, channel_caster
+        from .test_engine import ScriptedRoller
+
+        self.assertEqual(ruling("channel_not_on_renewal").value, "casting only")
+        # Shield is up with no recorded level: Channel 0, yet it renews.
+        state = channel_caster({}, active_spells=["shield"])
+        events: list[dict] = []
+        runner = engine.TurnRunner(
+            state, ScriptedRoller(), events.append, profile=CHANNEL_PROFILE
+        )
+        runner.phase_renew_spells()
+        self.assertEqual(state.by_id(1).active_spells, ["shield"])
+        self.assertEqual(state.by_id(1).mana, 10 - 1)

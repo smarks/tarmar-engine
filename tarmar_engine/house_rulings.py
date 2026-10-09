@@ -345,6 +345,51 @@ HOUSE_RULINGS += (
         RULING,
         "#825 (tarmar-engine #26/#27)",
     ),
+    HouseRuling(
+        "channel_bounds_whole_casting",
+        "Channel bounds the whole mana of one casting: the spell's cost and "
+        "its pushed mana together, before any tier refund. A spell whose own "
+        "cost is past the caster's Channel for it cannot be cast, and leaves "
+        "the menu; where Push's own optional cap is injected too, the "
+        "tighter of the two holds.",
+        "spell cost + pushed mana",
+        "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py _within_channel",
+        RULING,
+        "#825 (tarmar-engine #29)",
+    ),
+    HouseRuling(
+        "channel_unrecorded_level",
+        "A spell or general skill the caster's snapshot records no level for "
+        "is read at level 0 when Channel derives from it, as a weapon "
+        "missing from the weapon-skill map is.",
+        0,
+        "tarmar_engine/magic.py UNRECORDED_SKILL_LEVEL",
+        RULING,
+        "#825 (tarmar-engine #29)",
+    ),
+    HouseRuling(
+        "channel_kind_belongs_to_the_spell",
+        "The kind of magic that picks a Channel derivation belongs to the "
+        "spell (injected per spell key, with an injected default), not to the "
+        "caster: two casters casting one spell derive Channel the same way. "
+        "The page does not say which: the alternative reading makes the kind "
+        "belong to the way a caster casts the spell, keyed by caster and "
+        "spell together, so one spell could take either derivation.",
+        "per spell",
+        "tarmar_engine/magic.py ChannelRules.kind_for",
+        RULING,
+        "#825 (tarmar-engine #29)",
+    ),
+    HouseRuling(
+        "channel_not_on_renewal",
+        "Channel bounds a casting (phase 5), not a phase-2 renewal: a renewal "
+        "pays only the spell's cost again, which its casting already held "
+        "within the Channel, and is not checked a second time.",
+        "casting only",
+        "tarmar_engine/engine.py phase_renew_spells",
+        RULING,
+        "#825 (tarmar-engine #29)",
+    ),
 )
 
 

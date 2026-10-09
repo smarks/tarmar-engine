@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from . import actions, combat_math, hexes, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
-from .magic import MagicRules, PushRules
+from .magic import ChannelRules, ChannelUnclassifiedSpell, MagicRules, PushRules
 from .reactions import TarmarReactions
 from .spells import get_spell
 from .state import BattleState, CombatantState, WeaponState
@@ -146,6 +146,10 @@ class Decision:
 
     chosen: Candidate
     candidates: list[Candidate] = field(default_factory=list)
+    #: Why casts were withheld from the menu, one line per spell: past the
+    #: actor's Channel, or a spell the Channel rules give no kind of magic
+    #: (tarmar-engine #29). Empty with no Channel rules injected.
+    withheld: list[str] = field(default_factory=list)
 
 
 def three_d6_at_most(target: int) -> float:
@@ -576,24 +580,87 @@ def choose_option(
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
-    ``magic`` is the profile's injected magic rules (:mod:`.magic`). With Push
-    rules in them, every cast on the menu gains its pushed variants, for a
+    ``magic`` is the profile's injected magic rules (:mod:`.magic`). With
+    Channel rules in them, a cast past the actor's Channel for its spell is
+    withdrawn from the menu (:func:`_within_channel`). With Push rules, every
+    cast left on the menu gains its pushed variants, up to the Channel, for a
     player to choose; the AI does not push (:func:`_push_candidates`). A
     caller driving the engine with this policy passes the same rules the
-    profile carries, e.g. ``functools.partial(choose_option, magic=rules)``.
+    profile carries, e.g. ``functools.partial(choose_option, magic=rules)``:
+    the engine refuses a cast past the Channel, so a menu built without them
+    can offer one it will not run.
     """
     decision = _score_options(state, actor)
+    if magic is not None and magic.channel is not None:
+        decision = _within_channel(actor, decision, magic.channel)
     if magic is not None and magic.push is not None:
         decision.candidates.extend(
-            _push_candidates(actor, decision.candidates, magic.push)
+            _push_candidates(actor, decision.candidates, magic.push, magic.channel)
         )
     return decision
 
 
+def _within_channel(
+    actor: CombatantState, decision: Decision, channel: ChannelRules
+) -> Decision:
+    """The decision less every cast the actor's Channel does not allow.
+
+    A cast is withheld when its spell costs more than the actor's Channel
+    for it, or when the Channel rules give the spell no kind of magic (the
+    engine would refuse either), and :attr:`Decision.withheld` says why,
+    once per spell. The withheld casts leave the player's menu and the AI's
+    choice alike. When the AI had chosen one, it takes the best of what
+    remains by the rule it chose with (the highest score, the first listed
+    on a tie).
+
+    The MOVE fallback for a menu left empty is defensive: every menu
+    :func:`_score_options` builds holds an option that is not a cast (DODGE,
+    the engaged options, standing up, Struggle Free), so ``choose_option``
+    never empties one. It is probed directly.
+    """
+    kept: list[Candidate] = []
+    withheld: dict[str, str] = {}
+    for candidate in decision.candidates:
+        if not candidate.spell_key:
+            kept.append(candidate)
+            continue
+        spell = get_spell(candidate.spell_key)
+        try:
+            limit = channel.channel_for(actor, spell)
+        except ChannelUnclassifiedSpell as unclassified:
+            withheld.setdefault(spell.key, f"{spell.name} withheld: {unclassified}")
+            continue
+        if spell.level > limit:
+            withheld.setdefault(
+                spell.key,
+                f"{spell.name} withheld: it costs {spell.level} mana, past "
+                f"{actor.name}'s Channel {limit} for it",
+            )
+            continue
+        kept.append(candidate)
+    reasons = list(withheld.values())
+    if any(candidate is decision.chosen for candidate in kept):
+        return Decision(chosen=decision.chosen, candidates=kept, withheld=reasons)
+    if not kept:
+        kept = [Candidate("a", "MOVE", 0.0, "Nothing else is legal")]
+    return Decision(
+        chosen=max(kept, key=lambda candidate: candidate.score),
+        candidates=kept,
+        withheld=reasons,
+    )
+
+
 def _push_candidates(
-    actor: CombatantState, candidates: list[Candidate], push: PushRules
+    actor: CombatantState,
+    candidates: list[Candidate],
+    push: PushRules,
+    channel_rules: ChannelRules | None = None,
 ) -> list[Candidate]:
     """The pushed variant of each cast on the menu, one per affordable amount.
+
+    With Channel rules, no variant takes the casting's whole mana past the
+    actor's Channel for the spell, and each names that Channel; Push's own
+    optional cap still applies beneath it.
 
     Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
     the AI's choice: pricing a push needs the spell-by-spell payoff, and the
@@ -612,7 +679,11 @@ def _push_candidates(
         attribute = (
             actor.intelligence if push.control_attribute == "INT" else actor.wisdom
         )
-        for extra_mana in range(1, push.push_room(spell, actor.mana) + 1):
+        channel = (
+            None if channel_rules is None else channel_rules.channel_for(actor, spell)
+        )
+        channel_note = "" if channel is None else f", Channel {channel}"
+        for extra_mana in range(1, push.push_room(spell, actor.mana, channel) + 1):
             invested = push.mana_invested(spell.level, extra_mana)
             target = attribute - push.penalty_per_mana * invested - injury - off_balance
             pushed.append(
@@ -621,7 +692,7 @@ def _push_candidates(
                     f"{candidate.name} (PUSH {extra_mana} MANA)",
                     PLAYER_ONLY_SCORE,
                     f"Push {extra_mana} extra mana ({spell.level + extra_mana} "
-                    f"in all): Control Roll {push.control_dice} ≤ "
+                    f"in all{channel_note}): Control Roll {push.control_dice} ≤ "
                     f"{push.control_attribute} {attribute} less "
                     f"{push.penalty_per_mana} x {invested} invested, "
                     f"{injury} injury and {off_balance} off-balance = {target}; "
