@@ -282,6 +282,72 @@ HOUSE_RULINGS += (
 )
 
 
+# The magic mechanics' readings (tarmar-studio #825, split into tarmar-engine
+# #26-#31). Structural readings only: every number those mechanics use is
+# injected through tarmar_engine.magic.MagicRules, and none is recorded here.
+HOUSE_RULINGS += (
+    HouseRuling(
+        "success_tier_needs_a_success",
+        "A casting success tier applies only to a roll that already succeeds; "
+        "it never turns a failure into a success.",
+        "success first",
+        "tarmar_engine/engine.py cast_spell",
+        "Spencer's ruling on tarmar-studio #292's scope (" + RULING + ")",
+        "#825 (tarmar-engine #26)",
+    ),
+    HouseRuling(
+        "magic_bonus_on_rolled_effect",
+        "A tier's and a held push's effect bonuses add to the spell's rolled "
+        "damage or healing, before armour, at the injected rate for that kind "
+        "of effect. A spell with no rolled effect (a continuing one) takes no "
+        "tier bonus and cannot be pushed, and a kind the rules give no push "
+        "bonus cannot be pushed either. No page gives the size of either "
+        "bonus; both are injected.",
+        ("damage", "healing"),
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#825 (tarmar-engine #26/#27)",
+    ),
+    HouseRuling(
+        "push_control_after_casting",
+        "The Control Roll is rolled only after a successful casting roll, "
+        "before the spell's aim and effect, and takes the casting roll's "
+        "injury band and off-balance penalty.",
+        ("casting", "control", "spell aim"),
+        "tarmar_engine/engine.py _push_control_roll",
+        RULING,
+        "#825 (tarmar-engine #27)",
+    ),
+    HouseRuling(
+        "pushed_mana_paid_with_cost",
+        "Pushed mana is paid with the spell's cost whenever the cast pays: on "
+        "a success, and on the failures that lose mana (#816).",
+        "with the cost",
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#825 (tarmar-engine #27)",
+    ),
+    HouseRuling(
+        "tier_refund_before_control",
+        "A tier's mana refund is paid as soon as the casting roll succeeds, "
+        "before a pushed spell's Control Roll, and a Runaway on that roll "
+        "does not take it back.",
+        "before the Control Roll",
+        "tarmar_engine/engine.py _casting_success_tier",
+        RULING,
+        "#825 (tarmar-engine #26/#27)",
+    ),
+    HouseRuling(
+        "tier_refund_cap_includes_push",
+        "A tier's mana refund is capped at what the cast cost, pushed mana included.",
+        "spell cost + pushed mana",
+        "tarmar_engine/engine.py _casting_success_tier",
+        RULING,
+        "#825 (tarmar-engine #26/#27)",
+    ),
+)
+
+
 def ruling(key: str) -> HouseRuling:
     """Look one entry up by key.
 

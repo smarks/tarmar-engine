@@ -239,6 +239,26 @@ keys a manual player can pick: `sprint`, the yielded movers (`a_yield`,
 `tarmar_engine.house_rulings` records every reading the engine makes where a
 page is silent, each marked for Spencer.
 
+## Magic mechanics: structure here, numbers injected (v0.9.7)
+
+The magic-mechanics pages are DM-only and this repository is public, so the
+engine follows the classic profile's precedent: **all injected, no rulebook
+numbers.** `tarmar_engine.magic` holds each mechanic's structure, and every
+number and table arrives in a `MagicRules` the caller builds from its own
+canon and passes as `TarmarProfile(magic=rules)`. The default profile
+(`TARMAR`, `magic=None`) runs exactly as before: no new events and no new
+payload keys. The tests use invented numbers.
+
+| `MagicRules` field | What the engine does with it |
+|---|---|
+| `casting_success_tiers` (`CastingSuccessTier`: `key`, `label`, `natural_totals`, `effect_bonus`, `mana_refund`) | After a **successful** casting roll, the natural total picks a tier; it is narrated (a `status` event carrying `success_tier`), its refund is paid back before any Control Roll (capped at the cost, pushed mana included), and its bonus adds to the spell's rolled damage or healing. A tier never rescues a failed roll (tarmar-engine #26). |
+| `push` (`PushRules`: `control_dice`, `control_attribute`, `penalty_per_mana`, `base_cost_counts_as_invested`, `failure_bands`, `automatic_runaway_totals`, `effect_bonus_per_mana_by_kind`, `max_push_mana` (`None`: no cap of Push's own), `spell_effect_bonus_per_mana`) | Each cast on the menu gains pushed variants (`Candidate.push_mana`, score 0, for a player; the AI does not push), but only for a spell whose kind of rolled effect (`SpellEffectKind`: damage, healing) the rules give a push bonus; a continuing spell is never pushed. In phase 5, after a successful casting roll, a Control Roll is made roll-under against the attribute less the penalty per mana invested and the casting roll's injury and off-balance penalties; a failure's margin picks a `ControlBand` (injected `key`, `label`, `is_runaway`, `spell_takes_effect`, `push_bonus_applies`), and an automatic-Runaway natural total takes the first Runaway band. The pushed mana is paid with the cost (tarmar-engine #27). |
+
+To put Push on the AI's menu, drive the turn with
+`functools.partial(policy.choose_option, magic=rules)`. A Runaway is flagged
+(`runaway: True`) but its later turns are not modelled yet; Borrowing,
+Channel, Runaway and Counterspell are tarmar-engine #28–#31.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
