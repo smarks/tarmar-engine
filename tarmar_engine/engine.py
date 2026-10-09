@@ -34,11 +34,11 @@ Phase map (turn-sequence.md):
 Rules gaps deliberately noted rather than invented: bleeding from a severe
 critical is reported as a status event but not ticked (the rules publish no
 rate — same stance as ``tarmar_rules``'s report-only flags). The casting
-success tiers and Push run only on a profile with injected
-:class:`~tarmar_engine.magic.MagicRules` (tarmar-engine #26/#27), which carry
-every number they use; Borrowing, Channel, Runaway's later turns and
-Counterspell are not modelled yet (tarmar-engine #28–#31, from tarmar-studio
-#825).
+success tiers, Push and Channel run only on a profile with injected
+:class:`~tarmar_engine.magic.MagicRules` (tarmar-engine #26/#27/#29), which
+carry every number they use; Borrowing, Runaway's later turns and
+Counterspell are not modelled yet (tarmar-engine #28, #30, #31, from
+tarmar-studio #825).
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -436,6 +436,20 @@ class TurnRunner:
                         payload={"spell": key, "ended": True},
                     )
 
+    @staticmethod
+    def _decision_payload(decision: policy.Decision) -> dict:
+        """A decision event's payload. Only a decision that withheld casts
+        (the Channel, tarmar-engine #29) carries ``withheld``, so every other
+        decision logs the payload it always has."""
+        payload: dict = {
+            "forecast": True,
+            "chosen": decision.chosen.to_payload(),
+            "candidates": [c.to_payload() for c in decision.candidates],
+        }
+        if decision.withheld:
+            payload["withheld"] = list(decision.withheld)
+        return payload
+
     def phase_initial_movement(self, order, choose_option) -> None:
         self.begin_phase(3, "Initial Movement", "initiative order; move or yield")
         for combatant in order:
@@ -456,11 +470,7 @@ class TurnRunner:
                 f"Forecast — {combatant.name} chooses {decision.chosen.name} "
                 f"({decision.chosen.letter}): {decision.chosen.rationale}",
                 actor=combatant.name,
-                payload={
-                    "forecast": True,
-                    "chosen": decision.chosen.to_payload(),
-                    "candidates": [c.to_payload() for c in decision.candidates],
-                },
+                payload=self._decision_payload(decision),
             )
             if self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
@@ -1984,8 +1994,16 @@ class TurnRunner:
         hooks run, in this order, between the casting roll and the effect:
         the casting success tier (:meth:`_casting_success_tier`) and a pushed
         cast's Control Roll (:meth:`_push_control_roll`). Their bonuses add
-        to the spell's rolled effect. With no ``MagicRules`` neither runs and
-        a cast logs exactly what it always has.
+        to the spell's rolled effect. With injected Channel rules the whole
+        mana of the casting, cost and pushed mana together, must lie within
+        the caster's Channel for the spell (:meth:`.magic.ChannelRules.
+        channel_for`), and the cast names the Channel it used. With no
+        ``MagicRules`` none of these runs and a cast logs exactly what it
+        always has.
+
+        Raises:
+            ValueError: for a push the profile's rules do not allow, or a
+                casting past the caster's Channel for the spell.
         """
         spell = get_spell(combatant.chosen_spell)
         magic = self.profile.magic
@@ -2008,6 +2026,19 @@ class TurnRunner:
                     f"{spell.name}; the cap is {cap}"
                 )
         cost = spell.level + push_mana
+        # The Channel used and its kind, with Channel rules injected.
+        channel_used: tuple[int, str] | None = None
+        if magic is not None and magic.channel is not None:
+            channel_used = (
+                magic.channel.channel_for(combatant, spell),
+                magic.channel.kind_for(spell),
+            )
+        channel = None if channel_used is None else channel_used[0]
+        if channel is not None and cost > channel:
+            raise ValueError(
+                f"{combatant.name} casts {spell.name} with {cost} mana; "
+                f"their Channel for it is {channel}"
+            )
         if (
             self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
@@ -2075,6 +2106,8 @@ class TurnRunner:
             cost_note = f"{paid_text} mana, {combatant.mana} left"
         else:
             cost_note = f"no mana spent, {combatant.mana} left"
+        if channel is not None:
+            cost_note += f"; Channel {channel}"
         payload: dict[str, str | int | bool] = {
             "spell": spell.key,
             "success": succeeded,
@@ -2085,6 +2118,9 @@ class TurnRunner:
         # cast logs the payload it always has.
         if magic is not None and magic.push is not None:
             payload["push_mana"] = push_mana
+        # Likewise the Channel keys, only with Channel rules injected.
+        if channel_used is not None:
+            payload["channel"], payload["channel_kind"] = channel_used
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "

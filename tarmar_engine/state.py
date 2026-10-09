@@ -159,6 +159,15 @@ class CombatantState:
     #: caster renews only level 2+ spells and casts only level 3+ ones
     #: (tarmar-studio #821).
     spell_mastery: dict[str, int] = field(default_factory=dict)
+    #: Recorded per-spell skill levels, by spell key, as the game
+    #: keeps them (tarmar-studio derives them from ``Character.spells``). Read by
+    #: injected Channel rules (``tarmar_engine.magic.ChannelRules``); a spell
+    #: missing from the map is at level 0. Nothing else reads it.
+    spell_skill_levels: dict[str, int] = field(default_factory=dict)
+    #: The caster's level in general skills a kind of magic's Channel may
+    #: derive from instead of the spell's own level, by the injected skill
+    #: key (``ChannelDerivation.source_skill``). Missing: level 0.
+    skill_levels: dict[str, int] = field(default_factory=dict)
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
