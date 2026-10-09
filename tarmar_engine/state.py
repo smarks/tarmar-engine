@@ -203,6 +203,10 @@ class CombatantState:
     chosen_letter: str = ""
     chosen_target: int | None = None
     chosen_spell: str = ""
+    #: Extra mana the chosen cast pushes into its spell (tarmar-engine #27);
+    #: 0 is an ordinary cast. Only a profile with injected Push rules acts on
+    #: it.
+    chosen_push_mana: int = 0
     moved_this_turn: bool = False
     dealt_damage_this_turn: bool = False
     took_damage_this_turn: bool = False
@@ -281,6 +285,7 @@ class CombatantState:
         self.chosen_letter = ""
         self.chosen_target = None
         self.chosen_spell = ""
+        self.chosen_push_mana = 0
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
         self.took_damage_this_turn = False

@@ -33,9 +33,12 @@ Phase map (turn-sequence.md):
 
 Rules gaps deliberately noted rather than invented: bleeding from a severe
 critical is reported as a status event but not ticked (the rules publish no
-rate — same stance as ``tarmar_rules``'s report-only flags), and
-mana-pool.md's special casting results beyond the 16–18 failure verdict
-(Runaway, the 3–5 bonus effects) are not modelled (tarmar-studio #825).
+rate — same stance as ``tarmar_rules``'s report-only flags). The casting
+success tiers and Push run only on a profile with injected
+:class:`~tarmar_engine.magic.MagicRules` (tarmar-engine #26/#27), which carry
+every number they use; Borrowing, Channel, Runaway's later turns and
+Counterspell are not modelled yet (tarmar-engine #28–#31, from tarmar-studio
+#825).
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -52,8 +55,9 @@ from dataclasses import replace
 from . import actions, combat_math, hexes, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
+from .magic import CastingSuccessTier, MagicRules, PushRules, spell_effect_kind
 from .profile import TARMAR, RulesProfile
-from .spells import DODGE_DEX_CHECK_PENALTY, get_spell
+from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
     BattleState,
     CombatantState,
@@ -79,9 +83,10 @@ SPRINT_FATIGUE_COST = 6
 
 # mana-pool.md: a natural 3d6 casting roll of 16-18 fails the spell outright
 # (fumble/bad fumble/catastrophic), regardless of the caster's attribute.
-# The low-end 3-5 specials are GM-flavour narration only and do not change
-# the success/failure verdict (Spencer's ruling on #292's scope) — the
-# engine tracks none of Runaway's state (tarmar-studio #825).
+# The low-end specials do not change the success/failure verdict (Spencer's
+# ruling on #292's scope); their tiers and bonuses are injected through
+# MagicRules (tarmar_engine.magic, tarmar-engine #26). The engine tracks none
+# of Runaway's later state yet (tarmar-engine #30).
 CASTING_FUMBLE_ROLL_FLOOR = 16
 
 # mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative effect",
@@ -90,7 +95,7 @@ CASTING_FUMBLE_ROLL_FLOOR = 16
 # the pages say cost mana: a spell's mana is paid when it succeeds or on a
 # 17 or 18, and any other failure keeps it (tarmar-studio #816,
 # coordinator's ruling under the standing rule; Spencer may overrule).
-# Runaway's later turns are not modelled (#825).
+# Runaway's later turns are not modelled (tarmar-engine #30).
 CASTING_MANA_LOST_ROLLS = frozenset({17, 18})
 
 # Gait by movement option: the gait each phase-3/4 mover moves at
@@ -440,6 +445,7 @@ class TurnRunner:
             combatant.chosen_letter = decision.chosen.letter
             combatant.chosen_target = decision.chosen.target_id
             combatant.chosen_spell = decision.chosen.spell_key
+            combatant.chosen_push_mana = decision.chosen.push_mana
             # "Forecast" up front because this block is written before any
             # die is thrown: its P(hit) is what the AI expected, not what
             # happened. The roll and damage events that follow are the record
@@ -1972,7 +1978,36 @@ class TurnRunner:
         )
 
     def cast_spell(self, combatant: CombatantState) -> None:
+        """Phase 5's CAST SPELL: the casting roll, then the spell's effect.
+
+        With the profile's injected :class:`~.magic.MagicRules` two more
+        hooks run, in this order, between the casting roll and the effect:
+        the casting success tier (:meth:`_casting_success_tier`) and a pushed
+        cast's Control Roll (:meth:`_push_control_roll`). Their bonuses add
+        to the spell's rolled effect. With no ``MagicRules`` neither runs and
+        a cast logs exactly what it always has.
+        """
         spell = get_spell(combatant.chosen_spell)
+        magic = self.profile.magic
+        push_mana = combatant.chosen_push_mana
+        if push_mana and (magic is None or magic.push is None):
+            raise ValueError(
+                f"{combatant.name} pushes {push_mana} mana into {spell.name} "
+                f"but the {self.profile.name!r} profile has no Push rules"
+            )
+        if push_mana and magic is not None and magic.push is not None:
+            if not magic.push.can_push(spell):
+                raise ValueError(
+                    f"{combatant.name} pushes {spell.name}, which the injected "
+                    f"rules give no push effect"
+                )
+            cap = magic.push.max_push_mana
+            if cap is not None and push_mana > cap:
+                raise ValueError(
+                    f"{combatant.name} pushes {push_mana} mana into "
+                    f"{spell.name}; the cap is {cap}"
+                )
+        cost = spell.level + push_mana
         if (
             self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
@@ -1991,10 +2026,11 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        if combatant.mana < spell.level:
+        if combatant.mana < cost:
+            pushed_note = f" pushed with {push_mana} more" if push_mana else ""
             self.emit(
                 "info",
-                f"{combatant.name} lacks the mana for {spell.name}",
+                f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
                 actor=combatant.name,
             )
             return
@@ -2028,12 +2064,27 @@ class TurnRunner:
         )
         # casting-spells.md: "Spells cost mana equal to the spell's level";
         # mana-pool.md names mana lost on a failure only on a 17 (#816).
+        # A pushed cast pays its pushed mana with the spell's cost
+        # (tarmar-engine #27).
         pays = succeeded or record.total in CASTING_MANA_LOST_ROLLS
         if pays:
-            combatant.mana -= spell.level
-            cost_note = f"{spell.level} mana, {combatant.mana} left"
+            combatant.mana -= cost
+            paid_text = (
+                f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
+            )
+            cost_note = f"{paid_text} mana, {combatant.mana} left"
         else:
             cost_note = f"no mana spent, {combatant.mana} left"
+        payload: dict[str, str | int | bool] = {
+            "spell": spell.key,
+            "success": succeeded,
+            "mana_left": combatant.mana,
+            "casting_roll": cast_sequence,
+        }
+        # Only a profile that offers Push carries the key, so every other
+        # cast logs the payload it always has.
+        if magic is not None and magic.push is not None:
+            payload["push_mana"] = push_mana
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "
@@ -2041,15 +2092,41 @@ class TurnRunner:
             f"{'success' if succeeded else 'failure'} "
             f"({cost_note})",
             actor=combatant.name,
-            payload={
-                "spell": spell.key,
-                "success": succeeded,
-                "mana_left": combatant.mana,
-                "casting_roll": cast_sequence,
-            },
+            payload=payload,
         )
         if not succeeded:
             return
+        effect_bonus = 0
+        bonus_sources: list[str] = []
+        if magic is not None:
+            tier = self._casting_success_tier(
+                combatant, spell, magic, sum(record.faces), cost
+            )
+            # Only a spell with a rolled effect can take a tier's bonus.
+            if (
+                tier is not None
+                and tier.effect_bonus
+                and spell_effect_kind(spell) is not None
+            ):
+                effect_bonus += tier.effect_bonus
+                bonus_sources.append(f"{tier.effect_bonus:+d} {tier.label}")
+        if push_mana and magic is not None and magic.push is not None:
+            takes_effect, push_bonus = self._push_control_roll(
+                combatant, spell, magic.push, push_mana
+            )
+            if not takes_effect:
+                return
+            if push_bonus:
+                effect_bonus += push_bonus
+                bonus_sources.append(f"{push_bonus:+d} pushed mana")
+        if effect_bonus:
+            self.emit(
+                "status",
+                f"{combatant.name}'s {spell.name} gains {effect_bonus:+d} "
+                f"to its effect ({', '.join(bonus_sources)})",
+                actor=combatant.name,
+                payload={"spell": spell.key, "effect_bonus": effect_bonus},
+            )
         if spell.continuing:
             combatant.active_spells.append(spell.key)
             self.emit(
@@ -2064,7 +2141,8 @@ class TurnRunner:
                 spell.damage or "1d6", purpose="healing", actor=combatant.name
             )
             healed = min(
-                max(0, heal_record.total), combatant.max_fatigue - combatant.fatigue
+                max(0, heal_record.total + effect_bonus),
+                combatant.max_fatigue - combatant.fatigue,
             )
             combatant.fatigue += healed
             self.emit(
@@ -2109,7 +2187,7 @@ class TurnRunner:
         damage_record, damage_sequence = self.roll(
             spell.damage or "1d6", purpose="spell damage", actor=combatant.name
         )
-        raw = max(0, damage_record.total)
+        raw = max(0, damage_record.total + effect_bonus)
         net = raw if spell.ignores_armour else max(0, raw - target.stops)
         self.apply_damage(
             combatant,
@@ -2120,6 +2198,129 @@ class TurnRunner:
             chain=[cast_sequence, damage_sequence],
             body_only=spell.damage_pool == "body",
         )
+
+    def _casting_success_tier(
+        self,
+        combatant: CombatantState,
+        spell: Spell,
+        magic: MagicRules,
+        natural_total: int,
+        cost: int,
+    ) -> CastingSuccessTier | None:
+        """Narrate a successful casting roll's tier and pay its refund
+        (tarmar-engine #26).
+
+        The tier comes from the injected table by the roll's natural total;
+        its effect bonus is returned to :meth:`cast_spell` to add to the
+        spell's rolled effect, and the payload reports it only for a spell
+        with one. The refund is paid here, before any Control Roll, so a
+        Runaway does not take it back, and is capped at what the cast cost,
+        pushed mana included.
+        """
+        tier = magic.success_tier(natural_total)
+        if tier is None:
+            return None
+        refund = min(tier.mana_refund, cost)
+        applied_bonus = tier.effect_bonus if spell_effect_kind(spell) is not None else 0
+        combatant.mana += refund
+        refund_note = f"; {refund} mana back, {combatant.mana} left" if refund else ""
+        self.emit(
+            "status",
+            f"{combatant.name}'s casting of {spell.name} is a {tier.label} "
+            f"(natural {natural_total}){refund_note}",
+            actor=combatant.name,
+            payload={
+                "spell": spell.key,
+                "success_tier": tier.key,
+                "natural_total": natural_total,
+                "effect_bonus": applied_bonus,
+                "mana_refund": refund,
+                "mana_left": combatant.mana,
+            },
+        )
+        return tier
+
+    def _push_control_roll(
+        self,
+        combatant: CombatantState,
+        spell: Spell,
+        push: PushRules,
+        push_mana: int,
+    ) -> tuple[bool, int]:
+        """Roll a pushed spell's Control Roll and narrate its outcome
+        (tarmar-engine #27).
+
+        Roll-under against the injected attribute, less the injected penalty
+        per mana invested, and the same injury and off-balance penalties the
+        casting roll took. A natural total on the injected automatic-Runaway
+        list is a Runaway whatever the target; otherwise a failure's margin
+        picks its band. A Runaway is flagged in the payload; its later turns
+        are tarmar-engine #30's.
+
+        Returns:
+            Whether the spell takes effect, and the push's effect bonus.
+        """
+        base_attribute = (
+            combatant.intelligence
+            if push.control_attribute == "INT"
+            else combatant.wisdom
+        )
+        invested = push.mana_invested(spell.level, push_mana)
+        target = (
+            base_attribute
+            - push.penalty_per_mana * invested
+            - self.profile.reactions.injury_penalty(combatant)
+            - self._off_balance_penalty(combatant)
+        )
+        control_record = self.roll_unlogged(
+            push.control_dice, purpose="control", target_number=target
+        )
+        natural_total = sum(control_record.faces)
+        margin = control_record.total - target
+        if natural_total in push.automatic_runaway_totals:
+            band = push.runaway_band()
+        elif margin > 0:
+            band = push.band_for_margin(margin)
+        else:
+            band = None
+        held = band is None
+        runaway = band is not None and band.is_runaway
+        control_sequence = self.emit_roll(
+            control_record,
+            actor=combatant.name,
+            versus=push.control_attribute,
+            roll_under=True,
+            outcome="held" if band is None else band.label,
+        )
+        takes_effect = band is None or band.spell_takes_effect
+        bonus_applies = band is None or band.push_bonus_applies
+        push_bonus = push.effect_bonus(spell, push_mana) if bonus_applies else 0
+        if runaway:
+            message = f"{spell.name} runs away from {combatant.name}"
+        elif band is None:
+            message = f"{combatant.name} holds the pushed {spell.name}"
+        else:
+            message = f"{combatant.name}'s pushed {spell.name}: {band.label}"
+        if not takes_effect:
+            message += "; the spell does not take effect"
+        self.emit(
+            "status",
+            message,
+            actor=combatant.name,
+            payload={
+                "spell": spell.key,
+                "push_mana": push_mana,
+                "mana_invested": invested,
+                "held": held,
+                "control_band": None if band is None else band.key,
+                "control_margin": margin,
+                "control_roll": control_sequence,
+                "takes_effect": takes_effect,
+                "push_bonus": push_bonus,
+                "runaway": runaway,
+            },
+        )
+        return takes_effect, push_bonus
 
     # ------------------------------------------------------------------ damage
     def apply_damage(

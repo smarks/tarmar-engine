@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from . import actions, combat_math, hexes, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
+from .magic import MagicRules, PushRules
+from .reactions import TarmarReactions
 from .spells import get_spell
 from .state import BattleState, CombatantState, WeaponState
 
@@ -114,9 +116,12 @@ class Candidate:
     #: shape serves both menus — a consumer that stores it must not assume int.
     target_id: int | str | None = None
     spell_key: str = ""
+    #: Extra mana a cast pushes into its spell (tarmar-engine #27); 0 is an
+    #: ordinary cast.
+    push_mana: int = 0
 
     def to_payload(self) -> dict:
-        return {
+        payload = {
             "letter": self.letter,
             "name": self.name,
             "score": round_score(self.score),
@@ -128,6 +133,11 @@ class Candidate:
             "target_id": self.target_id,
             "spell_key": self.spell_key,
         }
+        # Only a pushed cast carries the key, so a battle with no Push rules
+        # injected logs the decision payloads it always has.
+        if self.push_mana:
+            payload["push_mana"] = self.push_mana
+        return payload
 
 
 @dataclass
@@ -561,7 +571,70 @@ def _hth_strike_forecast(
     return score, rationale
 
 
-def choose_option(state: BattleState, actor: CombatantState) -> Decision:
+def choose_option(
+    state: BattleState, actor: CombatantState, magic: MagicRules | None = None
+) -> Decision:
+    """Score the actor's legal options and choose the best.
+
+    ``magic`` is the profile's injected magic rules (:mod:`.magic`). With Push
+    rules in them, every cast on the menu gains its pushed variants, for a
+    player to choose; the AI does not push (:func:`_push_candidates`). A
+    caller driving the engine with this policy passes the same rules the
+    profile carries, e.g. ``functools.partial(choose_option, magic=rules)``.
+    """
+    decision = _score_options(state, actor)
+    if magic is not None and magic.push is not None:
+        decision.candidates.extend(
+            _push_candidates(actor, decision.candidates, magic.push)
+        )
+    return decision
+
+
+def _push_candidates(
+    actor: CombatantState, candidates: list[Candidate], push: PushRules
+) -> list[Candidate]:
+    """The pushed variant of each cast on the menu, one per affordable amount.
+
+    Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
+    the AI's choice: pricing a push needs the spell-by-spell payoff, and the
+    AI keeps to the plain cast. The rationale gives the Control Roll's target
+    as the engine will roll it: less the injury band (the Tarmar profile's,
+    the only one Push runs under) and an owed off-balance penalty. A spell
+    the rules give no push effect gets no pushed variant.
+    """
+    injury = TarmarReactions().injury_penalty(actor)
+    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    pushed: list[Candidate] = []
+    for candidate in candidates:
+        if not candidate.spell_key or candidate.push_mana:
+            continue
+        spell = get_spell(candidate.spell_key)
+        attribute = (
+            actor.intelligence if push.control_attribute == "INT" else actor.wisdom
+        )
+        for extra_mana in range(1, push.push_room(spell, actor.mana) + 1):
+            invested = push.mana_invested(spell.level, extra_mana)
+            target = attribute - push.penalty_per_mana * invested - injury - off_balance
+            pushed.append(
+                Candidate(
+                    candidate.letter,
+                    f"{candidate.name} (PUSH {extra_mana} MANA)",
+                    PLAYER_ONLY_SCORE,
+                    f"Push {extra_mana} extra mana ({spell.level + extra_mana} "
+                    f"in all): Control Roll {push.control_dice} ≤ "
+                    f"{push.control_attribute} {attribute} less "
+                    f"{push.penalty_per_mana} x {invested} invested, "
+                    f"{injury} injury and {off_balance} off-balance = {target}; "
+                    f"the AI does not push = {score_text(PLAYER_ONLY_SCORE)}",
+                    target_id=candidate.target_id,
+                    spell_key=candidate.spell_key,
+                    push_mana=extra_mana,
+                )
+            )
+    return pushed
+
+
+def _score_options(state: BattleState, actor: CombatantState) -> Decision:
     """Score the actor's legal options and choose the best.
 
     Returns every scored candidate so the caller can emit a decision event

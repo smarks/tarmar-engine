@@ -5,6 +5,7 @@ a ruling (marked for Spencer) or a page, "and then a drift test". A change
 to the record or to the code without the other fails here.
 """
 
+from dataclasses import replace
 from unittest import TestCase
 
 import tarmar_rules
@@ -107,3 +108,107 @@ class HouseRulingsRecordTest(TestCase):
                 can_pick_up=True,
             ),
         )
+
+
+class MagicRulingsTest(TestCase):
+    """The magic readings, pinned by probe (tarmar-engine #26/#27)."""
+
+    def test_success_tier_needs_a_success(self):
+        from .test_magic import cast, status_payloads, wizard_state
+
+        self.assertEqual(ruling("success_tier_needs_a_success").value, "success first")
+        events = cast(wizard_state(intelligence=5), [[2, 2, 2]])
+        self.assertEqual(status_payloads(events, "success_tier"), [])
+
+    def test_magic_bonus_on_rolled_effect(self):
+        from tarmar_engine.magic import SpellEffectKind
+
+        from .test_magic import cast, wizard_state
+
+        self.assertEqual(
+            ruling("magic_bonus_on_rolled_effect").value,
+            tuple(kind.value for kind in SpellEffectKind),
+        )
+        state = wizard_state()
+        state.by_id(2).stops = 3
+        cast(state, [[2, 2, 2], [2, 2, 2], [5]])
+        # 5 rolled + 5 radiant = 10, less 3 stopped.
+        self.assertEqual(state.by_id(2).fatigue, state.by_id(2).max_fatigue - 7)
+        with self.assertRaises(ValueError):
+            cast(wizard_state(), [[3, 3, 3]], spell="shield", push=1)
+
+    def test_push_control_after_casting(self):
+        from .test_magic import cast, roll_purposes, wizard_state
+
+        events = cast(wizard_state(), [[3, 3, 3], [3, 3], [2, 2, 2], [5]], push=1)
+        self.assertEqual(
+            tuple(roll_purposes(events)[:3]),
+            ruling("push_control_after_casting").value,
+        )
+        injured = wizard_state(fatigue=1)
+        events = cast(injured, [[3, 3, 3], [3, 3], [2, 2, 2], [5]], push=1)
+        casting, control = [
+            event["payload"]["target_number"]
+            for event in events
+            if event["event_type"] == "roll"
+        ][:2]
+        self.assertLess(casting, 14)  # the injury band reached the cast...
+        self.assertEqual(control, 12 - 2 - (14 - casting))  # ...and the control
+
+    def test_pushed_mana_paid_with_cost(self):
+        from .test_magic import cast, wizard_state
+
+        self.assertEqual(ruling("pushed_mana_paid_with_cost").value, "with the cost")
+        state = wizard_state(intelligence=18)
+        cast(state, [[6, 6, 5]], push=2)  # 17: fails and loses its mana
+        self.assertEqual(state.by_id(1).mana, 10 - 1 - 2)
+
+    def test_tier_refund_before_control(self):
+        from .test_magic import (
+            cast,
+            control_payload,
+            events_of_type,
+            status_payloads,
+            wizard_state,
+        )
+
+        self.assertEqual(
+            ruling("tier_refund_before_control").value, "before the Control Roll"
+        )
+        state = wizard_state()
+        # Keen (natural 7, 1 back), then an automatic Runaway on the control.
+        events = cast(state, [[2, 2, 3], [1, 1]], push=2)
+        refund = next(
+            event
+            for event in events_of_type(events, "status")
+            if event["payload"].get("success_tier")
+        )
+        control_roll = events_of_type(events, "roll")[1]
+        self.assertLess(refund["sequence"], control_roll["sequence"])
+        self.assertTrue(control_payload(events)["runaway"])
+        self.assertEqual(status_payloads(events, "mana_refund")[0]["mana_refund"], 1)
+        self.assertEqual(state.by_id(1).mana, 10 - 1 - 2 + 1)
+
+    def test_tier_refund_cap_includes_push(self):
+        from tarmar_engine.profile import TarmarProfile
+
+        from .test_magic import cast, example_magic_rules, wizard_state
+
+        self.assertEqual(
+            ruling("tier_refund_cap_includes_push").value, "spell cost + pushed mana"
+        )
+        rules = example_magic_rules()
+        keen = replace(rules.casting_success_tiers[1], mana_refund=99)
+        lavish = replace(
+            rules,
+            casting_success_tiers=(rules.casting_success_tiers[0], keen),
+        )
+        state = wizard_state()
+        # Level 1 + 2 pushed = 3 paid; the refund of 99 is capped at 3.
+        cast(
+            state,
+            [[2, 2, 3], [3, 3], [2, 2, 2], [5]],
+            push=2,
+            profile=TarmarProfile(magic=lavish),
+        )
+        self.assertEqual(state.by_id(1).mana, 10)
