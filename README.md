@@ -309,6 +309,20 @@ the figure acts, the forecast printing the step it expects. `movement.gait_allow
 by and the policy prices a charge by (#17). `CombatantState` gains
 `chosen_destination`.
 
+## A Game Master's agreement to hand-to-hand (v0.9.10)
+
+"Entering Hand-to-Hand" ends "or they simply agree". The engine reads two
+agreements off the board (an enemy closing in, two bare-handed figures);
+anything beyond them is a Game Master's ruling the consuming game records
+(Spencer's ruling of 2026-10-09 on tarmar-studio #867: "a Game Master marks
+a battle, or a pair, as 'HTH by agreement'; players alone still need the
+engine's entry condition"). `CombatantState.hth_agreed_with` lists the
+enemies a figure may enter hand-to-hand with on that ruling. The agreement
+is symmetric: when either figure lists the other, `hth_entry_reason` returns
+`combat_math.GAME_MASTER_AGREEMENT` ("a Game Master rules they agree") both
+ways, checked after the two read off the board. It is additive: empty, nothing
+changes, and `BattleState.to_dict` writes it only when it names someone.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
