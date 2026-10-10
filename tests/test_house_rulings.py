@@ -12,6 +12,7 @@ import tarmar_rules
 
 from tarmar_engine import actions, engine, hexes, policy, spells
 from tarmar_engine.house_rulings import HOUSE_RULINGS, PAGE, RULING, TACTIC, ruling
+from tarmar_engine.state import BattleState
 
 
 class HouseRulingsRecordTest(TestCase):
@@ -292,3 +293,72 @@ class ChannelRulingsTest(TestCase):
         runner.phase_renew_spells()
         self.assertEqual(state.by_id(1).active_spells, ["shield"])
         self.assertEqual(state.by_id(1).mana, 10 - 1)
+
+
+class HandToHandAndDestinationRulingsTest(TestCase):
+    """The hand-to-hand menu (tarmar-engine #19) and the AI's hexes (#20)."""
+
+    def test_hth_table_is_the_menu(self):
+        self.assertEqual(
+            tuple(
+                actions.legal_actions(
+                    engaged=True,
+                    prone=True,
+                    has_missile=True,
+                    has_spells=True,
+                    has_melee_target=True,
+                    can_grapple=True,
+                    in_hth=True,
+                    can_draw_dagger=True,
+                )
+            ),
+            ruling("hth_table_is_the_menu").value,
+        )
+
+    def test_hth_casting_hands_free(self):
+        self.assertEqual(
+            policy.HTH_NO_GESTURE_MASTERY, ruling("hth_casting_hands_free").value
+        )
+
+    def test_hth_disengage_leaves_every_partner(self):
+        from .test_battle_rules_pass import runner_for
+        from .test_state import make_combatant
+
+        self.assertIs(ruling("hth_disengage_leaves_every_partner").value, True)
+        state = BattleState(
+            arena_radius=6,
+            combatants=[
+                make_combatant(1, q=0, r=0, facing=0, hth_with=[2, 3]),
+                make_combatant(2, q=1, r=0, facing=3, hth_with=[1]),
+                make_combatant(3, q=0, r=1, facing=5, hth_with=[1]),
+            ],
+        )
+        figure = state.by_id(1)
+        figure.chosen_letter = "v"
+        runner_for(state, [[2, 2, 2, 2]]).execute_action(figure)
+        self.assertEqual([state.by_id(n).hth_with for n in (1, 2, 3)], [[], [], []])
+
+    def test_ai_destinations(self):
+        from tarmar_engine import movement
+
+        from .test_engine import duel_state
+
+        self.assertEqual(ruling("ai_destinations").value, "stand still")
+        state = duel_state()
+        decision = policy.choose_option(state, state.by_id(1))
+        by_letter = {c.letter: c for c in decision.candidates}
+        for letter in ("j", "k", "n"):
+            self.assertIsNone(by_letter[letter].destination)
+        step = movement.step_away_hex(state, state.by_id(1), state.by_id(2))
+        self.assertIn(f"toward {step}", by_letter["n"].rationale)
+
+    def test_shift_keeps_engagement(self):
+        from tarmar_engine import movement
+
+        from .test_engine import duel_state
+
+        self.assertIs(ruling("shift_keeps_engagement").value, True)
+        state = duel_state()
+        figure = state.by_id(1)
+        self.assertFalse(movement.keeps_engagement(state, figure, (-1, 0)))
+        self.assertTrue(movement.keeps_engagement(state, figure, (0, 1)))

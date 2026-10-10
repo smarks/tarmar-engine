@@ -31,13 +31,26 @@ studio's manual control) offers exactly these candidates, so every option
 the rules allow appears here even when the AI would never take it: Sprint,
 DROP, the yielded variants of the movement options, and a weapon option
 with nothing to rearm score 0 and sit after the options the AI scores.
+
+**Inside hand-to-hand the menu is the HTH table** (tarmar-engine #19): t,
+u, v and the casts its condition allows, from :func:`actions.legal_actions`
+with ``in_hth``. The AI scores t and v and the casts; DRAW DAGGER is a
+player's option, as it is in a grapple.
+
+**A candidate may carry a hex** (``Candidate.destination``, tarmar-engine
+#20; :mod:`.movement`). The AI names none: its engaged options stand still,
+its DROP drops in place, its MOVE, CHARGE and DODGE close on their target,
+and its DISENGAGE (n, v) and Struggle Free leave the step to the engine when
+the figure acts (straight back, then either flank), the forecast printing
+the step it expects. A player may give any option
+:func:`movement.legal_destinations` allows a hex, and the engine checks it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import actions, combat_math, hexes, weapons
+from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import ChannelRules, ChannelUnclassifiedSpell, MagicRules, PushRules
@@ -65,6 +78,9 @@ GRAPPLE_TACTICS_RATIONALE = "grapple tactics out of scope"
 # Getting a weapon back into an empty (or wrong) hand: flat, above any
 # bare-handed or bow-in-melee alternative the menu leaves such a figure.
 REARM_SCORE = 1.5
+# The HTH table's "no-gesture spell" (tarmar-engine #19): the Spell Mastery
+# level at which a spell needs no gestures (spell-mastery.md).
+HTH_NO_GESTURE_MASTERY = 2
 # Options offered for a player to choose that the AI does not take: Sprint's
 # 6 Fatigue a turn, going prone, drawing a dagger mid-hold.
 PLAYER_ONLY_SCORE = 0.0
@@ -119,6 +135,11 @@ class Candidate:
     #: Extra mana a cast pushes into its spell (tarmar-engine #27); 0 is an
     #: ordinary cast.
     push_mana: int = 0
+    #: The hex the option places the figure at, axial ``(q, r)``, or ``None``
+    #: for the move it derives itself (tarmar-engine #20). Which options may
+    #: take one, and where, is :func:`movement.legal_destinations`; the engine
+    #: refuses any other in its log.
+    destination: tuple[int, int] | None = None
 
     def to_payload(self) -> dict:
         payload = {
@@ -137,6 +158,9 @@ class Candidate:
         # injected logs the decision payloads it always has.
         if self.push_mana:
             payload["push_mana"] = self.push_mana
+        # The same for a hex: a candidate that names none logs as it did.
+        if self.destination is not None:
+            payload["destination"] = list(self.destination)
         return payload
 
 
@@ -161,6 +185,18 @@ def three_d6_at_most(target: int) -> float:
                 if first + second + third <= target:
                     outcomes += 1
     return outcomes / 216
+
+
+def four_d6_at_most(target: int) -> float:
+    """Exact P(4d6 <= target): the HTH DISENGAGE and Struggle Free roll."""
+    outcomes = 0
+    for first in range(1, 7):
+        for second in range(1, 7):
+            for third in range(1, 7):
+                for fourth in range(1, 7):
+                    if first + second + third + fourth <= target:
+                        outcomes += 1
+    return outcomes / 1296
 
 
 def _incoming_melee_threat(state: BattleState, actor: CombatantState) -> float:
@@ -365,12 +401,20 @@ def _grappled_decision(state: BattleState, actor: CombatantState) -> Decision:
     construction (module docstring's "deliberately dumb" grapple AI).
     """
     grappler_id = actor.grappled_by
+    # The step the engine expects to take, for the forecast; the engine works
+    # it out when the figure acts, so the candidate names no hex (#20).
+    escape_to = (
+        None
+        if grappler_id is None
+        else movement.step_away_hex(state, actor, state.by_id(grappler_id))
+    )
+    where = f" toward {escape_to}" if escape_to is not None else ""
     candidates = [
         Candidate(
             "v",
             actions.GRAPPLED_ACTIONS["v"],
             1.0,
-            f"Always attempts to escape ({GRAPPLE_TACTICS_RATIONALE})",
+            f"Always attempts to escape{where} ({GRAPPLE_TACTICS_RATIONALE})",
             target_id=grappler_id,
         ),
         Candidate(
@@ -536,6 +580,60 @@ def _hth_targets(state: BattleState, actor: CombatantState) -> list[CombatantSta
             if combat_math.hth_entry_reason(state, actor, enemy) is not None
         ),
         key=lambda enemy: enemy.combatant_id,
+    )
+
+
+def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantState]:
+    """The active enemies beside the actor that it is in hand-to-hand with."""
+    return [
+        state.by_id(other_id)
+        for other_id in actor.hth_with
+        if state.by_id(other_id).active
+        and combat_math.figures_adjacent(actor, state.by_id(other_id))
+    ]
+
+
+def _hth_casts(state: BattleState, actor: CombatantState) -> list[Candidate]:
+    """Casts the HTH table allows: "If hands free or no-gesture spell".
+
+    Hands free is no weapon in hand (a shield is a standing fact of the
+    snapshot, not a held item); a no-gesture spell is one known at Spell
+    Mastery 2 (spell-mastery.md; tarmar-engine #19).
+    """
+    hands_free = actor.weapon.item_id == ""
+    return [
+        candidate
+        for candidate in _cast_candidates(state, actor, "r")
+        if hands_free
+        or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
+    ]
+
+
+def _hth_disengage_candidate(
+    state: BattleState,
+    actor: CombatantState,
+    partners: list[CombatantState],
+    hurt: bool,
+) -> Candidate:
+    """v DISENGAGE from hand-to-hand: "Roll 4d6 ≤ DEX → stand, move to
+    adjacent", scored as a plain DISENGAGE times the chance the roll makes."""
+    injury = TarmarReactions().injury_penalty(actor)
+    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    effective_dex = actor.dexterity - injury - off_balance
+    probability = four_d6_at_most(effective_dex)
+    urgency = 4 if hurt else 1
+    score = product_of(DISENGAGE_BASE_SCORE, urgency, probability)
+    # The forecast names the step expected; the engine works it out when the
+    # figure acts, so the candidate names no hex (#20).
+    step = movement.step_away_hex(state, actor, partners[0])
+    where = f" toward {step}" if step is not None else ""
+    return Candidate(
+        "v",
+        actions.option_name("v"),
+        score,
+        f"Break away{where}: 4d6 ≤ DEX {effective_dex} — P(escape) "
+        f"{score_text(probability)} x {score_text(DISENGAGE_BASE_SCORE)} base "
+        f"x {urgency} ({'hurt' if hurt else 'unhurt'}) = {score_text(score)}",
     )
 
 
@@ -735,6 +833,9 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
     # grapple, like any HTH, needs one of "Entering Hand-to-Hand"'s
     # conditions against its target (#823).
     hth_targets = [] if actor.is_beast else _hth_targets(state, actor)
+    # Inside hand-to-hand the HTH table is the whole menu (tarmar-engine #19).
+    in_hth = movement.in_hand_to_hand(state, actor)
+    partners = _hth_partners(state, actor) if in_hth else []
     can_grapple = engaged and bool(hth_targets)
     melee_weapon = weapons.has_melee_weapon(actor)
     in_reach = weapons_in_reach(state, actor)
@@ -762,6 +863,9 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
         can_ready_weapon=not engaged and not actor.is_beast and bool(spares),
         can_drop=not actor.is_beast,
         with_yields=True,
+        in_hth=in_hth,
+        can_draw_dagger=not actor.weapon.hth_usable
+        and any(spare.hth_usable for spare in actor.spare_weapons),
     )
     # A figure left without the weapon its fighting needs — bare hands after
     # a fumble or a throw, or a bow once engaged — wants to rearm (#780).
@@ -791,21 +895,24 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
                 )
             else:
                 distance = combat_math.figure_distance(actor, enemy)
+                # The jog the engine would charge at: a figure barred from
+                # jogging charges at its walk (tarmar-engine #17).
+                jog = movement.gait_allowance(actor, "jog")
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
                 if distance <= 1:
                     score = 0.0
                     band = "already adjacent, so moving gains nothing"
-                elif distance <= actor.move_jog:
+                elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
-                        f"within a {actor.move_jog}-hex jog, so half of "
+                        f"within a {jog}-hex jog, so half of "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 else:
                     score = round_score(MOVE_BASE_SCORE)
                     band = (
-                        f"beyond a {actor.move_jog}-hex jog, so the full "
+                        f"beyond a {jog}-hex jog, so the full "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 candidates.append(
@@ -821,11 +928,12 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
         elif letter == "b" and enemy is not None:
             score, rationale = _melee_score(actor, enemy)
             distance = combat_math.figure_distance(actor, enemy)
-            if distance > actor.move_jog + 1:
+            reach = movement.gait_allowance(actor, "jog") + 1
+            if distance > reach:
                 score = 0.0
                 rationale = (
                     f"{enemy.name} is {distance} hexes away, beyond the "
-                    f"{actor.move_jog + 1}-hex charge reach = 0.000"
+                    f"{reach}-hex charge reach = 0.000"
                 )
             score, rationale = _beast_caution(actor, hurt, score, rationale)
             candidates.append(
@@ -935,18 +1043,42 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
         elif letter == "n":
             urgency = 4 if hurt else 1
             score = product_of(DISENGAGE_BASE_SCORE, urgency)
+            # The step the engine expects to take with no hex named, straight
+            # back from the first adjacent enemy, then either flank, printed
+            # in the forecast. The engine works it out when the figure acts,
+            # so the candidate names no hex (#20).
+            step = (
+                movement.step_away_hex(state, actor, adjacent_enemies[0])
+                if adjacent_enemies
+                else None
+            )
+            where = f" toward {step}" if step is not None else ""
             candidates.append(
                 Candidate(
                     letter,
                     name,
                     score,
-                    f"Step away instead of attacking: "
+                    f"Step away{where} instead of attacking: "
                     f"{score_text(DISENGAGE_BASE_SCORE)} base x {urgency} "
                     f"({'hurt' if hurt else 'unhurt'}) = {score_text(score)}",
                 )
             )
+        elif letter == "r" and in_hth:
+            candidates.extend(_hth_casts(state, actor))
         elif letter in ("h", "r"):
             candidates.extend(_cast_candidates(state, actor, letter))
+        elif letter == "u" and in_hth:
+            candidates.append(
+                Candidate(
+                    letter,
+                    name,
+                    PLAYER_ONLY_SCORE,
+                    "Roll 3d6 ≤ DEX to ready a carried dagger; the AI does not "
+                    f"= {score_text(PLAYER_ONLY_SCORE)}",
+                )
+            )
+        elif letter == "v" and partners:
+            candidates.append(_hth_disengage_candidate(state, actor, partners, hurt))
         elif letter == "o" and hth_targets:
             # Deterministic target pick (lowest id among the enemies an HTH
             # entry condition admits, #823) — score is always 0, so this
@@ -1058,6 +1190,7 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
                         f"{base.rationale}",
                         target_id=base.target_id,
                         spell_key=base.spell_key,
+                        destination=base.destination,
                     )
                 )
 

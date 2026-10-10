@@ -270,14 +270,80 @@ HOUSE_RULINGS += (
         "itself chosen ATTEMPT HTH or an HTH strike at the actor this turn, "
         "or two bare-handed figures, enter hand-to-hand; bare hands against "
         "an armed figure keep the entry conditions. Once in, the pair need no "
-        "condition until they part, and a partner striking with bare hands or "
-        "a dagger (t) takes the HTH +4; an armed partner keeps its weapon at "
-        "its normal bonus. Whether an armed partner must drop to bare hands or "
-        "a dagger in hand-to-hand is carried to tarmar-studio #867.",
+        "condition until they part, and both strike (t) at the HTH +4. "
+        "Agreement beyond these two cases is a Game Master's call, made in the "
+        "consuming game (Spencer's ruling of 2026-10-09 on tarmar-studio "
+        "#867).",
         ("they close in too", "both bare-handed"),
         "tarmar_engine/combat_math.py hth_entry_reason; engine.py _enter_hth",
         RULING,
         "#867",
+    ),
+    HouseRuling(
+        "hth_table_is_the_menu",
+        "A figure in hand-to-hand is offered the Hand-to-Hand Combat table and "
+        "nothing else, standing or down: t (bare hands, or the dagger in "
+        "hand), u (a carried dagger not in hand), v DISENGAGE, and the casts "
+        "the table allows. It has no j, against a partner or against a third "
+        "enemy beside it it is not in hand-to-hand with. The menu is fixed "
+        "when the option is chosen: a figure drawn into hand-to-hand later in "
+        "the turn takes the action it chose, except that a cast is checked "
+        "again when it is cast, as a grappled cast is. A beast, with no hands, "
+        "keeps its own menu.",
+        ("t", "u", "v", "r"),
+        "tarmar_engine/actions.py legal_actions (in_hth); policy.py _score_options",
+        PAGE + ": action-options.md, Hand-to-Hand Combat (Spencer's ruling of "
+        "2026-10-09 on tarmar-studio #867); "
+        + RULING
+        + " (the third enemy, a figure down, the menu fixed at the choice: "
+        "coordinator's ruling under the standing rule)",
+        "#19",
+    ),
+    HouseRuling(
+        "hth_casting_hands_free",
+        "The table's 'If hands free or no-gesture spell': hands are free with "
+        "no weapon in hand (a shield is a standing fact of the snapshot, not a "
+        "held item); a no-gesture spell is one known at Spell Mastery 2.",
+        2,
+        "tarmar_engine/policy.py _hth_casts; engine.py cast_spell",
+        RULING,
+        "#19",
+    ),
+    HouseRuling(
+        "hth_disengage_leaves_every_partner",
+        "A successful v DISENGAGE, or a Struggle Free ('the same roll as a "
+        "plain HTH Disengage'), leaves hand-to-hand with every partner, even "
+        "with no clear hex to step to; a slower partner gets no parting strike "
+        "(the page gives v none, unlike n).",
+        True,
+        "tarmar_engine/engine.py _leave_hand_to_hand (hth_disengage, "
+        "grapple_struggle_free)",
+        RULING,
+        "#19",
+    ),
+    HouseRuling(
+        "ai_destinations",
+        "The AI names no hex. Its engaged options stand still, its DROP drops "
+        "in place, its MOVE, CHARGE and DODGE close on their target, and its "
+        "DISENGAGE (n, v) and Struggle Free leave the step to the engine when "
+        "the figure acts (straight back, then either flank); the forecast "
+        "prints the step it expects. A refused hex leaves the option's move as "
+        "it is with none.",
+        "stand still",
+        "tarmar_engine/policy.py _score_options; movement.py step_away_hex",
+        TACTIC,
+        "#20",
+    ),
+    HouseRuling(
+        "shift_keeps_engagement",
+        "A Shift ('Shift 1 hex or stand still during movement') leaves the "
+        "figure engaged with every enemy it was engaged with; a hex that would "
+        "take it out of one is refused, since leaving an engagement is "
+        "DISENGAGE's (n), with its strike from a slower enemy.",
+        True,
+        "tarmar_engine/movement.py keeps_engagement",
+        RULING,
+        "#20",
     ),
 )
 

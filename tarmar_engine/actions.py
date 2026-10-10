@@ -64,8 +64,9 @@ ALL_OPTIONS: dict[str, str] = {**DISENGAGED_OPTIONS, **ENGAGED_OPTIONS, **HTH_OP
 # The options the engine executes. i/s (DISBELIEVE) need illusions the
 # simulator does not model. o/t/v are HTH options: o needs one of "Entering
 # Hand-to-Hand"'s conditions (tarmar-studio #823), t is a bare-handed or
-# dagger strike at HTH range (#815), and v is a grappled figure's Struggle
-# Free. u DRAW DAGGER is offered to a grappled figure with a dagger to draw.
+# dagger strike at HTH range (#815), and v is the HTH DISENGAGE (a grappled
+# figure's Struggle Free). u DRAW DAGGER is offered to a figure in a grapple
+# or in hand-to-hand with a dagger to draw (tarmar-engine #19).
 IMPLEMENTED: frozenset[str] = frozenset(
     {
         "a",
@@ -177,6 +178,8 @@ def legal_actions(
     can_ready_weapon: bool = False,
     can_drop: bool = False,
     with_yields: bool = False,
+    in_hth: bool = False,
+    can_draw_dagger: bool = False,
 ) -> list[str]:
     """The implemented option keys legal for an actor's situation.
 
@@ -206,6 +209,15 @@ def legal_actions(
     * ``with_yields`` — append the yielded variant of every movement option
       on the menu (#819).
 
+    ``in_hth`` (tarmar-engine #19): a figure in hand-to-hand is offered
+    action-options.md's Hand-to-Hand Combat table and nothing else, standing
+    or down: t HTH ATTACK ("Bare hands or dagger"), u DRAW DAGGER when
+    ``can_draw_dagger`` (a dagger carried, not in hand), v DISENGAGE ("stand,
+    move to adjacent"), and r for "CAST SPELL — If hands free or no-gesture
+    spell" when it has a spell (the caller offers only the casts that meet
+    the condition). No j, against a partner or a third enemy beside it
+    (coordinator's ruling under the standing rule; Spencer may overrule).
+
     New keys are appended after the historic ones, so a menu scored as
     before ties the way it did before.
 
@@ -214,6 +226,14 @@ def legal_actions(
     function's whole vocabulary for a grappled or grappling actor, handled
     directly by ``battle.policy.choose_option``.
     """
+    if in_hth:
+        letters = ["t"]
+        if can_draw_dagger:
+            letters.append("u")
+        letters.append("v")
+        if has_spells:
+            letters.append("r")
+        return letters
     if prone:
         return ["p" if engaged else "g"]
     if engaged:
