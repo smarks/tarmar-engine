@@ -282,8 +282,6 @@ grapple is `TurnRunner.hth_disengage`: 4d6 ≤ effective DEX, stand, step to an
 adjacent clear hex, leave hand-to-hand with every partner; a Struggle Free
 that succeeds leaves it too. `cast_spell` checks the cast's condition again
 when it is cast. A beast keeps its own menu, and a caster in hand-to-hand takes no walk-slow step out of it.
-Since #34 no engaged cast (`r`) takes one: its Move column is "Shift/still",
-so it shifts only to a chosen hex.
 
 **A candidate may carry a hex** (#20). `Candidate.destination` is an axial
 `(q, r)` or `None`; `to_payload()` writes `"destination": [q, r]` only when
@@ -324,6 +322,13 @@ is symmetric: when either figure lists the other, `hth_entry_reason` returns
 `combat_math.GAME_MASTER_AGREEMENT` ("a Game Master rules they agree") both
 ways, checked after the two read off the board. It is additive: empty, nothing
 changes, and `BattleState.to_dict` writes it only when it names someone.
+
+## The engaged cast stands still (v0.9.11)
+
+An engaged cast (`r`) no longer takes the walk-slow step of two hexes that
+the disengaged `f` and `h` take in Final Movement (#34): its Move column is
+"Shift/still" (action-options.md), so it shifts one hex only to a chosen
+hex. The option catalog's cap for `r` is "none".
 
 ## What it sits on
 
