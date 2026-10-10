@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import TestCase
 
 import tarmar_engine
-from tarmar_engine import actions, combat_math, movement, policy
+from tarmar_engine import actions, combat_math, hexes, movement, policy
 from tarmar_engine.policy import Candidate, Decision
 from tarmar_engine.state import BattleState, WeaponState
 
@@ -491,6 +491,50 @@ class CandidateDestinationTest(TestCase):
         self.assertIsNone(decision.chosen.destination)
         self.assertIn("toward (-1, 0)", decision.chosen.rationale)
         self.assertEqual(movement.placement(state, held, "j"), "")
+
+
+class EngagedCastStandsStillTest(TestCase):
+    """#34 — action-options.md: "| r | CAST SPELL | Shift/still | Attempt any
+    spell |", and movement.md: figures "stop immediately when engaged". Only
+    the disengaged f and h move at "Walk (slow)"."""
+
+    def test_the_page_says_so(self):
+        self.assertIn(
+            "| r      | CAST SPELL     | Shift/still | Attempt any spell", OPTIONS_PAGE
+        )
+        self.assertIn(
+            "| h      | CAST SPELL     | Walk (slow)  | Attempt any spell", OPTIONS_PAGE
+        )
+
+    def test_an_engaged_cast_takes_no_walk_slow_step(self):
+        state = duel_state()
+        caster = state.by_id(1)
+        caster.chosen_letter, caster.yielded = "r", True
+        events = []
+        runner_for(state, events=events).phase_final_movement([caster])
+        self.assertEqual(caster.position, (0, 0))
+        self.assertEqual(events_of_type(events, "movement"), [])
+
+    def test_a_disengaged_cast_still_steps_back(self):
+        state = BattleState(
+            arena_radius=6,
+            combatants=[
+                make_combatant(1, q=0, r=0, facing=0),
+                make_combatant(2, q=2, r=0, facing=3),
+            ],
+        )
+        caster = state.by_id(1)
+        caster.chosen_letter, caster.yielded = "h", True
+        runner_for(state).phase_final_movement([caster])
+        self.assertEqual(hexes.distance(caster.position, (2, 0)), 3)
+
+    def test_an_engaged_cast_may_shift_to_a_chosen_hex(self):
+        state = duel_state()
+        caster = state.by_id(1)
+        runner_for(state).phase_initial_movement(
+            [caster], choosing("r", 2, (0, 1), spell_key="shield")
+        )
+        self.assertEqual(caster.position, (0, 1))
 
 
 class ChargeReachTest(TestCase):

@@ -106,9 +106,12 @@ class TarmarCatalogTest(TestCase):
         catalog = tarmar_catalog()
         self.assertEqual(catalog.spec("a").movement_cap, "run")
         self.assertEqual(catalog.spec("b").movement_cap, "jog")
-        for letter in ("f", "h", "r"):
+        for letter in ("f", "h"):
             self.assertEqual(catalog.spec(letter).movement_cap, "adjust")
-        self.assertEqual(catalog.spec("j").movement_cap, "none")
+        # The engaged options are "Shift/still": no derived move, only a
+        # one-hex shift to a chosen hex (tarmar-engine #20), the cast too.
+        for letter in ("j", "r"):
+            self.assertEqual(catalog.spec(letter).movement_cap, "none")
 
 
 class MeleeStructureCatalogTest(TestCase):

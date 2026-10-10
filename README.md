@@ -282,6 +282,8 @@ grapple is `TurnRunner.hth_disengage`: 4d6 ≤ effective DEX, stand, step to an
 adjacent clear hex, leave hand-to-hand with every partner; a Struggle Free
 that succeeds leaves it too. `cast_spell` checks the cast's condition again
 when it is cast. A beast keeps its own menu, and a caster in hand-to-hand takes no walk-slow step out of it.
+Since #34 no engaged cast (`r`) takes one: its Move column is "Shift/still",
+so it shifts only to a chosen hex.
 
 **A candidate may carry a hex** (#20). `Candidate.destination` is an axial
 `(q, r)` or `None`; `to_payload()` writes `"destination": [q, r]` only when
