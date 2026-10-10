@@ -52,7 +52,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from . import actions, combat_math, hexes, policy, weapons
+from . import actions, combat_math, hexes, movement, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import CastingSuccessTier, MagicRules, PushRules, spell_effect_kind
@@ -98,15 +98,9 @@ CASTING_FUMBLE_ROLL_FLOOR = 16
 # Runaway's later turns are not modelled (tarmar-engine #30).
 CASTING_MANA_LOST_ROLLS = frozenset({17, 18})
 
-# Gait by movement option: the gait each phase-3/4 mover moves at
-# (movement.md's Speed table; action-options.md's Move column). DODGE is
-# "Jog or less" and moves toward the missile threat it dodges (#819).
-MOVEMENT_GAITS: dict[str, str] = {
-    "a": "run",
-    "sprint": "sprint",
-    "b": "jog",
-    "c": "jog",
-}
+# Gait by movement option, kept under this name for every reader of it; the
+# table lives with the rest of the movement rules (tarmar_engine.movement).
+MOVEMENT_GAITS = movement.MOVEMENT_GAITS
 GAIT_FATIGUE_COSTS: dict[str, int] = {
     "run": RUN_FATIGUE_COST,
     "sprint": SPRINT_FATIGUE_COST,
@@ -460,6 +454,7 @@ class TurnRunner:
             combatant.chosen_target = decision.chosen.target_id
             combatant.chosen_spell = decision.chosen.spell_key
             combatant.chosen_push_mana = decision.chosen.push_mana
+            combatant.chosen_destination = decision.chosen.destination
             # "Forecast" up front because this block is written before any
             # die is thrown: its P(hit) is what the AI expected, not what
             # happened. The roll and damage events that follow are the record
@@ -472,6 +467,9 @@ class TurnRunner:
                 actor=combatant.name,
                 payload=self._decision_payload(decision),
             )
+            # A hex the option may not take is refused here, in the log, and
+            # the option makes its derived move instead (tarmar-engine #20).
+            self._placed_destination(combatant)
             if self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
             ):
@@ -480,9 +478,16 @@ class TurnRunner:
                 # Initial nor Final Movement applies.
                 continue
             option = actions.base_option(decision.chosen.letter)
-            if option in MOVEMENT_GAITS and not actions.is_yielded(
-                decision.chosen.letter
-            ):
+            placed = combatant.chosen_destination is not None
+            kind = movement.placement(self.state, combatant, decision.chosen.letter)
+            if actions.is_yielded(decision.chosen.letter):
+                combatant.yielded = True
+            elif placed and kind == "gait":
+                self.move_to_destination(combatant)
+            elif placed and kind == "shift":
+                # "Shift 1 hex or stand still during movement".
+                self.shift_to(combatant)
+            elif option in MOVEMENT_GAITS:
                 self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
             else:
                 # Everyone else yields: a yielded mover (#819) takes its
@@ -497,9 +502,17 @@ class TurnRunner:
             if not combatant.active or not combatant.yielded:
                 continue
             option = actions.base_option(combatant.chosen_letter)
-            if option in MOVEMENT_GAITS and actions.is_yielded(combatant.chosen_letter):
-                self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
-            elif option in ("f", "h", "r"):
+            if actions.is_yielded(combatant.chosen_letter):
+                if self._placed_destination(combatant) is not None:
+                    self.move_to_destination(combatant)
+                elif option in MOVEMENT_GAITS:
+                    self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+            elif option in ("f", "h", "r") and not movement.in_hand_to_hand(
+                self.state, combatant
+            ):
+                # The HTH table has no Move column: a caster in hand-to-hand
+                # takes no walk-slow step out of it (tarmar-engine #19). The
+                # engaged cast's step outside it is tarmar-engine #34's.
                 self.kite_step(combatant)
 
     def phase_actions(self) -> None:
@@ -531,11 +544,7 @@ class TurnRunner:
     # ------------------------------------------------------------- subroutines
     def _footprint_clear(self, combatant: CombatantState, anchor, facing) -> bool:
         """Would the combatant's footprint fit at ``anchor`` facing ``facing``?"""
-        occupied = self.state.occupied_hexes() - set(combatant.footprint)
-        return all(
-            cell not in occupied and hexes.in_arena(cell, self.state.arena_radius)
-            for cell in hexes.footprint(anchor, facing, combatant.size_hexes)
-        )
+        return movement.footprint_clear(self.state, combatant, anchor, facing)
 
     def face_towards(self, combatant: CombatantState, target_hex) -> None:
         """Rotate toward ``target_hex`` — unless a multi-hex body cannot swing.
@@ -677,19 +686,107 @@ class TurnRunner:
             # A corpse neither holds nor is held (#11).
             self._release_grapples_involving(combatant)
 
-    def _gait_allowance(self, combatant: CombatantState, gait: str) -> int:
-        """Hexes the figure may cover at ``gait`` (0 = a gait it may not use).
+    def _placed_destination(self, combatant: CombatantState) -> tuple[int, int] | None:
+        """The chosen hex, if the chosen option may still move there.
 
-        movement.md: CHARGE ATTACK and DODGE move at "Jog or less", so a
-        figure barred from jogging (a Heavy load) moves at its walk.
+        Checked when the option is chosen and again when the move is made,
+        since the board moves in between. A hex it may not take is refused in
+        the log and dropped, and the option makes the move it makes with no
+        hex: the derived move, a DISENGAGE straight back, a DROP in place, an
+        engaged option standing still (tarmar-engine #20).
         """
-        if gait == "sprint":
-            return combatant.move_sprint
-        if gait == "run":
-            return combatant.move_run
-        if gait == "jog":
-            return combatant.move_jog if combatant.move_jog > 0 else combatant.move_walk
-        return combatant.move_walk
+        destination = combatant.chosen_destination
+        if destination is None:
+            return None
+        reason = movement.refusal(
+            self.state, combatant, combatant.chosen_letter, destination
+        )
+        if reason is None:
+            return destination
+        combatant.chosen_destination = None
+        self.emit(
+            "info",
+            f"{combatant.name} cannot move to {destination}: {reason}",
+            actor=combatant.name,
+            payload={"destination_refused": list(destination), "reason": reason},
+        )
+        return None
+
+    def _face_chosen_target(self, combatant: CombatantState) -> None:
+        if combatant.chosen_target is None:
+            return
+        target = self.state.by_id(combatant.chosen_target)
+        if target.active:
+            self.face_towards(combatant, target.position)
+
+    def move_to_destination(self, combatant: CombatantState) -> None:
+        """A gait option's move to its chosen hex (tarmar-engine #20).
+
+        Along the shortest clear path within the option's gait, stopping the
+        moment the mover is engaged (movement.md), then facing the option's
+        target if it has one. The hex has been checked by
+        :meth:`_placed_destination`.
+        """
+        destination = combatant.chosen_destination
+        if destination is None:
+            return
+        key = combatant.chosen_letter
+        gait = movement.PLACED_GAITS[actions.base_option(key)]
+        path = movement.path_to(self.state, combatant, key, destination)
+        if path is None:
+            raise ValueError(
+                f"{combatant.name} has no path to {destination}; "
+                "_placed_destination checks it first"
+            )
+        start = combatant.position
+        steps = 0
+        for cell in path:
+            if self.profile.engagement.is_engaged(self.state, combatant):
+                break
+            combatant.facing = hexes.direction_towards(combatant.position, cell)
+            combatant.position = cell
+            steps += 1
+        self._face_chosen_target(combatant)
+        combatant.moved_this_turn = steps > 0
+        if steps == 0:
+            return
+        self.emit(
+            "movement",
+            f"{combatant.name} {gait}s {steps} hex(es) to {combatant.position}",
+            actor=combatant.name,
+            payload={
+                "from": list(start),
+                "to": list(combatant.position),
+                "gait": gait,
+                "hexes": steps,
+                "destination": list(destination),
+            },
+        )
+        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
+        if cost:
+            self.apply_fatigue_cost(
+                combatant, cost, "running" if gait == "run" else "sprinting"
+            )
+
+    def shift_to(self, combatant: CombatantState) -> None:
+        """An engaged option's one-hex Shift to its chosen hex (#20).
+
+        special-combat-situations.md: "Shift 1 hex or stand still during
+        movement". The hex has been checked by :meth:`_placed_destination`.
+        """
+        destination = combatant.chosen_destination
+        if destination is None:
+            return
+        start = combatant.position
+        combatant.position = destination
+        combatant.moved_this_turn = True
+        self._face_chosen_target(combatant)
+        self.emit(
+            "movement",
+            f"{combatant.name} shifts one hex to {destination}",
+            actor=combatant.name,
+            payload={"from": list(start), "to": list(destination), "gait": "shift"},
+        )
 
     def move_towards_target(self, combatant: CombatantState, gait: str = "") -> None:
         """Movement toward the chosen target at the option's gait.
@@ -707,7 +804,7 @@ class TurnRunner:
             gait = MOVEMENT_GAITS.get(
                 actions.base_option(combatant.chosen_letter), "jog"
             )
-        allowance = self._gait_allowance(combatant, gait)
+        allowance = movement.gait_allowance(combatant, gait)
         start = combatant.position
         steps = 0
         for _step in range(allowance):
@@ -901,8 +998,11 @@ class TurnRunner:
         if letter == "o":
             self.attempt_grapple(combatant)
             return
-        if letter == "v":  # Struggle Free (only ever chosen while grappled)
-            self.grapple_struggle_free(combatant)
+        if letter == "v":  # Struggle Free when held, else the HTH DISENGAGE
+            if combatant.grappled_by is not None:
+                self.grapple_struggle_free(combatant)
+            else:
+                self.hth_disengage(combatant)
             return
         if letter == "t":
             if combatant.grappled_by is not None:
@@ -1488,22 +1588,23 @@ class TurnRunner:
             payload={"letter": "d", "prone": True},
         )
 
-    def _step_away_from(
+    def _step_destination(
         self, combatant: CombatantState, threat: CombatantState
     ) -> tuple[int, int] | None:
-        """The nearest empty, in-arena hex stepping ``combatant`` away from
-        ``threat`` — straight back first, then either flank. Shared by plain
-        Disengage (n) and a grappled figure's Struggle Free (v), which both
-        need "one hex away, footprint clear" and nothing more."""
-        away = hexes.direction_towards(threat.position, combatant.position)
-        for direction in (away, (away + 1) % 6, (away - 1) % 6):
-            destination = hexes.add(combatant.position, direction)
-            if self._footprint_clear(combatant, destination, combatant.facing):
-                return destination
-        return None
+        """Where a DISENGAGE (n) or a v steps: the chosen hex while it is
+        still next to the figure and clear, else straight back from
+        ``threat``, then either flank (:func:`movement.step_away_hex`)."""
+        chosen = self._placed_destination(combatant)
+        if chosen is not None:
+            return chosen
+        return movement.step_away_hex(self.state, combatant, threat)
 
     def disengage_step(self, combatant: CombatantState) -> None:
-        """Option n: move one hex away from adjacent enemies instead of attacking."""
+        """Option n: move one hex instead of attacking.
+
+        "Move 1 hex any direction instead of attack": to the chosen hex, or
+        with none, away from the first adjacent enemy (tarmar-engine #20).
+        """
         if self.profile.grapple.locks_movement(
             combatant.grappled_by, combatant.grappling
         ):
@@ -1524,7 +1625,7 @@ class TurnRunner:
         if not adjacent:
             return
         threat = adjacent[0]
-        destination = self._step_away_from(combatant, threat)
+        destination = self._step_destination(combatant, threat)
         if destination is None:
             self.emit(
                 "info",
@@ -1733,6 +1834,15 @@ class TurnRunner:
         if first.combatant_id not in second.hth_with:
             second.hth_with.append(first.combatant_id)
 
+    def _leave_hand_to_hand(self, combatant: CombatantState) -> None:
+        """The figure and every partner part: a v DISENGAGE or a Struggle
+        Free that succeeds (special-combat-situations.md, "From HTH")."""
+        for other_id in combatant.hth_with:
+            other = self.state.by_id(other_id)
+            if combatant.combatant_id in other.hth_with:
+                other.hth_with.remove(combatant.combatant_id)
+        combatant.hth_with = []
+
     @staticmethod
     def _establish_grapple(attacker: CombatantState, defender: CombatantState) -> None:
         attacker.grappling = defender.combatant_id
@@ -1789,16 +1899,15 @@ class TurnRunner:
                 actor_name=captor.name,
             )
 
-    def grapple_struggle_free(self, combatant: CombatantState) -> None:
-        """Struggle Free (letter v): "the same roll as a plain HTH
-        Disengage" — 4d6 <= effective DEX. Success stands the figure up and
-        moves it to an adjacent empty hex; failure leaves it held."""
-        grappler_id = combatant.grappled_by
-        if grappler_id is None:
-            return
-        grappler = self.state.by_id(grappler_id)
-        # injury-thresholds-death.md's -1/-2 band (#296), and an off-balance
-        # figure's −2 on this action (#811).
+    def _escape_roll(
+        self, combatant: CombatantState, *, made: str, failed: str
+    ) -> bool:
+        """The HTH DISENGAGE roll, "Roll 4d6 ≤ DEX", made or not.
+
+        Struggle Free uses "the same roll as a plain HTH Disengage". The DEX
+        is effective: injury-thresholds-death.md's -1/-2 band (#296) and an
+        off-balance figure's −2 on this action (#811) come off it.
+        """
         effective_dex = (
             combatant.dexterity
             - self.profile.reactions.injury_penalty(combatant)
@@ -1811,28 +1920,96 @@ class TurnRunner:
             target_number=effective_dex,
             versus="DEX",
             roll_under=True,
-            judge=lambda attempt: (
-                "still held" if attempt.total > effective_dex else "struggles free"
-            ),
+            judge=lambda attempt: failed if attempt.total > effective_dex else made,
         )
-        if record.total > effective_dex:
+        return record.total <= effective_dex
+
+    def grapple_struggle_free(self, combatant: CombatantState) -> None:
+        """Struggle Free (letter v): "the same roll as a plain HTH
+        Disengage" — 4d6 <= effective DEX. Success stands the figure up and
+        moves it to an adjacent empty hex (the chosen one, tarmar-engine #20);
+        failure leaves it held."""
+        grappler_id = combatant.grappled_by
+        if grappler_id is None:
+            return
+        grappler = self.state.by_id(grappler_id)
+        if not self._escape_roll(combatant, made="struggles free", failed="still held"):
             self.emit(
                 "info",
                 f"{combatant.name} fails to struggle free and remains held",
                 actor=combatant.name,
             )
             return
-        destination = self._step_away_from(combatant, grappler)
+        destination = self._step_destination(combatant, grappler)
         if destination is not None:
             combatant.position = destination
             combatant.moved_this_turn = True
         combatant.prone = False
+        # "the same roll as a plain HTH Disengage", and the same outcome: out
+        # of hand-to-hand with every partner, stepped clear or not (#19).
+        self._leave_hand_to_hand(combatant)
         self._end_grapple(
             grappler,
             combatant,
             message=f"{combatant.name} struggles free of {grappler.name}"
             + ("" if destination is not None else " but has nowhere to step to"),
             actor_name=combatant.name,
+        )
+
+    def hth_disengage(self, combatant: CombatantState) -> None:
+        """DISENGAGE (v) from hand-to-hand outside a grapple (tarmar-engine #19).
+
+        special-combat-situations.md, "From HTH (option v)": "Roll 4d6 ≤
+        DEX", "Success: stand up and move to adjacent empty hex", "Failure:
+        remain in HTH". The hex is the chosen one, else straight back from
+        the first partner. A success leaves hand-to-hand with every partner,
+        even with no clear hex to step to (coordinator's ruling under the
+        standing rule; Spencer may overrule).
+        """
+        partners = [
+            self.state.by_id(other_id)
+            for other_id in combatant.hth_with
+            if self.state.by_id(other_id).active
+            and combat_math.figures_adjacent(combatant, self.state.by_id(other_id))
+        ]
+        if not partners:
+            self.emit(
+                "info",
+                f"{combatant.name} is no longer in hand-to-hand and has "
+                "nothing to disengage from",
+                actor=combatant.name,
+            )
+            return
+        if not self._escape_roll(combatant, made="breaks away", failed="still in"):
+            self.emit(
+                "info",
+                f"{combatant.name} fails to disengage and remains in hand-to-hand",
+                actor=combatant.name,
+            )
+            return
+        start = combatant.position
+        destination = self._step_destination(combatant, partners[0])
+        if destination is not None:
+            combatant.position = destination
+            combatant.moved_this_turn = True
+        combatant.prone = False
+        self._leave_hand_to_hand(combatant)
+        names = ", ".join(partner.name for partner in partners)
+        self.emit(
+            "movement" if destination is not None else "status",
+            f"{combatant.name} disengages from hand-to-hand with {names}"
+            + (
+                f" and stands in {destination}"
+                if destination is not None
+                else " but has nowhere to step to"
+            ),
+            actor=combatant.name,
+            payload={
+                "from": list(start),
+                "to": list(combatant.position),
+                "gait": "shift",
+                "hth_ended": [partner.combatant_id for partner in partners],
+            },
         )
 
     def grapple_strike_back(self, combatant: CombatantState) -> None:
@@ -1893,10 +2070,10 @@ class TurnRunner:
             return
         self._enter_hth(combatant, target)
         self.face_towards(combatant, target.position)
-        # Inside hand-to-hand "both combatants get +4" for bare hands or a
-        # dagger: the struck figure's own HTH strike (t) back takes it too,
-        # with no entry condition needed. An armed partner's weapon attack
-        # (j) keeps its normal bonus; whether it must drop to t is #867's.
+        # Inside hand-to-hand "both combatants get +4": the struck figure's
+        # own HTH strike (t) back takes it too, with no entry condition
+        # needed. Its menu is the HTH table, so an armed partner strikes back
+        # with bare hands or a dagger, never its weapon (tarmar-engine #19).
         self.resolve_attack(
             combatant,
             target,
@@ -2055,6 +2232,23 @@ class TurnRunner:
                 f"{combatant.name} is locked in a grapple and cannot cast "
                 f"{spell.name} without gestures and words",
                 actor=combatant.name,
+            )
+            return
+        if (
+            movement.in_hand_to_hand(self.state, combatant)
+            and combatant.weapon.item_id
+            and combatant.spell_mastery.get(spell.key, 1)
+            < policy.HTH_NO_GESTURE_MASTERY
+        ):
+            # The HTH table: "CAST SPELL — If hands free or no-gesture
+            # spell" (tarmar-engine #19), held here as well as on the menu.
+            self.emit(
+                "info",
+                f"{combatant.name} is in hand-to-hand with the "
+                f"{combatant.weapon.name} in hand and cannot cast {spell.name} "
+                "without gestures",
+                actor=combatant.name,
+                payload={"hth_cast_refused": True, "spell": spell.key},
             )
             return
         if combatant.mana < cost:

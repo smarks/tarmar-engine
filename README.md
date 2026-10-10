@@ -191,7 +191,9 @@ on the default path, with no field set:
   figures, or an enemy closing on you, enter it by agreement (#815, #823,
   #867). Inside hand-to-hand only a partner using bare hands or a dagger
   strikes at +4; an armed partner keeps its weapon at its normal bonus,
-  and whether it must drop to `t` is carried to tarmar-studio #867;
+  and whether it must drop to `t` is carried to tarmar-studio #867 (since
+  ruled: inside hand-to-hand the menu is the HTH table, see "The
+  hand-to-hand menu and placed moves" below);
 - an engaged figure holding a bow gets One Last Shot (`l`), not a bow-club
   `j` (#776, #815);
 - ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823);
@@ -260,6 +262,52 @@ To put Push on the AI's menu, drive the turn with
 injected, a menu built without them can offer a cast the engine refuses. A
 Runaway is flagged (`runaway: True`) but its later turns are not modelled
 yet; Borrowing, Runaway and Counterspell are tarmar-engine #28, #30 and #31.
+
+## The hand-to-hand menu and placed moves (v0.9.9)
+
+Spencer's rulings of 2026-10-09 (tarmar-studio #867, #819, #866), in
+tarmar-engine #19 and #20. Both change the default path.
+
+**Inside hand-to-hand the menu is the HTH table** (#19). A figure whose
+`hth_with` names an active enemy beside it is offered action-options.md's
+Hand-to-Hand Combat table and nothing else, standing or down:
+`actions.legal_actions(..., in_hth=True, can_draw_dagger=...)` returns `t`
+(bare hands, or the dagger in hand, at +4), `u` when a dagger is carried and
+not in hand, `v` DISENGAGE, and `r` for the casts the table allows ("If
+hands free or no-gesture spell": no weapon in hand, or Spell Mastery 2). No
+`j`, at a partner or at a third enemy beside it (coordinator's ruling under
+the standing rule on the issue's open question; Spencer may overrule). The
+struck figure strikes back at +4 with no entry condition. `v` outside a
+grapple is `TurnRunner.hth_disengage`: 4d6 ≤ effective DEX, stand, step to an
+adjacent clear hex, leave hand-to-hand with every partner; a Struggle Free
+that succeeds leaves it too. `cast_spell` checks the cast's condition again
+when it is cast. A beast keeps its own menu, and a caster in hand-to-hand takes no walk-slow step out of it.
+
+**A candidate may carry a hex** (#20). `Candidate.destination` is an axial
+`(q, r)` or `None`; `to_payload()` writes `"destination": [q, r]` only when
+one is named, so a candidate without one logs as before.
+`tarmar_engine.movement` holds the rule: `placement(state, figure, key)`
+says which kind of placed move an option allows, `legal_destinations` lists
+the hexes, `refusal` says why a hex is not one.
+
+| Kind | Options | Hex | When |
+|---|---|---|---|
+| shift | `j`, `k`, `m`, `o`, `r` | adjacent, footprint clear, still engaged with every enemy it was engaged with | Initial Movement |
+| step | `n`, `v` (and Struggle Free) | adjacent, footprint clear | Actions |
+| gait | `a`, `sprint`, `c`, `d`, `a_yield`, `sprint_yield`, `c_yield` | reached within the gait along a clear path, stopping where it would be engaged | its movement phase |
+
+A figure in hand-to-hand or a grapple has only `v`'s step. A CHARGE goes at
+its target and takes no hex. The engine checks the hex when the option is
+chosen and again when the move is made; a hex it may not take is refused in
+an `info` event (`destination_refused`) and the option makes the move it
+makes with none. Leaving an engagement is DISENGAGE's (`n`), so a Shift
+that would leave one is refused (coordinator's ruling under the standing
+rule; Spencer may overrule). The AI names no hex: its engaged options stand
+still, its DROP drops in place, its MOVE, CHARGE and DODGE close on their
+target, and its `n`, `v` and Struggle Free leave the step to the engine when
+the figure acts, the forecast printing the step it expects. `movement.gait_allowance` is the one jog rule the engine moves
+by and the policy prices a charge by (#17). `CombatantState` gains
+`chosen_destination`.
 
 ## What it sits on
 

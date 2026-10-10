@@ -99,10 +99,9 @@ def hth_entry_reason(
     itself chosen to close with the actor this turn (ATTEMPT HTH or an HTH
     strike aimed at it), and two bare-handed figures, whose only fighting
     is hand-to-hand. A bare-handed figure against an armed one keeps the
-    conditions. A pair already in hand-to-hand needs none; a partner that
-    strikes with bare hands or a dagger (t) takes the HTH +4, while an armed
-    partner keeps its weapon at its normal bonus (whether it must drop to
-    t is carried to tarmar-studio #867).
+    conditions. A pair already in hand-to-hand needs none, and both strike
+    (t) at the HTH +4: inside it the menu is the HTH table, so an armed
+    partner strikes with bare hands or a dagger (tarmar-engine #19).
     """
     if not figures_adjacent(actor, target):
         return None

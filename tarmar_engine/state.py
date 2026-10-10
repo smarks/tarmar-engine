@@ -192,9 +192,11 @@ class CombatantState:
     # crossbow's reload is the weapon's own (``WeaponState``).
     last_shot_spent: bool = False
     # Enemies this figure is in hand-to-hand with: entered by a grapple
-    # attempt or an HTH strike, kept while the two stay adjacent. Inside it
-    # neither needs an entry condition again, and a strike with bare hands
-    # or a dagger (t) takes the HTH +4 (hand-to-hand-and-grappling.md; #867).
+    # attempt or an HTH strike, kept while the two stay adjacent or until a
+    # DISENGAGE (v) succeeds. Inside it neither needs an entry condition
+    # again, a strike with bare hands or a dagger (t) takes the HTH +4, and
+    # the figure's menu is the HTH table (hand-to-hand-and-grappling.md;
+    # tarmar-studio #867, tarmar-engine #19).
     hth_with: list[int] = field(default_factory=list)
     defending: bool = False  # Defend chosen this turn (+4 TN vs melee)
     dodging: bool = False  # Dodge chosen this turn (+4 TN vs missiles)
@@ -216,6 +218,10 @@ class CombatantState:
     #: 0 is an ordinary cast. Only a profile with injected Push rules acts on
     #: it.
     chosen_push_mana: int = 0
+    #: The hex the chosen option places the figure at, axial ``(q, r)``, or
+    #: ``None`` for the move the option derives itself (tarmar-engine #20;
+    #: ``tarmar_engine.movement``).
+    chosen_destination: tuple[int, int] | None = None
     moved_this_turn: bool = False
     dealt_damage_this_turn: bool = False
     took_damage_this_turn: bool = False
@@ -295,6 +301,7 @@ class CombatantState:
         self.chosen_target = None
         self.chosen_spell = ""
         self.chosen_push_mana = 0
+        self.chosen_destination = None
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
         self.took_damage_this_turn = False
@@ -364,6 +371,11 @@ class BattleState:
             if entry.pop("weapon_stressed", False):
                 weapon.stressed = True
             spares = [WeaponState(**spare) for spare in entry.pop("spare_weapons", [])]
+            # JSON has no tuple: a hex comes back as a list, and a hex is
+            # compared and hashed as a tuple (tarmar-engine #20).
+            destination = entry.pop("chosen_destination", None)
+            if destination is not None:
+                entry["chosen_destination"] = tuple(destination)
             combatants.append(
                 CombatantState(weapon=weapon, spare_weapons=spares, **entry)
             )
