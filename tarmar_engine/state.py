@@ -198,6 +198,13 @@ class CombatantState:
     # the figure's menu is the HTH table (hand-to-hand-and-grappling.md;
     # tarmar-studio #867, tarmar-engine #19).
     hth_with: list[int] = field(default_factory=list)
+    # Enemies a Game Master has ruled this figure may enter hand-to-hand
+    # with by agreement ("or they simply agree", hand-to-hand-and-
+    # grappling.md). The consuming game fills it from its own record of the
+    # ruling (tarmar-studio #867); the engine reads it as one more entry
+    # condition, holding for the pair when either figure lists the other.
+    # Written to a snapshot only when it names someone.
+    hth_agreed_with: list[int] = field(default_factory=list)
     defending: bool = False  # Defend chosen this turn (+4 TN vs melee)
     dodging: bool = False  # Dodge chosen this turn (+4 TN vs missiles)
     yielded: bool = False  # yielded initial movement, moves in phase 4
@@ -358,7 +365,14 @@ class BattleState:
         raise KeyError(f"No combatant with id {combatant_id}")
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # A Game Master's agreement is written only when one is recorded, so
+        # a battle without one snapshots as it always has (tarmar-studio
+        # #867).
+        for combatant in data["combatants"]:
+            if not combatant["hth_agreed_with"]:
+                del combatant["hth_agreed_with"]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> BattleState:

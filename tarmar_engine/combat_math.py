@@ -82,6 +82,11 @@ def is_engaged(state: BattleState, actor: CombatantState) -> bool:
     return hexes.figure_engaged(actor.footprint, actor.size_hexes, enemies)
 
 
+#: The entry reason for a pair a Game Master has ruled agree to hand-to-hand
+#: (``CombatantState.hth_agreed_with``; tarmar-studio #867).
+GAME_MASTER_AGREEMENT = "a Game Master rules they agree"
+
+
 def hth_entry_reason(
     state: BattleState, actor: CombatantState, target: CombatantState
 ) -> str | None:
@@ -99,7 +104,11 @@ def hth_entry_reason(
     itself chosen to close with the actor this turn (ATTEMPT HTH or an HTH
     strike aimed at it), and two bare-handed figures, whose only fighting
     is hand-to-hand. A bare-handed figure against an armed one keeps the
-    conditions. A pair already in hand-to-hand needs none, and both strike
+    conditions. Beyond those two, agreement is a Game Master's ruling the
+    consuming game records: a pair agrees when either figure lists the other
+    in ``hth_agreed_with``, so agreement holds both ways even if only one
+    list was filled (Spencer's ruling of 2026-10-09 on tarmar-studio #867).
+    A pair already in hand-to-hand needs none, and both strike
     (t) at the HTH +4: inside it the menu is the HTH table, so an armed
     partner strikes with bare hands or a dagger (tarmar-engine #19).
     """
@@ -123,6 +132,11 @@ def hth_entry_reason(
         return "they close in too"
     if _bare_handed(actor) and _bare_handed(target):
         return "both bare-handed"
+    if (
+        target.combatant_id in actor.hth_agreed_with
+        or actor.combatant_id in target.hth_agreed_with
+    ):
+        return GAME_MASTER_AGREEMENT
     return None
 
 

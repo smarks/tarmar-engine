@@ -515,3 +515,93 @@ class ChargeReachTest(TestCase):
         figure.chosen_letter, figure.chosen_target = "b", 2
         runner_for(state).move_towards_target(figure)
         self.assertTrue(combat_math.figures_adjacent(figure, state.by_id(2)))
+
+
+class HthAgreementByGameMasterTest(TestCase):
+    """tarmar-studio #867 — hand-to-hand-and-grappling.md, "Entering
+    Hand-to-Hand": "... or they simply agree". Spencer, 2026-10-09: "a Game
+    Master marks a battle, or a pair, as 'HTH by agreement'; players alone
+    still need the engine's entry condition"."""
+
+    def test_the_page_says_so(self):
+        self.assertIn("or they\nsimply agree", HTH_PAGE)
+
+    def test_a_listed_pair_agrees_both_ways_and_no_one_else(self):
+        state = duel_state()
+        # Beside the first and facing it: no entry condition between them.
+        state.combatants.append(make_combatant(3, q=0, r=1, facing=2))
+        first, second, third = state.by_id(1), state.by_id(2), state.by_id(3)
+        self.assertIsNone(combat_math.hth_entry_reason(state, first, second))
+        first.hth_agreed_with = [2]  # one list filled: the pair still agrees
+        for actor, target in ((first, second), (second, first)):
+            self.assertEqual(
+                combat_math.hth_entry_reason(state, actor, target),
+                combat_math.GAME_MASTER_AGREEMENT,
+            )
+        self.assertEqual(
+            combat_math.GAME_MASTER_AGREEMENT, "a Game Master rules they agree"
+        )
+        # The third figure, beside the first, is listed by no one.
+        self.assertTrue(combat_math.figures_adjacent(first, third))
+        self.assertIsNone(combat_math.hth_entry_reason(state, first, third))
+        self.assertIsNone(combat_math.hth_entry_reason(state, third, first))
+
+    def test_it_is_checked_after_the_agreements_read_off_the_board(self):
+        state = duel_state()
+        first, second = state.by_id(1), state.by_id(2)
+        first.weapon = second.weapon = WeaponState(damage="1d6-2")
+        first.hth_agreed_with = [2]
+        self.assertEqual(
+            combat_math.hth_entry_reason(state, first, second), "both bare-handed"
+        )
+
+    def test_the_menu_and_the_engine_take_it(self):
+        state = duel_state()
+        first, second = state.by_id(1), state.by_id(2)
+        self.assertNotIn("o", letters(state, 1))
+        first.hth_agreed_with, second.hth_agreed_with = [2], [1]
+        self.assertIn("o", letters(state, 1))
+        first.weapon = WeaponState(damage="1d6-2")
+        first.chosen_target = 2
+        events = []
+        runner_for(state, [[10], [3]], events).hth_strike(first)
+        self.assertEqual(first.hth_with, [2])
+        self.assertIn(
+            "closes and strikes", events_of_type(events, "action")[0]["message"]
+        )
+
+    def test_a_snapshot_writes_it_only_when_it_names_someone(self):
+        state = duel_state()
+        plain = state.to_dict()
+        self.assertNotIn("hth_agreed_with", plain["combatants"][0])
+        self.assertEqual(BattleState.from_dict(plain).by_id(1).hth_agreed_with, [])
+        state.by_id(1).hth_agreed_with = [2]
+        restored = BattleState.from_dict(json.loads(json.dumps(state.to_dict())))
+        self.assertEqual(restored.by_id(1).hth_agreed_with, [2])
+        self.assertNotIn("hth_agreed_with", state.to_dict()["combatants"][1])
+
+    def test_a_battle_with_none_replays_unchanged(self):
+        """Every turn played from a JSON snapshot, which drops the empty
+        list: the recorded v0.9.4 duels replay event for event."""
+        from tarmar_engine import engine
+
+        from .replay_scenarios import SCENARIOS, comparable, fixture_path
+        from .test_engine import SeededStubRoller
+        from .test_replay import _comparable
+
+        for seed in (1, 2, 4):
+            with self.subTest(seed=seed):
+                state = SCENARIOS["duel"]()
+                roller = SeededStubRoller(seed)
+                events: list[dict] = []
+                recorded = json.loads(fixture_path("duel", seed).read_text())
+                while len(events) < len(recorded):
+                    state = BattleState.from_dict(
+                        json.loads(json.dumps(state.to_dict()))
+                    )
+                    engine.run_turn(state, roller, events.append, policy.choose_option)
+                replayed = [comparable(event) for event in events][: len(recorded)]
+                self.assertEqual(
+                    [_comparable(event) for event in replayed],
+                    [_comparable(event) for event in recorded],
+                )

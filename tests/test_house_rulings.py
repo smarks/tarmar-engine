@@ -362,3 +362,11 @@ class HandToHandAndDestinationRulingsTest(TestCase):
         figure = state.by_id(1)
         self.assertFalse(movement.keeps_engagement(state, figure, (-1, 0)))
         self.assertTrue(movement.keeps_engagement(state, figure, (0, 1)))
+
+    def test_hth_agreement_by_game_master(self):
+        from tarmar_engine import combat_math
+
+        self.assertEqual(
+            combat_math.GAME_MASTER_AGREEMENT,
+            ruling("hth_agreement_by_game_master").value,
+        )

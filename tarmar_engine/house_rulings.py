@@ -273,10 +273,25 @@ HOUSE_RULINGS += (
         "condition until they part, and both strike (t) at the HTH +4. "
         "Agreement beyond these two cases is a Game Master's call, made in the "
         "consuming game (Spencer's ruling of 2026-10-09 on tarmar-studio "
-        "#867).",
+        "#867) and read as hth_agreement_by_game_master.",
         ("they close in too", "both bare-handed"),
         "tarmar_engine/combat_math.py hth_entry_reason; engine.py _enter_hth",
         RULING,
+        "#867",
+    ),
+    HouseRuling(
+        "hth_agreement_by_game_master",
+        "A pair a Game Master has ruled agree may enter hand-to-hand: when "
+        "either figure lists the other in CombatantState.hth_agreed_with, "
+        "that is an entry condition for both, checked after the two "
+        "agreements read off the board. Empty, nothing changes. Spencer, "
+        "2026-10-09: 'a Game Master marks a battle, or a "
+        'pair, as "HTH by agreement"; players alone still need the '
+        "engine's entry condition.'",
+        "a Game Master rules they agree",
+        "tarmar_engine/combat_math.py hth_entry_reason (GAME_MASTER_AGREEMENT)",
+        PAGE + ": hand-to-hand-and-grappling.md 'or they simply agree'; "
+        "Spencer's ruling of 2026-10-09 on tarmar-studio #867",
         "#867",
     ),
     HouseRuling(
