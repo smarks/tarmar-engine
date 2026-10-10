@@ -1008,18 +1008,25 @@ class GrappleMovementLockTest(TestCase):
 
 
 class GrappleForcedRetreatExemptionTest(TestCase):
+    """A push is owed for a physical hit (#813), so each test arms one and
+    shows the push lands once the hold is gone: the exemption is what stops
+    it, not a missing hit (tarmar-engine #18)."""
+
     def test_no_push_when_the_attacker_is_the_grappler(self):
         state = duel_state()
         grappler, held = state.by_id(1), state.by_id(2)
         grappler.grappling = 2
         held.grappled_by = 1
-        grappler.dealt_damage_this_turn = True
+        grappler.dealt_physical_hit_this_turn = True
         grappler.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
         runner.phase_forced_retreat()
         self.assertEqual(events_of_type(events, "movement"), [])
         self.assertEqual(held.position, (1, 0))
+        grappler.grappling = held.grappled_by = None
+        runner.phase_forced_retreat()
+        self.assertEqual(held.position, (2, 0))
 
     def test_no_push_when_the_victim_is_held_by_a_third_party(self):
         # A third combatant lands a hit on someone who happens to be
@@ -1034,13 +1041,16 @@ class GrappleForcedRetreatExemptionTest(TestCase):
             ],
         )
         attacker = state.by_id(1)
-        attacker.dealt_damage_this_turn = True
+        attacker.dealt_physical_hit_this_turn = True
         attacker.chosen_target = 2
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
         runner.phase_forced_retreat()
         self.assertEqual(events_of_type(events, "movement"), [])
         self.assertEqual(state.by_id(2).position, (1, 0))
+        state.by_id(2).grappled_by = state.by_id(3).grappling = None
+        runner.phase_forced_retreat()
+        self.assertNotEqual(state.by_id(2).position, (1, 0))
 
 
 class GrappleRenewSpellsTest(TestCase):
