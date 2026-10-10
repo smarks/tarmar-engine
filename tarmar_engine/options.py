@@ -12,7 +12,7 @@ entries and their movement vocabulary are profile data:
   remains the Tarmar profile's situational legality filter). Tarmar's
   movement economy is gait-based (movement.md), so its ``movement_cap``
   tokens name gaits: ``"run"`` (option a), ``"jog"`` (the charge), and
-  ``"adjust"`` (the phase-4 walk-slow step for f/h/r).
+  ``"adjust"`` (the phase-4 walk-slow step for f/h).
 * :func:`melee_structure_catalog` ports melee's option taxonomy
   (``engine/options.py``) — contexts, fraction-of-MA movement caps, and
   flags. Structure only: option names and caps, no weapon tables or other
@@ -109,7 +109,9 @@ def movement_budget(movement_allowance: int, option_cap: str) -> int:
 # Tarmar per-letter facts the letter tables don't carry: gait tokens and
 # flags, matching the engine's phase 3/4/5 handling of each letter exactly.
 _TARMAR_CAPS: dict[str, str] = {"a": "run", "b": "jog"}
-_TARMAR_ADJUST = frozenset({"f", "h", "r"})  # phase-4 walk-slow kite step
+# Phase-4 walk-slow kite step. The engaged cast (r) is "Shift/still" and
+# takes none (tarmar-engine #20).
+_TARMAR_ADJUST = frozenset({"f", "h"})
 _TARMAR_ATTACKS = frozenset({"b", "f", "j", "l", "t"})
 _TARMAR_MISSILES = frozenset({"f", "l"})
 _TARMAR_CASTS = frozenset({"h", "r"})

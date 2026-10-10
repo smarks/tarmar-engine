@@ -507,12 +507,11 @@ class TurnRunner:
                     self.move_to_destination(combatant)
                 elif option in MOVEMENT_GAITS:
                     self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
-            elif option in ("f", "h", "r") and not movement.in_hand_to_hand(
-                self.state, combatant
-            ):
-                # The HTH table has no Move column: a caster in hand-to-hand
-                # takes no walk-slow step out of it (tarmar-engine #19). The
-                # engaged cast's step outside it is tarmar-engine #34's.
+            elif option in ("f", "h"):
+                # MISSILE ATTACK and CAST SPELL move at "Walk (slow)". The
+                # engaged cast (r) is "Shift/still" (action-options.md), so it
+                # takes no walk-slow step, in hand-to-hand or out of it: it
+                # shifts only to a chosen hex (tarmar-engine #20, #34).
                 self.kite_step(combatant)
 
     def phase_actions(self) -> None:

@@ -83,7 +83,8 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
     ),
     HouseRuling(
         "walk_slow_step",
-        "The phase-4 step of a missile or cast option is at most 2 hexes.",
+        "The phase-4 step of a disengaged missile or cast option (f, h) is at "
+        "most 2 hexes; the engaged cast (r) is 'Shift/still' and takes none (#34).",
         2,
         "tarmar_engine/engine.py WALK_SLOW_MAX",
         PAGE + ": movement.md, 'Walk (slow) | Up to 2 hex'",

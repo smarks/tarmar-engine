@@ -323,6 +323,13 @@ is symmetric: when either figure lists the other, `hth_entry_reason` returns
 ways, checked after the two read off the board. It is additive: empty, nothing
 changes, and `BattleState.to_dict` writes it only when it names someone.
 
+## The engaged cast stands still (v0.9.11)
+
+An engaged cast (`r`) no longer takes the walk-slow step of two hexes that
+the disengaged `f` and `h` take in Final Movement (#34): its Move column is
+"Shift/still" (action-options.md), so it shifts one hex only to a chosen
+hex. The option catalog's cap for `r` is "none".
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
