@@ -1,0 +1,3 @@
+# Every issue goes through one of the three forms, so each carries a type
+# label, a severity, a priority and an author.
+blank_issues_enabled: false

@@ -1,0 +1,42 @@
+# Every Tarmar repository carries these same forms (tarmar-studio-private,
+# tarmar-studio, tarmar-canon, tarmar-engine, tarmar-rules); change them all
+# together. Players file in the public tarmar-studio.
+name: Bug
+description: Something in Tarmar Studio is broken or wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead? The page you were on and a screenshot help.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How badly it gets in the way.
+      options:
+        - "Critical: I can't play or use the page at all"
+        - "Major: something important is wrong"
+        - "Minor: annoying, but I can work around it"
+        - "Cosmetic: it just looks off"
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How soon you'd like it looked at.
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+  - type: input
+    id: author
+    attributes:
+      label: Author
+      description: GitHub already shows your username; put a name here only if you'd like to be credited differently. Optional.

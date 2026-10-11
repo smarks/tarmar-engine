@@ -1,0 +1,40 @@
+# Every Tarmar repository carries these same forms (tarmar-studio-private,
+# tarmar-studio, tarmar-canon, tarmar-engine, tarmar-rules); change them all
+# together. Players file in the public tarmar-studio.
+name: Feature request
+description: An idea for something Tarmar Studio could do.
+labels: [feature]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What would you like, and what would it let you do?
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How much its absence gets in the way.
+      options:
+        - "Major: I keep running into the lack of it"
+        - "Minor: it would be nice to have"
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How soon you'd like it.
+      options:
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+  - type: input
+    id: author
+    attributes:
+      label: Author
+      description: GitHub already shows your username; put a name here only if you'd like to be credited differently. Optional.
