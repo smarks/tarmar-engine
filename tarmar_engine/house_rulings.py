@@ -472,6 +472,80 @@ HOUSE_RULINGS += (
         RULING,
         "#825 (tarmar-engine #29)",
     ),
+    HouseRuling(
+        "debt_roll_after_effect",
+        "The debt roll is made after the spell's aim and effect, so the spell "
+        "is paid for before the caster learns the cost, and it is made on "
+        "every cast that borrowed, whatever became of the spell: a failed "
+        "casting roll that paid, a Control Roll that stopped the spell and "
+        "an aim that missed all still owe. A failure cannot take the spell "
+        "back; it is narrated, and flagged a Runaway when the injected "
+        "failure is one. It is made even when a tier's refund has paid the "
+        "whole debt back, since the caster borrowed on this cast. The target "
+        "is the injected attributes summed less the injected penalty per "
+        "point owed, and less the casting roll's injury band and off-balance "
+        "penalty, as the Control Roll takes them (orchestrator's ruling: one "
+        "roll-under reading for the magic rolls).",
+        ("casting", "spell aim", "spell damage", "debt"),
+        "tarmar_engine/engine.py cast_spell, _debt_roll",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "borrowed_when_the_cast_pays",
+        "A borrowing cast borrows only when the cast pays (#816): on a "
+        "success, and on the failures that lose mana. A failure that keeps "
+        "its mana borrows nothing and makes no debt roll.",
+        "when the cast pays",
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "borrowing_counts_toward_channel",
+        "Channel bounds the whole casting, the spell's cost and its pushed "
+        "mana, whether paid from the pool or borrowed: a casting past Channel "
+        "is refused, borrowing or not. With no injected debt cap Channel is "
+        "the only bound, so Borrowing without a cap needs Channel rules.",
+        "spell cost + pushed mana, borrowed or not",
+        "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py "
+        "_borrow_candidates; tarmar_engine/magic.py MagicRules",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "ai_never_borrows",
+        "As with Push, only a player's choice borrows: the borrowing variants "
+        "are on the menu at a score of 0 and the AI's choice is the one it "
+        "makes without them.",
+        "player only",
+        "tarmar_engine/policy.py _borrow_candidates",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "debt_persists_on_the_combatant",
+        "What a caster owes is kept on the combatant across turns and in its "
+        "snapshot, for the caller to write back to the character after the "
+        "battle; the engine settles it only by refunds.",
+        "CombatantState.debt",
+        "tarmar_engine/state.py CombatantState",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "refunds_pay_debt_first",
+        "When the injected rules say refunds pay the debt first, the mana a "
+        "tier's refund hands back (the only mana the engine hands back) "
+        "reduces the debt before it refills the pool, before the debt roll. "
+        "When they say it does not, the refund refills the pool and is "
+        "capped at what the pool paid (the cost less what was borrowed), so "
+        "a borrowing cast never leaves the pool above where it started.",
+        "tier refund",
+        "tarmar_engine/engine.py _regain_mana",
+        RULING,
+        "#825 (tarmar-engine #28)",
+    ),
 )
 
 

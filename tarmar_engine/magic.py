@@ -1,5 +1,5 @@
-"""Injected magic rules: the casting success tiers, Push and Channel
-(tarmar-engine #26, #27, #29; split from tarmar-studio #825).
+"""Injected magic rules: the casting success tiers, Push, Channel and
+Borrowing (tarmar-engine #26, #27, #29, #28; split from tarmar-studio #825).
 
 **No rulebook numbers live here.** The magic-mechanics pages these mechanics
 come from are DM-only, and this package is public. Following the classic
@@ -15,7 +15,7 @@ A profile with no ``MagicRules`` (the default, :data:`~tarmar_engine.profile.
 TARMAR`) runs the engine exactly as before: no tiers, no Push, no Channel,
 the same events and payloads.
 
-Three mechanics are modelled so far:
+Four mechanics are modelled so far:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -35,9 +35,17 @@ Three mechanics are modelled so far:
   (:class:`ChannelRules`). It is per caster and per spell: it derives from a
   skill level recorded on the caster's snapshot, by a rule injected for each
   kind of magic. The menu offers no cast past it and the engine refuses one.
+* **Borrowing.** A caster short of mana may borrow the rest
+  (:class:`BorrowingRules`): the cast empties the pool and the shortfall is
+  recorded as debt on the combatant, which persists across turns. After the
+  spell has resolved the caster makes a debt roll, roll-under, against the
+  injected attributes less a penalty per point owed; a failure does what the
+  injected :class:`BorrowingFailure` says. Channel still bounds the whole
+  casting, borrowed or not.
 
 The outcome names, tier names and labels are injected too: the engine's own
-vocabulary is only "held", "failed" and whether a band is a Runaway.
+vocabulary is only "borrows", "debt", "held", "failed" and whether an
+outcome is a Runaway.
 """
 
 from __future__ import annotations
@@ -55,6 +63,22 @@ if TYPE_CHECKING:
 
 #: The attributes a roll in this module may be made against.
 MAGIC_ATTRIBUTES: frozenset[str] = frozenset({"INT", "WIS"})
+
+
+def attribute_score(caster: CombatantState, attribute: str) -> int:
+    """The caster's score in one of :data:`MAGIC_ATTRIBUTES`.
+
+    Raises:
+        ValueError: for an attribute outside :data:`MAGIC_ATTRIBUTES`.
+    """
+    if attribute == "INT":
+        return caster.intelligence
+    if attribute == "WIS":
+        return caster.wisdom
+    raise ValueError(
+        f"a magic roll is made against one of {sorted(MAGIC_ATTRIBUTES)}, "
+        f"not {attribute!r}"
+    )
 
 
 class SpellEffectKind(StrEnum):
@@ -393,6 +417,107 @@ class ChannelRules:
 
 
 @dataclass(frozen=True)
+class BorrowingFailure:
+    """What a failed debt roll does.
+
+    The debt roll is made after the spell has resolved (house reading
+    ``debt_roll_after_effect``), so a failure cannot take the spell back: it
+    is narrated, and flagged a Runaway when it is one.
+
+    Attributes:
+        key: Stable identifier carried in event payloads.
+        label: The failure as narration prints it.
+        is_runaway: Does the failure start a Runaway? Flagged in the payload
+            as a Runaway on the Control Roll is; its later turns belong to
+            tarmar-engine #30.
+    """
+
+    key: str
+    label: str
+    is_runaway: bool
+
+
+@dataclass(frozen=True)
+class BorrowingRules:
+    """Borrowing's numbers: the debt roll, its penalty, and its failure.
+
+    Attributes:
+        debt_dice: The debt roll's dice expression.
+        debt_attributes: The attributes, each one of :data:`MAGIC_ATTRIBUTES`,
+            summed for the roll-under target before the penalty. At least one.
+        penalty_per_debt: Subtracted from the target per point of debt owed
+            once the cast is paid (and any refund has paid some back).
+        failure: What a failed debt roll does.
+        automatic_failure_totals: Natural debt-roll totals that fail whatever
+            the target.
+        max_debt: The most a caster may owe in all, or ``None``: Channel
+            alone bounds a borrowing casting, so Channel rules must be
+            injected beside it (:class:`MagicRules` refuses otherwise).
+        refunds_pay_debt_first: Does mana handed back (a tier's refund)
+            reduce the debt before it refills the pool?
+    """
+
+    debt_dice: str
+    debt_attributes: tuple[str, ...]
+    penalty_per_debt: int
+    failure: BorrowingFailure
+    automatic_failure_totals: frozenset[int]
+    max_debt: int | None = None
+    refunds_pay_debt_first: bool = True
+
+    def __post_init__(self) -> None:
+        parse_dice_expression(self.debt_dice)  # raises on a bad expression
+        if not self.debt_attributes:
+            raise ValueError("the debt roll needs at least one attribute")
+        unknown = sorted(set(self.debt_attributes) - MAGIC_ATTRIBUTES)
+        if unknown:
+            raise ValueError(
+                f"debt_attributes must each be one of {sorted(MAGIC_ATTRIBUTES)}, "
+                f"not {unknown}"
+            )
+        if self.penalty_per_debt < 0:
+            raise ValueError("the debt penalty must not be negative")
+        if self.max_debt is not None and self.max_debt < 0:
+            raise ValueError("the debt cap must not be negative")
+
+    @property
+    def versus(self) -> str:
+        """The debt roll's attributes as a roll event names them."""
+        return "+".join(self.debt_attributes)
+
+    def attribute_total(self, caster: CombatantState) -> int:
+        """The caster's debt attributes summed: the target before penalties."""
+        return sum(
+            attribute_score(caster, attribute) for attribute in self.debt_attributes
+        )
+
+    def debt_target(self, caster: CombatantState, debt: int) -> int:
+        """The debt roll's target for a caster owing ``debt``, before the
+        injury band and off-balance penalty the engine also takes off."""
+        return self.attribute_total(caster) - self.penalty_per_debt * debt
+
+    def borrowing_ceiling(self, mana: int, debt: int, channel: int | None) -> int:
+        """The most mana one borrowing casting may take: the purse and the
+        debt the cap still allows, within the caster's Channel for the spell.
+
+        Args:
+            mana: The caster's mana.
+            debt: What the caster already owes.
+            channel: The caster's Channel for the spell, or ``None`` with no
+                Channel rules injected.
+
+        Raises:
+            ValueError: with neither a debt cap nor a Channel to bound it.
+        """
+        bounds = [] if channel is None else [channel]
+        if self.max_debt is not None:
+            bounds.append(mana + max(0, self.max_debt - debt))
+        if not bounds:
+            raise ValueError("a borrowing casting needs a debt cap or a Channel")
+        return min(bounds)
+
+
+@dataclass(frozen=True)
 class MagicRules:
     """Every magic-mechanics number the engine needs, injected by the caller.
 
@@ -402,11 +527,13 @@ class MagicRules:
         push: Push's numbers, or ``None`` when Push is not offered.
         channel: Channel's derivation, or ``None``: no casting is bounded
             but by the purse (and Push's own optional cap).
+        borrowing: Borrowing's numbers, or ``None`` when no caster may borrow.
     """
 
     casting_success_tiers: tuple[CastingSuccessTier, ...] = ()
     push: PushRules | None = None
     channel: ChannelRules | None = None
+    borrowing: BorrowingRules | None = None
 
     def __post_init__(self) -> None:
         seen: set[int] = set()
@@ -417,6 +544,14 @@ class MagicRules:
                     f"tier {tier.key!r} repeats natural totals {sorted(overlap)}"
                 )
             seen |= tier.natural_totals
+        if (
+            self.borrowing is not None
+            and self.borrowing.max_debt is None
+            and self.channel is None
+        ):
+            raise ValueError(
+                "Borrowing with no debt cap needs Channel rules to bound a casting"
+            )
 
     def channel_for(self, caster: CombatantState, spell: Spell) -> int | None:
         """The caster's Channel for this spell, or ``None`` with no Channel

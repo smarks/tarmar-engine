@@ -295,6 +295,153 @@ class ChannelRulingsTest(TestCase):
         self.assertEqual(state.by_id(1).mana, 10 - 1)
 
 
+def _whole_debt_refund_profile():
+    """The Borrowing profile with a keen refund of 3: enough to pay a
+    borrowed Lightning Bolt's whole debt back."""
+    from tarmar_engine.profile import TarmarProfile
+
+    from .test_borrowing import borrowing_magic_rules
+
+    rules = borrowing_magic_rules()
+    radiant, keen, tidy = rules.casting_success_tiers
+    generous = replace(keen, mana_refund=3)
+    return TarmarProfile(
+        magic=replace(rules, casting_success_tiers=(radiant, generous, tidy))
+    )
+
+
+class BorrowingRulingsTest(TestCase):
+    """The Borrowing readings, pinned by probe (tarmar-engine #28)."""
+
+    def test_debt_roll_after_effect(self):
+        from .test_borrowing import (
+            BOLT_FACES,
+            KEEN_BOLT_FACES,
+            borrow_cast,
+            borrower,
+            debt_payload,
+        )
+        from .test_engine import events_of_type
+        from .test_magic import control_payload, roll_purposes
+
+        events = borrow_cast(borrower(), [*BOLT_FACES, [1, 1]])
+        self.assertEqual(
+            tuple(roll_purposes(events)), ruling("debt_roll_after_effect").value
+        )
+        # An aim that misses still owes, and still rolls.
+        missed = borrow_cast(borrower(), [[3, 3, 3], [6, 6, 6], [1, 1]])
+        self.assertEqual(roll_purposes(missed), ["casting", "spell aim", "debt"])
+        # A Control Roll that stops the spell still owes, and still rolls:
+        # 11 against WIS 12 less 2 x 2 pushed lands in a non-Runaway band
+        # that stops the spell.
+        stopped_state = borrower(mana=2)
+        stopped = borrow_cast(
+            stopped_state,
+            [[3, 3, 3], [6, 5], [1, 1]],
+            spell="fire_missile",
+            push=2,
+        )
+        self.assertFalse(control_payload(stopped)["takes_effect"])
+        self.assertFalse(control_payload(stopped)["runaway"])
+        self.assertEqual(roll_purposes(stopped), ["casting", "control", "debt"])
+        self.assertEqual(stopped_state.by_id(1).debt, 1)
+        # The casting roll's injury band comes off the debt roll's target too.
+        injured = borrow_cast(borrower(fatigue=1), [*BOLT_FACES, [1, 1]])
+        casting_target = events_of_type(injured, "roll")[0]["payload"]["target_number"]
+        self.assertLess(casting_target, 14)
+        self.assertEqual(debt_payload(injured)["target"], 10 - (14 - casting_target))
+        # A refund that pays the whole debt back leaves the roll to be made.
+        cleared_state = borrower(mana=0)
+        cleared = borrow_cast(
+            cleared_state, KEEN_BOLT_FACES, profile=_whole_debt_refund_profile()
+        )
+        self.assertEqual(cleared_state.by_id(1).debt, 0)
+        self.assertEqual(debt_payload(cleared)["debt"], 0)
+
+    def test_borrowed_when_the_cast_pays(self):
+        from .test_borrowing import borrow_cast, borrower
+
+        self.assertEqual(
+            ruling("borrowed_when_the_cast_pays").value, "when the cast pays"
+        )
+        keeps = borrower(mana=0)
+        borrow_cast(keeps, [[5, 5, 5]])  # 15: fails and keeps its mana
+        self.assertEqual(keeps.by_id(1).debt, 0)
+        loses = borrower(mana=0, intelligence=18)
+        borrow_cast(loses, [[6, 6, 5], [1, 1]])  # 17: fails and loses it
+        self.assertEqual(loses.by_id(1).debt, 3)
+
+    def test_borrowing_counts_toward_channel(self):
+        from tarmar_engine.magic import MagicRules
+        from tarmar_engine.profile import TarmarProfile
+
+        from .test_borrowing import (
+            BOLT_FACES,
+            borrow_cast,
+            channel_borrowing_rules,
+            example_borrowing_rules,
+        )
+        from .test_channel import channel_caster
+
+        self.assertEqual(
+            ruling("borrowing_counts_toward_channel").value,
+            "spell cost + pushed mana, borrowed or not",
+        )
+        with self.assertRaisesRegex(ValueError, "Channel"):
+            borrow_cast(
+                channel_caster({"lightning_bolt": 1}, mana=0),
+                BOLT_FACES,
+                profile=TarmarProfile(magic=channel_borrowing_rules()),
+            )
+        with self.assertRaisesRegex(ValueError, "Channel"):
+            MagicRules(borrowing=example_borrowing_rules(max_debt=None))
+
+    def test_ai_never_borrows(self):
+        from .test_borrowing import borrower, borrowing_magic_rules
+
+        self.assertEqual(ruling("ai_never_borrows").value, "player only")
+        state = borrower(mana=0)
+        decision = policy.choose_option(
+            state, state.by_id(1), magic=borrowing_magic_rules()
+        )
+        self.assertFalse(decision.chosen.borrow)
+        borrowed = [candidate for candidate in decision.candidates if candidate.borrow]
+        self.assertTrue(borrowed)
+        for candidate in borrowed:
+            self.assertEqual(candidate.score, policy.PLAYER_ONLY_SCORE)
+
+    def test_debt_persists_on_the_combatant(self):
+        from .test_borrowing import borrower
+
+        self.assertEqual(
+            ruling("debt_persists_on_the_combatant").value, "CombatantState.debt"
+        )
+        state = borrower(debt=3)
+        state.by_id(1).reset_for_turn()
+        restored = BattleState.from_dict(state.to_dict())
+        self.assertEqual(restored.by_id(1).debt, 3)
+
+    def test_refunds_pay_debt_first(self):
+        from .test_borrowing import (
+            KEEN_BOLT_FACES,
+            POOL_REFUND_PROFILE,
+            borrow_cast,
+            borrower,
+            debt_payload,
+        )
+
+        self.assertEqual(ruling("refunds_pay_debt_first").value, "tier refund")
+        state = borrower(mana=0)
+        # A keen natural 7 hands 1 back before the debt roll.
+        events = borrow_cast(state, KEEN_BOLT_FACES)
+        self.assertEqual(state.by_id(1).debt, 2)
+        self.assertEqual(debt_payload(events)["debt"], 2)
+        # Kept by the pool instead, the refund is capped at what the pool paid.
+        pool_only = borrower(mana=0)
+        borrow_cast(pool_only, KEEN_BOLT_FACES, profile=POOL_REFUND_PROFILE)
+        self.assertEqual((pool_only.by_id(1).mana, pool_only.by_id(1).debt), (0, 3))
+
+
 class HandToHandAndDestinationRulingsTest(TestCase):
     """The hand-to-hand menu (tarmar-engine #19) and the AI's hexes (#20)."""
 
