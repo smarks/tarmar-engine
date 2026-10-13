@@ -261,7 +261,8 @@ To put Push on the AI's menu, drive the turn with
 `functools.partial(policy.choose_option, magic=rules)`; with Channel rules
 injected, a menu built without them can offer a cast the engine refuses. A
 Runaway is flagged (`runaway: True`) but its later turns are not modelled
-yet; Borrowing, Runaway and Counterspell are tarmar-engine #28, #30 and #31.
+yet; Runaway and Counterspell are tarmar-engine #30 and #31. Borrowing
+(#28) arrived in v0.9.12, below.
 
 ## The hand-to-hand menu and placed moves (v0.9.9)
 
@@ -329,6 +330,48 @@ An engaged cast (`r`) no longer takes the walk-slow step of two hexes that
 the disengaged `f` and `h` take in Final Movement (#34): its Move column is
 "Shift/still" (action-options.md), so it shifts one hex only to a chosen
 hex. The option catalog's cap for `r` is "none".
+
+## Borrowing, numbers injected (v0.9.12)
+
+A caster short of mana may borrow the rest (tarmar-engine #28).
+`MagicRules.borrowing` takes a `BorrowingRules`: `debt_dice`,
+`debt_attributes` (summed, each `INT` or `WIS`), `penalty_per_debt`,
+`failure` (a `BorrowingFailure`: `key`, `label`, `is_runaway`),
+`automatic_failure_totals`, `max_debt` (`None`: Channel alone bounds the
+casting, so Channel rules must be injected too) and `refunds_pay_debt_first`.
+As with the rest of `tarmar_engine.magic`, every number and label is the
+caller's; the tests use invented ones.
+
+- **Menu.** `choose_option(..., magic=rules)` appends a borrowing variant
+  (`Candidate.borrow`, score 0, `"borrow": true` in its payload) for each
+  cast, and each pushed cast, the actor cannot afford, wherever its
+  situation allows a cast, within the debt the cap still allows and within
+  the Channel. The rationale names the shortfall and the debt roll's target.
+  The AI never borrows.
+- **Cast.** A cast chosen with `chosen_borrow` that costs more than the
+  pool empties it and adds the shortfall to `CombatantState.debt`, when the
+  cast pays (a success, or a failure that loses mana). The cast event
+  carries `borrowed` and `debt`. Past the cap, or with no Borrowing rules,
+  the engine raises; without the choice the caster lacks the mana as before.
+- **Debt roll.** After the spell's aim and effect, whatever became of the
+  spell, a `debt` roll is made roll-under against the attributes less the
+  penalty per point owed; a natural total on the automatic list fails
+  whatever the target. A `status` event carries `debt_roll`, `dice`,
+  `natural`, `target`, `debt`, `held` and `automatic`; a failure adds a
+  second naming the injected failure (`debt_failure`, `label`, `runaway`).
+  The spell stands either way.
+- **Refunds.** With `refunds_pay_debt_first`, a tier's refund pays the debt
+  before it refills the pool, before the debt roll.
+- **Snapshot.** `debt` persists across turns; `BattleState.to_dict` writes
+  `debt` and `chosen_borrow` only when set, so a battle without Borrowing
+  snapshots as it always has. The caller writes `debt` back to the
+  character after the battle.
+
+The readings the engine takes on the page's silences are in
+`tarmar_engine.house_rulings` (`debt_roll_after_effect`,
+`borrowed_when_the_cast_pays`, `borrowing_counts_toward_channel`,
+`ai_never_borrows`, `debt_persists_on_the_combatant`,
+`refunds_pay_debt_first`), each marked for Spencer.
 
 ## What it sits on
 

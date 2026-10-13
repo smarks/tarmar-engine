@@ -34,10 +34,10 @@ Phase map (turn-sequence.md):
 Rules gaps deliberately noted rather than invented: bleeding from a severe
 critical is reported as a status event but not ticked (the rules publish no
 rate — same stance as ``tarmar_rules``'s report-only flags). The casting
-success tiers, Push and Channel run only on a profile with injected
-:class:`~tarmar_engine.magic.MagicRules` (tarmar-engine #26/#27/#29), which
-carry every number they use; Borrowing, Runaway's later turns and
-Counterspell are not modelled yet (tarmar-engine #28, #30, #31, from
+success tiers, Push, Channel and Borrowing run only on a profile with
+injected :class:`~tarmar_engine.magic.MagicRules` (tarmar-engine
+#26/#27/#29/#28), which carry every number they use; Runaway's later turns
+and Counterspell are not modelled yet (tarmar-engine #30, #31, from
 tarmar-studio #825).
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
@@ -50,12 +50,20 @@ and renews only one known at 2 or better (``CombatantState.spell_mastery``).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Protocol
 
 from . import actions, combat_math, hexes, movement, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
-from .magic import CastingSuccessTier, MagicRules, PushRules, spell_effect_kind
+from .magic import (
+    BorrowingRules,
+    CastingSuccessTier,
+    MagicRules,
+    PushRules,
+    attribute_score,
+    spell_effect_kind,
+)
 from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
@@ -114,6 +122,53 @@ EventSink = Callable[[dict], None]
 #: Chooses a forced retreat's hex and whether the pusher advances:
 #: ``(state, pusher, victim, hexes, may_advance) -> RetreatChoice``.
 RetreatChooser = Callable[..., "policy.RetreatChoice"]
+
+
+class RollRecord(Protocol):
+    """One roll as the injected roller records it: the fields the engine
+    reads (``common.rolling.Roller``'s record, or a test's stand-in)."""
+
+    @property
+    def purpose(self) -> str: ...
+
+    @property
+    def specification(self) -> str: ...
+
+    @property
+    def faces(self) -> tuple[int, ...]: ...
+
+    @property
+    def modifier(self) -> int: ...
+
+    @property
+    def total(self) -> int: ...
+
+    @property
+    def target_number(self) -> int | None: ...
+
+    @property
+    def outcome(self) -> str | None: ...
+
+
+@dataclass(frozen=True)
+class RollUnder:
+    """A roll-under magic roll, thrown and not yet logged.
+
+    The Control Roll (tarmar-engine #27) and the debt roll (#28) share it:
+    each rolls injected dice under a target, fails on certain natural totals
+    whatever the target, and logs the roll with an outcome only it can name.
+
+    Attributes:
+        record: The roller's record, to hand to :meth:`TurnRunner.emit_roll`.
+        natural_total: The dice faces summed, no modifier.
+        margin: How far the total exceeded the target; 0 or less made it.
+        automatic: Was the natural total on the injected automatic list?
+    """
+
+    record: RollRecord
+    natural_total: int
+    margin: int
+    automatic: bool
 
 
 class TurnRunner:
@@ -454,6 +509,7 @@ class TurnRunner:
             combatant.chosen_target = decision.chosen.target_id
             combatant.chosen_spell = decision.chosen.spell_key
             combatant.chosen_push_mana = decision.chosen.push_mana
+            combatant.chosen_borrow = decision.chosen.borrow
             combatant.chosen_destination = decision.chosen.destination
             # "Forecast" up front because this block is written before any
             # die is thrown: its P(hit) is what the AI expected, not what
@@ -930,6 +986,14 @@ class TurnRunner:
         finally:
             self._acting = False
             self._off_balance_actor = None
+
+    def _casting_penalties(self, combatant: CombatantState) -> int:
+        """The injury band and owed off-balance penalty a casting roll takes,
+        and with it the Control Roll and the debt roll (one roll-under
+        reading for the magic rolls)."""
+        return self.profile.reactions.injury_penalty(
+            combatant
+        ) + self._off_balance_penalty(combatant)
 
     def _off_balance_penalty(self, combatant: CombatantState) -> int:
         """The off-balance −2 owed by the action being taken, else 0.
@@ -2173,16 +2237,27 @@ class TurnRunner:
         to the spell's rolled effect. With injected Channel rules the whole
         mana of the casting, cost and pushed mana together, must lie within
         the caster's Channel for the spell (:meth:`.magic.ChannelRules.
-        channel_for`), and the cast names the Channel it used. With no
+        channel_for`), and the cast names the Channel it used. With injected
+        Borrowing rules a cast the caster chose to borrow for, and cannot
+        afford, empties the pool and adds the shortfall to its debt when the
+        cast pays; after the spell has resolved, whatever became of it, the
+        caster makes the debt roll (:meth:`_debt_roll`). With no
         ``MagicRules`` none of these runs and a cast logs exactly what it
         always has.
 
         Raises:
-            ValueError: for a push the profile's rules do not allow, or a
-                casting past the caster's Channel for the spell.
+            ValueError: for a push or a borrowing the profile's rules do not
+                allow, a casting past the caster's Channel for the spell, or
+                a borrowing past the injected debt cap.
         """
         spell = get_spell(combatant.chosen_spell)
         magic = self.profile.magic
+        borrowing = None if magic is None else magic.borrowing
+        if combatant.chosen_borrow and borrowing is None:
+            raise ValueError(
+                f"{combatant.name} borrows mana for {spell.name} "
+                f"but the {self.profile.name!r} profile has no Borrowing rules"
+            )
         push_mana = combatant.chosen_push_mana
         if push_mana and (magic is None or magic.push is None):
             raise ValueError(
@@ -2250,14 +2325,24 @@ class TurnRunner:
                 payload={"hth_cast_refused": True, "spell": spell.key},
             )
             return
+        # What the cast would borrow: the shortfall, when the caster chose to.
+        shortfall = 0
         if combatant.mana < cost:
-            pushed_note = f" pushed with {push_mana} more" if push_mana else ""
-            self.emit(
-                "info",
-                f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
-                actor=combatant.name,
-            )
-            return
+            if borrowing is None or not combatant.chosen_borrow:
+                pushed_note = f" pushed with {push_mana} more" if push_mana else ""
+                self.emit(
+                    "info",
+                    f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
+                    actor=combatant.name,
+                )
+                return
+            shortfall = cost - combatant.mana
+            cap = borrowing.max_debt
+            if cap is not None and combatant.debt + shortfall > cap:
+                raise ValueError(
+                    f"{combatant.name} borrows {shortfall} mana for {spell.name} "
+                    f"owing {combatant.debt}; the debt cap is {cap}"
+                )
         attribute_name = spell.attribute
         base_attribute = (
             combatant.intelligence if attribute_name == "INT" else combatant.wisdom
@@ -2265,11 +2350,7 @@ class TurnRunner:
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
         # off-balance figure's −2 on this action (#811).
-        attribute = (
-            base_attribute
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
-        )
+        attribute = base_attribute - self._casting_penalties(combatant)
         record, cast_sequence = self.roll(
             "3d6",
             purpose="casting",
@@ -2290,13 +2371,18 @@ class TurnRunner:
         # mana-pool.md names mana lost on a failure only on a 17 (#816).
         # A pushed cast pays its pushed mana with the spell's cost
         # (tarmar-engine #27).
+        # A borrowing cast borrows only when it pays (tarmar-engine #28).
         pays = succeeded or record.total in CASTING_MANA_LOST_ROLLS
+        borrowed = shortfall if pays else 0
         if pays:
-            combatant.mana -= cost
+            combatant.mana -= cost - borrowed
+            combatant.debt += borrowed
             paid_text = (
                 f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
             )
             cost_note = f"{paid_text} mana, {combatant.mana} left"
+            if borrowed:
+                cost_note += f", borrows {borrowed}, debt {combatant.debt}"
         else:
             cost_note = f"no mana spent, {combatant.mana} left"
         if channel is not None:
@@ -2314,6 +2400,10 @@ class TurnRunner:
         # Likewise the Channel keys, only with Channel rules injected.
         if channel_used is not None:
             payload["channel"], payload["channel_kind"] = channel_used
+        # And the Borrowing keys, only with Borrowing rules injected.
+        if borrowing is not None:
+            payload["borrowed"] = borrowed
+            payload["debt"] = combatant.debt
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "
@@ -2323,13 +2413,44 @@ class TurnRunner:
             actor=combatant.name,
             payload=payload,
         )
-        if not succeeded:
-            return
+        # A refund the pool keeps is capped at what the pool paid, so it never
+        # leaves the pool above where it started; one that pays the debt
+        # first may run to the whole cost (tarmar-engine #28).
+        refund_cap = cost
+        if borrowing is not None and not borrowing.refunds_pay_debt_first:
+            refund_cap = cost - borrowed
+        if succeeded:
+            self._resolve_cast(
+                combatant, spell, magic, sum(record.faces), cast_sequence, refund_cap
+            )
+        if borrowed and borrowing is not None:
+            self._debt_roll(combatant, spell, borrowing)
+
+    def _resolve_cast(
+        self,
+        combatant: CombatantState,
+        spell: Spell,
+        magic: MagicRules | None,
+        natural_total: int,
+        cast_sequence: int,
+        refund_cap: int,
+    ) -> None:
+        """A successful cast's tier, Control Roll, aim and effect, in order.
+
+        Args:
+            combatant: The caster.
+            spell: The spell cast.
+            magic: The profile's injected magic rules, or ``None``.
+            natural_total: The casting roll's natural total.
+            cast_sequence: The casting roll's event sequence number.
+            refund_cap: The most a tier's refund may hand back.
+        """
+        push_mana = combatant.chosen_push_mana
         effect_bonus = 0
         bonus_sources: list[str] = []
         if magic is not None:
             tier = self._casting_success_tier(
-                combatant, spell, magic, sum(record.faces), cost
+                combatant, spell, magic, natural_total, refund_cap
             )
             # Only a spell with a rolled effect can take a tier's bonus.
             if (
@@ -2434,7 +2555,7 @@ class TurnRunner:
         spell: Spell,
         magic: MagicRules,
         natural_total: int,
-        cost: int,
+        refund_cap: int,
     ) -> CastingSuccessTier | None:
         """Narrate a successful casting roll's tier and pay its refund
         (tarmar-engine #26).
@@ -2443,31 +2564,79 @@ class TurnRunner:
         its effect bonus is returned to :meth:`cast_spell` to add to the
         spell's rolled effect, and the payload reports it only for a spell
         with one. The refund is paid here, before any Control Roll, so a
-        Runaway does not take it back, and is capped at what the cast cost,
-        pushed mana included.
+        Runaway does not take it back, and is capped at ``refund_cap``: what
+        the cast cost, pushed mana included, or, where Borrowing's refund
+        refills the pool and leaves the debt, only what the pool paid. With
+        injected Borrowing rules that say so, it pays the debt before it
+        refills the pool (:meth:`_regain_mana`).
         """
         tier = magic.success_tier(natural_total)
         if tier is None:
             return None
-        refund = min(tier.mana_refund, cost)
+        refund = min(tier.mana_refund, refund_cap)
         applied_bonus = tier.effect_bonus if spell_effect_kind(spell) is not None else 0
-        combatant.mana += refund
-        refund_note = f"; {refund} mana back, {combatant.mana} left" if refund else ""
+        debt_paid = self._regain_mana(combatant, refund)
+        refund_note = ""
+        if refund:
+            debt_note = (
+                f", {debt_paid} of it to the debt, {combatant.debt} owed"
+                if debt_paid
+                else ""
+            )
+            refund_note = f"; {refund} mana back{debt_note}, {combatant.mana} left"
+        tier_payload: dict[str, str | int] = {
+            "spell": spell.key,
+            "success_tier": tier.key,
+            "natural_total": natural_total,
+            "effect_bonus": applied_bonus,
+            "mana_refund": refund,
+            "mana_left": combatant.mana,
+        }
+        # Only with Borrowing rules injected, as the cast's own keys.
+        if magic.borrowing is not None:
+            tier_payload["debt_paid"] = debt_paid
+            tier_payload["debt"] = combatant.debt
         self.emit(
             "status",
             f"{combatant.name}'s casting of {spell.name} is a {tier.label} "
             f"(natural {natural_total}){refund_note}",
             actor=combatant.name,
-            payload={
-                "spell": spell.key,
-                "success_tier": tier.key,
-                "natural_total": natural_total,
-                "effect_bonus": applied_bonus,
-                "mana_refund": refund,
-                "mana_left": combatant.mana,
-            },
+            payload=tier_payload,
         )
         return tier
+
+    def _regain_mana(self, combatant: CombatantState, amount: int) -> int:
+        """Hand mana back to a caster; returns how much of it paid the debt.
+
+        With injected Borrowing rules whose ``refunds_pay_debt_first`` is
+        set, the debt takes the mana first and the pool the rest; otherwise
+        the pool takes it all and the debt stands.
+        """
+        magic = self.profile.magic
+        borrowing = None if magic is None else magic.borrowing
+        debt_paid = 0
+        if borrowing is not None and borrowing.refunds_pay_debt_first:
+            debt_paid = min(amount, combatant.debt)
+            combatant.debt -= debt_paid
+        combatant.mana += amount - debt_paid
+        return debt_paid
+
+    def _roll_under(
+        self, dice: str, *, purpose: str, target: int, automatic_totals: frozenset[int]
+    ) -> RollUnder:
+        """Throw a roll-under magic roll without logging it.
+
+        The caller logs it with :meth:`emit_roll`, once it knows the outcome
+        to name.
+        """
+        record = self.roll_unlogged(dice, purpose=purpose, target_number=target)
+        natural_total = sum(record.faces)
+        return RollUnder(
+            record=record,
+            natural_total=natural_total,
+            margin=record.total - target,
+            automatic=natural_total in automatic_totals,
+        )
 
     def _push_control_roll(
         self,
@@ -2489,24 +2658,20 @@ class TurnRunner:
         Returns:
             Whether the spell takes effect, and the push's effect bonus.
         """
-        base_attribute = (
-            combatant.intelligence
-            if push.control_attribute == "INT"
-            else combatant.wisdom
-        )
         invested = push.mana_invested(spell.level, push_mana)
         target = (
-            base_attribute
+            attribute_score(combatant, push.control_attribute)
             - push.penalty_per_mana * invested
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
+            - self._casting_penalties(combatant)
         )
-        control_record = self.roll_unlogged(
-            push.control_dice, purpose="control", target_number=target
+        control = self._roll_under(
+            push.control_dice,
+            purpose="control",
+            target=target,
+            automatic_totals=push.automatic_runaway_totals,
         )
-        natural_total = sum(control_record.faces)
-        margin = control_record.total - target
-        if natural_total in push.automatic_runaway_totals:
+        margin = control.margin
+        if control.automatic:
             band = push.runaway_band()
         elif margin > 0:
             band = push.band_for_margin(margin)
@@ -2515,7 +2680,7 @@ class TurnRunner:
         held = band is None
         runaway = band is not None and band.is_runaway
         control_sequence = self.emit_roll(
-            control_record,
+            control.record,
             actor=combatant.name,
             versus=push.control_attribute,
             roll_under=True,
@@ -2550,6 +2715,73 @@ class TurnRunner:
             },
         )
         return takes_effect, push_bonus
+
+    def _debt_roll(
+        self, combatant: CombatantState, spell: Spell, borrowing: BorrowingRules
+    ) -> None:
+        """Roll a borrowing cast's debt roll and narrate its outcome
+        (tarmar-engine #28).
+
+        Made after the spell has resolved, whatever became of it: a failed
+        casting roll that paid, a Control Roll that stopped the spell and an
+        aim that missed all still owe. Roll-under against the injected
+        attributes summed, less the injected penalty per point of debt owed
+        now (any refund already applied) and the casting roll's injury band
+        and off-balance penalty, as the Control Roll takes them. It is made
+        even when a refund has paid the whole debt back: the caster borrowed
+        on this cast. A natural total on the injected
+        automatic list fails whatever the target. A failure is narrated by
+        its injected label, in a second event, and flagged a Runaway when the
+        rules make it one; the spell has already resolved and stands.
+        """
+        target = borrowing.debt_target(
+            combatant, combatant.debt
+        ) - self._casting_penalties(combatant)
+        debt = self._roll_under(
+            borrowing.debt_dice,
+            purpose="debt",
+            target=target,
+            automatic_totals=borrowing.automatic_failure_totals,
+        )
+        held = not debt.automatic and debt.margin <= 0
+        debt_sequence = self.emit_roll(
+            debt.record,
+            actor=combatant.name,
+            versus=borrowing.versus,
+            roll_under=True,
+            outcome="held" if held else "failed",
+        )
+        verdict = "holds" if held else "fails"
+        self.emit(
+            "status",
+            f"{combatant.name} {verdict} the debt roll for {spell.name} "
+            f"({combatant.debt} owed)",
+            actor=combatant.name,
+            payload={
+                "spell": spell.key,
+                "debt_roll": debt_sequence,
+                "dice": borrowing.debt_dice,
+                "natural": debt.natural_total,
+                "target": target,
+                "debt": combatant.debt,
+                "held": held,
+                "automatic": debt.automatic,
+            },
+        )
+        if held:
+            return
+        failure = borrowing.failure
+        self.emit(
+            "status",
+            f"{combatant.name}'s failed debt for {spell.name}: {failure.label}",
+            actor=combatant.name,
+            payload={
+                "spell": spell.key,
+                "debt_failure": failure.key,
+                "label": failure.label,
+                "runaway": failure.is_runaway,
+            },
+        )
 
     # ------------------------------------------------------------------ damage
     def apply_damage(

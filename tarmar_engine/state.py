@@ -168,6 +168,11 @@ class CombatantState:
     #: derive from instead of the spell's own level, by the injected skill
     #: key (``ChannelDerivation.source_skill``). Missing: level 0.
     skill_levels: dict[str, int] = field(default_factory=dict)
+    #: Mana borrowed and not yet settled (tarmar-engine #28). Only a profile
+    #: with injected Borrowing rules adds to it; it persists across turns,
+    #: and the caller writes it back to the character after the battle.
+    #: Written to a snapshot only when something is owed.
+    debt: int = 0
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
@@ -225,6 +230,10 @@ class CombatantState:
     #: 0 is an ordinary cast. Only a profile with injected Push rules acts on
     #: it.
     chosen_push_mana: int = 0
+    #: Does the chosen cast borrow the mana it lacks (tarmar-engine #28)?
+    #: Only a profile with injected Borrowing rules acts on it. Written to a
+    #: snapshot only when set.
+    chosen_borrow: bool = False
     #: The hex the chosen option places the figure at, axial ``(q, r)``, or
     #: ``None`` for the move the option derives itself (tarmar-engine #20;
     #: ``tarmar_engine.movement``).
@@ -308,6 +317,7 @@ class CombatantState:
         self.chosen_target = None
         self.chosen_spell = ""
         self.chosen_push_mana = 0
+        self.chosen_borrow = False
         self.chosen_destination = None
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
@@ -317,6 +327,16 @@ class CombatantState:
         self.disengaged_from = []
         self.hits_this_turn = 0
         self.retreat_push_targets_this_turn = []
+
+
+#: Combatant fields :meth:`BattleState.to_dict` writes only when they hold
+#: something; :meth:`BattleState.from_dict` restores a missing one to its
+#: default.
+SNAPSHOT_FIELDS_WRITTEN_WHEN_SET: tuple[str, ...] = (
+    "hth_agreed_with",
+    "debt",
+    "chosen_borrow",
+)
 
 
 @dataclass
@@ -366,12 +386,13 @@ class BattleState:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        # A Game Master's agreement is written only when one is recorded, so
-        # a battle without one snapshots as it always has (tarmar-studio
-        # #867).
+        # A Game Master's agreement (tarmar-studio #867) and Borrowing's
+        # debt and choice (tarmar-engine #28) are written only when set, so a
+        # battle that uses none of them snapshots as it always has.
         for combatant in data["combatants"]:
-            if not combatant["hth_agreed_with"]:
-                del combatant["hth_agreed_with"]
+            for name in SNAPSHOT_FIELDS_WRITTEN_WHEN_SET:
+                if not combatant[name]:
+                    del combatant[name]
         return data
 
     @classmethod

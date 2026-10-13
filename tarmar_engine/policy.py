@@ -53,9 +53,16 @@ from dataclasses import dataclass, field
 from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
-from .magic import ChannelRules, ChannelUnclassifiedSpell, MagicRules, PushRules
+from .magic import (
+    BorrowingRules,
+    ChannelRules,
+    ChannelUnclassifiedSpell,
+    MagicRules,
+    PushRules,
+    attribute_score,
+)
 from .reactions import TarmarReactions
-from .spells import get_spell
+from .spells import Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
 
 # Utility knobs. Centralized so tuning the AI is a data change.
@@ -135,6 +142,8 @@ class Candidate:
     #: Extra mana a cast pushes into its spell (tarmar-engine #27); 0 is an
     #: ordinary cast.
     push_mana: int = 0
+    #: Does the cast borrow the mana the actor lacks (tarmar-engine #28)?
+    borrow: bool = False
     #: The hex the option places the figure at, axial ``(q, r)``, or ``None``
     #: for the move it derives itself (tarmar-engine #20). Which options may
     #: take one, and where, is :func:`movement.legal_destinations`; the engine
@@ -158,6 +167,9 @@ class Candidate:
         # injected logs the decision payloads it always has.
         if self.push_mana:
             payload["push_mana"] = self.push_mana
+        # Likewise only a borrowing cast carries its key.
+        if self.borrow:
+            payload["borrow"] = True
         # The same for a hex: a candidate that names none logs as it did.
         if self.destination is not None:
             payload["destination"] = list(self.destination)
@@ -314,14 +326,21 @@ def _missile_score(
 
 
 def _cast_candidates(
-    state: BattleState, actor: CombatantState, letter: str
+    state: BattleState,
+    actor: CombatantState,
+    letter: str,
+    beyond_purse: bool = False,
 ) -> list[Candidate]:
-    """A candidate per castable spell the actor can afford."""
+    """A candidate per castable spell the actor can afford.
+
+    ``beyond_purse`` lists the spells the actor cannot afford too, for the
+    borrowing variants to be built from (:func:`_borrow_candidates`).
+    """
     candidates = []
     enemy = nearest_enemy(state, actor)
     for key in actor.spells:
         spell = get_spell(key)
-        if spell.level > actor.mana:
+        if spell.level > actor.mana and not beyond_purse:
             continue
         if spell.continuing and key in actor.active_spells:
             continue  # already up; renewal happens in phase 2
@@ -392,7 +411,9 @@ def _cast_candidates(
     return candidates
 
 
-def _grappled_decision(state: BattleState, actor: CombatantState) -> Decision:
+def _grappled_decision(
+    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
     hand-to-hand-and-grappling.md's "Being Grappled" options — Struggle
@@ -448,11 +469,13 @@ def _grappled_decision(state: BattleState, actor: CombatantState) -> Decision:
                 target_id=grappler_id,
             )
         )
-    candidates += _mastery_three_casts(state, actor)
+    candidates += _mastery_three_casts(state, actor, beyond_purse)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
-def _mastery_three_casts(state: BattleState, actor: CombatantState) -> list[Candidate]:
+def _mastery_three_casts(
+    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+) -> list[Candidate]:
     """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
     return [
         Candidate(
@@ -464,12 +487,14 @@ def _mastery_three_casts(state: BattleState, actor: CombatantState) -> list[Cand
             target_id=candidate.target_id,
             spell_key=candidate.spell_key,
         )
-        for candidate in _cast_candidates(state, actor, "r")
+        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
 
 
-def _grappler_decision(state: BattleState, actor: CombatantState) -> Decision:
+def _grappler_decision(
+    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
     hand-to-hand-and-grappling.md's grappler options — Maintain, Squeeze,
@@ -504,7 +529,7 @@ def _grappler_decision(state: BattleState, actor: CombatantState) -> Decision:
     ]
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
-    candidates += _mastery_three_casts(state, actor)
+    candidates += _mastery_three_casts(state, actor, beyond_purse)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
@@ -593,7 +618,9 @@ def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantSt
     ]
 
 
-def _hth_casts(state: BattleState, actor: CombatantState) -> list[Candidate]:
+def _hth_casts(
+    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+) -> list[Candidate]:
     """Casts the HTH table allows: "If hands free or no-gesture spell".
 
     Hands free is no weapon in hand (a shield is a standing fact of the
@@ -603,7 +630,7 @@ def _hth_casts(state: BattleState, actor: CombatantState) -> list[Candidate]:
     hands_free = actor.weapon.item_id == ""
     return [
         candidate
-        for candidate in _cast_candidates(state, actor, "r")
+        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
         if hands_free
         or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
     ]
@@ -682,11 +709,14 @@ def choose_option(
     Channel rules in them, a cast past the actor's Channel for its spell is
     withdrawn from the menu (:func:`_within_channel`). With Push rules, every
     cast left on the menu gains its pushed variants, up to the Channel, for a
-    player to choose; the AI does not push (:func:`_push_candidates`). A
-    caller driving the engine with this policy passes the same rules the
-    profile carries, e.g. ``functools.partial(choose_option, magic=rules)``:
-    the engine refuses a cast past the Channel, so a menu built without them
-    can offer one it will not run.
+    player to choose; the AI does not push (:func:`_push_candidates`). With
+    Borrowing rules, a cast or pushed cast the actor cannot afford is offered
+    as a borrowing variant, for a player; the AI does not borrow
+    (:func:`_borrow_candidates`). A caller driving the engine with this
+    policy passes the same rules the profile carries, e.g.
+    ``functools.partial(choose_option, magic=rules)``: the engine refuses a
+    cast past the Channel, so a menu built without them can offer one it
+    will not run.
     """
     decision = _score_options(state, actor)
     if magic is not None and magic.channel is not None:
@@ -694,6 +724,10 @@ def choose_option(
     if magic is not None and magic.push is not None:
         decision.candidates.extend(
             _push_candidates(actor, decision.candidates, magic.push, magic.channel)
+        )
+    if magic is not None and magic.borrowing is not None:
+        decision.candidates.extend(
+            _borrow_candidates(state, actor, magic, magic.borrowing)
         )
     return decision
 
@@ -767,33 +801,21 @@ def _push_candidates(
     the only one Push runs under) and an owed off-balance penalty. A spell
     the rules give no push effect gets no pushed variant.
     """
-    injury = TarmarReactions().injury_penalty(actor)
-    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     pushed: list[Candidate] = []
     for candidate in candidates:
         if not candidate.spell_key or candidate.push_mana:
             continue
         spell = get_spell(candidate.spell_key)
-        attribute = (
-            actor.intelligence if push.control_attribute == "INT" else actor.wisdom
-        )
         channel = (
             None if channel_rules is None else channel_rules.channel_for(actor, spell)
         )
-        channel_note = "" if channel is None else f", Channel {channel}"
         for extra_mana in range(1, push.push_room(spell, actor.mana, channel) + 1):
-            invested = push.mana_invested(spell.level, extra_mana)
-            target = attribute - push.penalty_per_mana * invested - injury - off_balance
             pushed.append(
                 Candidate(
                     candidate.letter,
                     f"{candidate.name} (PUSH {extra_mana} MANA)",
                     PLAYER_ONLY_SCORE,
-                    f"Push {extra_mana} extra mana ({spell.level + extra_mana} "
-                    f"in all{channel_note}): Control Roll {push.control_dice} ≤ "
-                    f"{push.control_attribute} {attribute} less "
-                    f"{push.penalty_per_mana} x {invested} invested, "
-                    f"{injury} injury and {off_balance} off-balance = {target}; "
+                    f"{_push_note(actor, spell, push, extra_mana, channel)}; "
                     f"the AI does not push = {score_text(PLAYER_ONLY_SCORE)}",
                     target_id=candidate.target_id,
                     spell_key=candidate.spell_key,
@@ -803,7 +825,142 @@ def _push_candidates(
     return pushed
 
 
-def _score_options(state: BattleState, actor: CombatantState) -> Decision:
+def _push_note(
+    actor: CombatantState,
+    spell: Spell,
+    push: PushRules,
+    extra_mana: int,
+    channel: int | None,
+) -> str:
+    """A pushed cast's Control Roll as the menu prints it.
+
+    The target is the one the engine will roll against: less the injury
+    band and an owed off-balance penalty (:func:`_casting_penalties`).
+    """
+    injury, off_balance = _casting_penalties(actor)
+    attribute = attribute_score(actor, push.control_attribute)
+    invested = push.mana_invested(spell.level, extra_mana)
+    target = attribute - push.penalty_per_mana * invested - injury - off_balance
+    channel_note = "" if channel is None else f", Channel {channel}"
+    return (
+        f"Push {extra_mana} extra mana ({spell.level + extra_mana} "
+        f"in all{channel_note}): Control Roll {push.control_dice} ≤ "
+        f"{push.control_attribute} {attribute} less "
+        f"{push.penalty_per_mana} x {invested} invested, "
+        f"{injury} injury and {off_balance} off-balance = {target}"
+    )
+
+
+def _borrow_candidates(
+    state: BattleState,
+    actor: CombatantState,
+    magic: MagicRules,
+    borrowing: BorrowingRules,
+) -> list[Candidate]:
+    """The borrowing variant of each cast, and each pushed cast, the actor
+    cannot afford.
+
+    Built from the menu as it would stand if every spell were affordable
+    (:func:`_score_options` with ``beyond_purse``), so a borrowing cast is
+    offered exactly where its letter and its situation (hand-to-hand, a
+    grapple) allow a cast, and trimmed by Channel as the menu is. A variant
+    is offered when the casting, cost and pushed mana together, lies within
+    :meth:`.magic.BorrowingRules.borrowing_ceiling`: past the purse, within
+    the debt the cap still allows and within the actor's Channel for the
+    spell.
+
+    Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
+    the AI's choice: only a player's choice borrows (house reading
+    ``ai_never_borrows``). The rationale names the shortfall and the debt
+    roll's target as the engine will roll it, before any refund pays some of
+    the debt back.
+    """
+    if not actor.spells:
+        return []
+    if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
+        return []
+    menu = _score_options(state, actor, beyond_purse=True)
+    if magic.channel is not None:
+        menu = _within_channel(actor, menu, magic.channel)
+    no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
+    borrowed: list[Candidate] = []
+    for candidate in menu.candidates:
+        if not candidate.spell_key:
+            continue
+        spell = get_spell(candidate.spell_key)
+        channel = magic.channel_for(actor, spell)
+        ceiling = borrowing.borrowing_ceiling(actor.mana, actor.debt, channel)
+        if actor.mana < spell.level <= ceiling:
+            shortfall = spell.level - actor.mana
+            borrowed.append(
+                Candidate(
+                    candidate.letter,
+                    f"{candidate.name} (BORROW {shortfall} MANA)",
+                    PLAYER_ONLY_SCORE,
+                    f"{_borrow_note(actor, borrowing, spell.level)}; "
+                    f"{candidate.rationale}; {no_borrowing}",
+                    target_id=candidate.target_id,
+                    spell_key=candidate.spell_key,
+                    borrow=True,
+                )
+            )
+        if magic.push is None:
+            continue
+        first_short = max(1, actor.mana - spell.level + 1)
+        last = magic.push.push_room(spell, ceiling, channel)
+        for extra_mana in range(first_short, last + 1):
+            cost = spell.level + extra_mana
+            borrowed.append(
+                Candidate(
+                    candidate.letter,
+                    f"{candidate.name} (PUSH {extra_mana} MANA, "
+                    f"BORROW {cost - actor.mana} MANA)",
+                    PLAYER_ONLY_SCORE,
+                    f"{_push_note(actor, spell, magic.push, extra_mana, channel)}; "
+                    f"{_borrow_note(actor, borrowing, cost)}; "
+                    f"the AI does not push or borrow = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}",
+                    target_id=candidate.target_id,
+                    spell_key=candidate.spell_key,
+                    push_mana=extra_mana,
+                    borrow=True,
+                )
+            )
+    return borrowed
+
+
+def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) -> str:
+    """A borrowing cast's shortfall and debt roll as the menu prints it.
+
+    The target is the one the engine will roll against, before any refund
+    pays some of the debt back: less the injury band and an owed off-balance
+    penalty (:func:`_casting_penalties`).
+    """
+    shortfall = cost - actor.mana
+    owed = actor.debt + shortfall
+    injury, off_balance = _casting_penalties(actor)
+    target = borrowing.debt_target(actor, owed) - injury - off_balance
+    return (
+        f"Borrow {shortfall} mana ({cost} in all, {actor.mana} in the pool, "
+        f"{owed} owed after): debt roll {borrowing.debt_dice} ≤ "
+        f"{borrowing.versus} {borrowing.attribute_total(actor)} less "
+        f"{borrowing.penalty_per_debt} x {owed} owed, {injury} injury and "
+        f"{off_balance} off-balance = {target}"
+    )
+
+
+def _casting_penalties(actor: CombatantState) -> tuple[int, int]:
+    """The injury band and owed off-balance penalty the magic rolls take, as
+    the engine takes them: the Tarmar profile's band, the only one the
+    injected magic rules run under."""
+    injury = TarmarReactions().injury_penalty(actor)
+    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    return injury, off_balance
+
+
+def _score_options(
+    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+) -> Decision:
     """Score the actor's legal options and choose the best.
 
     Returns every scored candidate so the caller can emit a decision event
@@ -813,11 +970,15 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
     A grappled or grappling actor skips this scoring entirely — their turn
     choice is the fixed default from :func:`_grappled_decision`/
     :func:`_grappler_decision` (module docstring).
+
+    ``beyond_purse`` lists every cast the situation allows, affordable or
+    not: the menu :func:`_borrow_candidates` builds its variants from. The
+    AI's own menu never sets it.
     """
     if actor.grappled_by is not None:
-        return _grappled_decision(state, actor)
+        return _grappled_decision(state, actor, beyond_purse)
     if actor.grappling is not None:
-        return _grappler_decision(state, actor)
+        return _grappler_decision(state, actor, beyond_purse)
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
     adjacent_enemies = [
@@ -844,7 +1005,7 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
         engaged=engaged,
         prone=actor.prone,
         has_missile=weapons.can_shoot(actor),
-        has_spells=bool(actor.spells) and actor.mana > 0,
+        has_spells=bool(actor.spells) and (actor.mana > 0 or beyond_purse),
         has_melee_target=enemy is not None and not actor.weapon.is_missile,
         can_grapple=can_grapple,
         can_run=actor.move_run > 0,
@@ -1064,9 +1225,9 @@ def _score_options(state: BattleState, actor: CombatantState) -> Decision:
                 )
             )
         elif letter == "r" and in_hth:
-            candidates.extend(_hth_casts(state, actor))
+            candidates.extend(_hth_casts(state, actor, beyond_purse))
         elif letter in ("h", "r"):
-            candidates.extend(_cast_candidates(state, actor, letter))
+            candidates.extend(_cast_candidates(state, actor, letter, beyond_purse))
         elif letter == "u" and in_hth:
             candidates.append(
                 Candidate(
