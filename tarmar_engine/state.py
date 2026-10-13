@@ -8,7 +8,7 @@ battle lives entirely in these dataclasses, round-tripped through
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 
 from tarmar_rules import dex_modifier
 
@@ -99,6 +99,28 @@ class GroundWeapon:
 
 
 @dataclass
+class RunawayState:
+    """A spell running away from its caster (tarmar-engine #30).
+
+    Kept on the combatant it feeds on, across turns and in the snapshot,
+    only by a profile with injected Runaway rules
+    (``tarmar_engine.magic.RunawayRules``).
+
+    Attributes:
+        spell_key: The spell that ran away.
+        original_cost: The mana its casting cost, pushed mana included.
+        turns_running: 0 on the turn it starts; one more at each drain.
+        caught_from: The combatant whose Runaway a failed helper's anchor
+            spread to this one, or ``None``.
+    """
+
+    spell_key: str
+    original_cost: int
+    turns_running: int = 0
+    caught_from: int | None = None
+
+
+@dataclass
 class CombatantState:
     """One combatant's full mutable state plus the frozen stat snapshot."""
 
@@ -173,6 +195,16 @@ class CombatantState:
     #: and the caller writes it back to the character after the battle.
     #: Written to a snapshot only when something is owed.
     debt: int = 0
+    #: The spell running away from this combatant (tarmar-engine #30), or
+    #: ``None``. Only a profile with injected Runaway rules starts one; it
+    #: persists across turns until it is anchored or the combatant dies.
+    #: Written to a snapshot only when set.
+    runaway: RunawayState | None = None
+    #: The turns each Runaway this combatant anchored had run, by spell key
+    #: (tarmar-engine #30): its growth is added to a recast of the spell's
+    #: rolled effect while the key is here. A key leaves when its spell
+    #: leaves ``active_spells``. Written to a snapshot only when non-empty.
+    anchored_turns_running: dict[str, int] = field(default_factory=dict)
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
@@ -234,6 +266,10 @@ class CombatantState:
     #: Only a profile with injected Borrowing rules acts on it. Written to a
     #: snapshot only when set.
     chosen_borrow: bool = False
+    #: The combatant whose Runaway the chosen action anchors, the actor's own
+    #: id for its own (tarmar-engine #30), or ``None``. Written to a snapshot
+    #: only when set.
+    chosen_anchor: int | None = None
     #: The hex the chosen option places the figure at, axial ``(q, r)``, or
     #: ``None`` for the move the option derives itself (tarmar-engine #20;
     #: ``tarmar_engine.movement``).
@@ -318,6 +354,7 @@ class CombatantState:
         self.chosen_spell = ""
         self.chosen_push_mana = 0
         self.chosen_borrow = False
+        self.chosen_anchor = None
         self.chosen_destination = None
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
@@ -330,13 +367,34 @@ class CombatantState:
 
 
 #: Combatant fields :meth:`BattleState.to_dict` writes only when they hold
-#: something; :meth:`BattleState.from_dict` restores a missing one to its
-#: default.
+#: something other than their default; :meth:`BattleState.from_dict`
+#: restores a missing one to its default.
 SNAPSHOT_FIELDS_WRITTEN_WHEN_SET: tuple[str, ...] = (
     "hth_agreed_with",
     "debt",
     "chosen_borrow",
+    "runaway",
+    "chosen_anchor",
+    "anchored_turns_running",
 )
+
+
+def _snapshot_defaults() -> dict[str, object]:
+    """The default of each field in :data:`SNAPSHOT_FIELDS_WRITTEN_WHEN_SET`,
+    as :func:`dataclasses.asdict` writes it, for comparison only."""
+    defaults: dict[str, object] = {}
+    for combatant_field in fields(CombatantState):
+        if combatant_field.name not in SNAPSHOT_FIELDS_WRITTEN_WHEN_SET:
+            continue
+        if combatant_field.default_factory is not MISSING:
+            defaults[combatant_field.name] = combatant_field.default_factory()
+        else:
+            defaults[combatant_field.name] = combatant_field.default
+    return defaults
+
+
+#: What each field written only when set holds when it is not.
+SNAPSHOT_FIELD_DEFAULTS: dict[str, object] = _snapshot_defaults()
 
 
 @dataclass
@@ -386,12 +444,14 @@ class BattleState:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        # A Game Master's agreement (tarmar-studio #867) and Borrowing's
-        # debt and choice (tarmar-engine #28) are written only when set, so a
-        # battle that uses none of them snapshots as it always has.
+        # A Game Master's agreement (tarmar-studio #867), Borrowing's debt
+        # and choice (tarmar-engine #28) and a Runaway and its anchor choice
+        # (#30) are written only when set, so a battle that uses none of them
+        # snapshots as it always has. "Set" is "not the default": a chosen
+        # anchor may name combatant 0.
         for combatant in data["combatants"]:
             for name in SNAPSHOT_FIELDS_WRITTEN_WHEN_SET:
-                if not combatant[name]:
+                if combatant[name] == SNAPSHOT_FIELD_DEFAULTS[name]:
                     del combatant[name]
         return data
 
@@ -411,6 +471,9 @@ class BattleState:
             destination = entry.pop("chosen_destination", None)
             if destination is not None:
                 entry["chosen_destination"] = tuple(destination)
+            runaway = entry.pop("runaway", None)
+            if runaway is not None:
+                entry["runaway"] = RunawayState(**runaway)
             combatants.append(
                 CombatantState(weapon=weapon, spare_weapons=spares, **entry)
             )

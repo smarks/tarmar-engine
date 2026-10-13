@@ -1,5 +1,6 @@
 """Injected magic rules: the casting success tiers, Push, Channel and
-Borrowing (tarmar-engine #26, #27, #29, #28; split from tarmar-studio #825).
+Borrowing and Runaway (tarmar-engine #26, #27, #29, #28, #30; split from
+tarmar-studio #825).
 
 **No rulebook numbers live here.** The magic-mechanics pages these mechanics
 come from are DM-only, and this package is public. Following the classic
@@ -15,7 +16,7 @@ A profile with no ``MagicRules`` (the default, :data:`~tarmar_engine.profile.
 TARMAR`) runs the engine exactly as before: no tiers, no Push, no Channel,
 the same events and payloads.
 
-Four mechanics are modelled so far:
+Five mechanics are modelled so far:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -27,8 +28,9 @@ Four mechanics are modelled so far:
   successful casting roll the caster then makes a Control Roll, roll-under,
   against an attribute less a penalty per mana invested; a failure's margin
   is looked up in :attr:`PushRules.failure_bands`, and certain natural totals
-  are a Runaway regardless. A Runaway is narrated and flagged; its later
-  turns belong to tarmar-engine #30. Only a spell whose kind of effect the
+  are a Runaway regardless. A Runaway is narrated and flagged, and with
+  :class:`RunawayRules` injected it runs on later turns. Only a spell whose
+  kind of effect the
   rules give a push bonus may be pushed (:meth:`PushRules.can_push`).
 * **Channel.** A caster's Channel for a spell bounds the whole mana of one
   casting, the spell's cost and any pushed mana together
@@ -42,6 +44,13 @@ Four mechanics are modelled so far:
   injected attributes less a penalty per point owed; a failure does what the
   injected :class:`BorrowingFailure` says. Channel still bounds the whole
   casting, borrowed or not.
+* **Runaway.** A spell whose control is lost (:class:`RunawayRules`) feeds on
+  its caster every later turn, in the Renew Spells phase: mana first, and
+  once the mana is gone the caster falls unconscious and the drain moves to
+  another pool, with death at an injected line. The conscious caster may
+  roll to anchor it again, and another mage may pay and roll to do it for
+  them; whoever anchors it holds an ordinary active spell, to renew or let
+  lapse.
 
 The outcome names, tier names and labels are injected too: the engine's own
 vocabulary is only "borrows", "debt", "held", "failed" and whether an
@@ -518,6 +527,119 @@ class BorrowingRules:
 
 
 @dataclass(frozen=True)
+class RollUnderRule:
+    """An injected roll-under roll: dice against one attribute.
+
+    Attributes:
+        dice: The roll's dice expression.
+        attribute: One of :data:`MAGIC_ATTRIBUTES`, the target before the
+            penalties the engine takes off.
+    """
+
+    dice: str
+    attribute: str
+
+    def __post_init__(self) -> None:
+        parse_dice_expression(self.dice)  # raises on a bad expression
+        if self.attribute not in MAGIC_ATTRIBUTES:
+            raise ValueError(
+                f"a roll-under attribute must be one of {sorted(MAGIC_ATTRIBUTES)}, "
+                f"not {self.attribute!r}"
+            )
+
+
+#: The pools a Runaway's drain may move to once the caster's mana is gone:
+#: the combatant's own pool fields, each with its maximum's field.
+RUNAWAY_OVERFLOW_POOLS: Mapping[str, str] = {
+    "body": "max_body",
+    "fatigue": "max_fatigue",
+}
+
+
+@dataclass(frozen=True)
+class RunawayRules:
+    """Runaway's numbers: the drain, where it moves, and the anchor rolls.
+
+    Attributes:
+        drain_multiplier_of_cost: Each later turn the spell takes this many
+            times its original cost (the mana the cast cost, pushed mana
+            included)...
+        drain_flat: ...plus this. Neither negative, and not both 0.
+        overflow_pool: The pool drained once the mana is gone, one of
+            :data:`RUNAWAY_OVERFLOW_POOLS`. It may go negative, as the pools
+            already may.
+        death_multiplier_of_max: The caster dies when the overflow pool
+            reaches this many times its maximum below zero, or ``None``: the
+            drain sets no death line of its own.
+        self_anchor: The conscious caster's roll to anchor the spell again.
+        helper_anchor: Another mage's roll to anchor it for the caster.
+        helper_cost_multiplier_of_cost: What the helper pays, in mana, as a
+            multiple of the original cost, whatever the roll's outcome.
+        helper_failure_catches_helper: Does a failed helper roll start a
+            Runaway of the same spell on the helper?
+        effect_bonus_per_turn: The growth of the spell's rolled effect per
+            turn it ran, for the caller's narration (:meth:`effect_bonus`);
+            0 for none.
+    """
+
+    drain_multiplier_of_cost: int
+    drain_flat: int
+    overflow_pool: str
+    death_multiplier_of_max: int | None
+    self_anchor: RollUnderRule
+    helper_anchor: RollUnderRule
+    helper_cost_multiplier_of_cost: int
+    helper_failure_catches_helper: bool
+    effect_bonus_per_turn: int
+
+    def __post_init__(self) -> None:
+        if self.overflow_pool not in RUNAWAY_OVERFLOW_POOLS:
+            raise ValueError(
+                f"overflow_pool must be one of {sorted(RUNAWAY_OVERFLOW_POOLS)}, "
+                f"not {self.overflow_pool!r}"
+            )
+        multipliers = {
+            "drain_multiplier_of_cost": self.drain_multiplier_of_cost,
+            "drain_flat": self.drain_flat,
+            "helper_cost_multiplier_of_cost": self.helper_cost_multiplier_of_cost,
+            "death_multiplier_of_max": self.death_multiplier_of_max or 0,
+        }
+        negative = sorted(name for name, value in multipliers.items() if value < 0)
+        if negative:
+            raise ValueError(f"{negative} must not be negative")
+        if self.drain_multiplier_of_cost == 0 and self.drain_flat == 0:
+            raise ValueError("a Runaway must drain something each turn")
+
+    def drain(self, original_cost: int) -> int:
+        """What the spell takes each later turn."""
+        return self.drain_multiplier_of_cost * original_cost + self.drain_flat
+
+    def helper_cost(self, original_cost: int) -> int:
+        """What another mage pays to try to anchor the spell."""
+        return self.helper_cost_multiplier_of_cost * original_cost
+
+    def overflow_maximum(self, caster: CombatantState) -> int:
+        """The caster's maximum in the overflow pool."""
+        return getattr(caster, RUNAWAY_OVERFLOW_POOLS[self.overflow_pool])
+
+    def death_line(self, caster: CombatantState) -> int | None:
+        """The overflow pool's value at which the caster dies, or ``None``
+        with no death line injected."""
+        if self.death_multiplier_of_max is None:
+            return None
+        return -self.death_multiplier_of_max * self.overflow_maximum(caster)
+
+    def past_death_line(self, caster: CombatantState) -> bool:
+        """Has the overflow pool reached the death line? Never, with none."""
+        line = self.death_line(caster)
+        return line is not None and getattr(caster, self.overflow_pool) <= line
+
+    def effect_bonus(self, turns_running: int) -> int:
+        """The growth a spell that ran this many turns has earned."""
+        return self.effect_bonus_per_turn * turns_running
+
+
+@dataclass(frozen=True)
 class MagicRules:
     """Every magic-mechanics number the engine needs, injected by the caller.
 
@@ -528,12 +650,15 @@ class MagicRules:
         channel: Channel's derivation, or ``None``: no casting is bounded
             but by the purse (and Push's own optional cap).
         borrowing: Borrowing's numbers, or ``None`` when no caster may borrow.
+        runaway: Runaway's numbers, or ``None``: a Runaway is flagged where it
+            starts and has no later turns.
     """
 
     casting_success_tiers: tuple[CastingSuccessTier, ...] = ()
     push: PushRules | None = None
     channel: ChannelRules | None = None
     borrowing: BorrowingRules | None = None
+    runaway: RunawayRules | None = None
 
     def __post_init__(self) -> None:
         seen: set[int] = set()

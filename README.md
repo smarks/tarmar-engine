@@ -260,9 +260,9 @@ payload keys. The tests use invented numbers.
 To put Push on the AI's menu, drive the turn with
 `functools.partial(policy.choose_option, magic=rules)`; with Channel rules
 injected, a menu built without them can offer a cast the engine refuses. A
-Runaway is flagged (`runaway: True`) but its later turns are not modelled
-yet; Runaway and Counterspell are tarmar-engine #30 and #31. Borrowing
-(#28) arrived in v0.9.12, below.
+Runaway is flagged (`runaway: True`); with injected Runaway rules its later
+turns run too (#30, v0.9.13, below). Counterspell is tarmar-engine #31.
+Borrowing (#28) arrived in v0.9.12, below.
 
 ## The hand-to-hand menu and placed moves (v0.9.9)
 
@@ -372,6 +372,69 @@ The readings the engine takes on the page's silences are in
 `borrowed_when_the_cast_pays`, `borrowing_counts_toward_channel`,
 `ai_never_borrows`, `debt_persists_on_the_combatant`,
 `refunds_pay_debt_first`), each marked for Spencer.
+
+## Runaway's later turns, numbers injected (v0.9.13)
+
+A spell whose control is lost feeds on its caster every later turn until it
+is anchored again (tarmar-engine #30). `MagicRules.runaway` takes a
+`RunawayRules`: `drain_multiplier_of_cost` and `drain_flat` (the drain a
+turn is the multiplier x the original cost + the flat amount),
+`overflow_pool` (`"body"` or `"fatigue"`), `death_multiplier_of_max`
+(`None`: no death line), `self_anchor` and `helper_anchor` (each a
+`RollUnderRule`: `dice`, `attribute`), `helper_cost_multiplier_of_cost`,
+`helper_failure_catches_helper` and `effect_bonus_per_turn`. Every number
+is the caller's; the tests use invented ones. Without it a Runaway is the
+payload flag, as before.
+
+- **Where it begins.** The Control Roll's Runaway band and automatic totals,
+  a Borrowing failure that is a Runaway, and the casting roll's Runaway
+  total each set `CombatantState.runaway` (a `RunawayState`: `spell_key`,
+  `original_cost`, pushed mana included, `turns_running`, `caught_from`)
+  and emit a `status` event carrying `runaway_begins`, `spell` and
+  `original_cost`. A combatant already feeding one keeps it, and an `info`
+  event names the one kept (`runaway_kept`).
+- **Each later turn.** In phase 2, before the renewals, the drain comes off
+  the caster's mana; when the mana is gone a conscious caster falls
+  unconscious by the engine's usual collapse, and the rest of the drain,
+  and every later turn's, comes off the overflow pool, which may go
+  negative. A `status` event carries `runaway_drain`, `spell`, `turn`,
+  `drained_mana`, `drained_pool`, `pool`, `pool_left`, `mana`,
+  `unconscious` and `effect_bonus_per_turn`. At or past the death line the
+  caster dies: a `status` event carrying `runaway_death` (`pool`,
+  `pool_left`, `death_line`), then the usual `death` event, and the Runaway
+  ends. The spell's effect is not applied again; the turn count and the
+  growth per turn are for the caller to narrate.
+- **Anchoring.** `choose_option(..., magic=rules)` offers `anchor`
+  (`Candidate.anchor_target`, `"anchor_target"` in its payload): to a
+  conscious combatant for its own Runaway, which the AI always takes, and
+  to any other mage (a spell known or a spell skill recorded) with the mana
+  for the helper's cost, for each living combatant's Runaway, at a score of
+  0. The choice is `CombatantState.chosen_anchor`. In phase 5 the anchor is
+  a whole action that stands still: a helper pays its cost, then an
+  `anchor` roll, roll-under against the injected attribute less the injury
+  band and off-balance penalty. Held, the Runaway ends: a continuing spell
+  becomes an ordinary active spell of the anchorer, to renew or let lapse,
+  and any other spell, its effect already had, simply stops. Failed, it
+  runs on, and a failed helper is caught by one of its own when the rules
+  say so (one already feeding a Runaway keeps it). A held anchor records
+  the turns the Runaway ran in the anchorer's
+  `CombatantState.anchored_turns_running` (by spell key). The anchorer's
+  next cast of that spell adds `effect_bonus_per_turn` x those turns where
+  a tier's bonus is added, and uses the record up. A continuing spell rolls
+  no effect, so for it the growth is narrative only, and its record goes
+  when the spell leaves the anchorer's active spells. A `status` event
+  carries `spell`, `anchor_target`, `helper` (the helper's id, `None` for
+  the caster's own), `held`, `anchor_roll`, `target`, `paid`, `mana_left`,
+  `caught`, and on a hold `runaway_turns_running`.
+- **Snapshot.** `runaway`, `chosen_anchor` and `anchored_turns_running`
+  are written only when set, so a battle without Runaway rules snapshots as
+  it always has. A death ends the dead combatant's Runaway.
+
+The readings on the page's silences are in `tarmar_engine.house_rulings`
+(`one_runaway_at_a_time`, `runaway_drain_in_renew_phase`,
+`runaway_effect_is_narrated_not_reapplied`,
+`anchor_takes_casting_penalties`, `ai_anchors_only_itself`,
+`anchored_spell_becomes_the_anchorers`), each marked for Spencer.
 
 ## What it sits on
 
