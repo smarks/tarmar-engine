@@ -623,6 +623,96 @@ HOUSE_RULINGS += (
     ),
 )
 
+HOUSE_RULINGS += (
+    HouseRuling(
+        "counter_resolves_at_the_cast",
+        "The page orders a counter's declaration by adjusted DEX. In this "
+        "engine every action is chosen before the Actions phase runs, so a "
+        "counter is always chosen before the cast it opposes: the opposed roll "
+        "is made when the spell is cast, before its casting roll, against "
+        "every defender who chose a counter against that caster, whatever "
+        "their DEX order. A faster defender pays its commitment at its own "
+        "action; a slower one pays it at the cast, and its own action is then "
+        "spent. The page's two timings collapse into one roll at the cast.",
+        "at the cast",
+        "tarmar_engine/engine.py cast_spell, _oppose_cast, declare_counter",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "counter_names_a_caster",
+        "The page has a faster defender commit before it sees the cast, so a "
+        "counter names a caster, not a cast: any mage (a spell known or a "
+        "spell skill recorded) may counter any enemy mage, whether or not "
+        "that caster has chosen its action yet, and the counter opposes that "
+        "caster's cast this turn whatever its target. The page does not say "
+        "who may counter; whether only the spell's target may is left to the "
+        "canon's own rulings. A counter is a whole action, standing still.",
+        "any mage against an enemy mage",
+        "tarmar_engine/policy.py _counter_candidates",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "ai_neither_counters_nor_escalates",
+        "The page says nothing of the AI. As with Push and Borrowing, the AI "
+        "never counters and never presses a countered spell again: both are "
+        "on the menu at a score of 0, for a player, and an AI caster whose "
+        "spell stands countered takes its next best option, which ends the "
+        "contest.",
+        "player only",
+        "tarmar_engine/policy.py choose_option, _mark_escalations, _counter_candidates",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "committed_mana_is_spent",
+        "The defender commits its mana as its action. A counter whose caster "
+        "casts nothing that meets it this turn lapses at the end of the "
+        "Actions phase, and the mana stays spent.",
+        "spent",
+        "tarmar_engine/engine.py declare_counter, _lapse_counters",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "countered_cast_makes_no_casting_roll",
+        "The opposed roll comes before the casting roll. A countered spell "
+        "makes no casting roll, so no tier, Control Roll or Runaway can come "
+        "of it; its whole mana is paid all the same (pushed and borrowed mana "
+        "included, and a borrowing cast's debt roll follows), where an "
+        "ordinary failed casting roll would keep it.",
+        "no casting roll, mana paid",
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "contest_ends_on_any_other_action",
+        "A countered spell's contest stands on its caster across turns. It "
+        "ends when the caster chooses anything but casting that spell at that "
+        "target again, when such a cast meets no counter (the cast then goes "
+        "on as an ordinary one), or when the caster gets past the counter. The "
+        "defender cannot start one: a counter needs a cast to oppose.",
+        "another_action",
+        "tarmar_engine/engine.py phase_initial_movement, _escalates, _end_contest",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+    HouseRuling(
+        "defender_off_balance_not_on_counter",
+        "A defender owing an off-balance penalty spends it on its counter "
+        "action, which makes no roll of its own, so the penalty never reaches "
+        "its side of the opposed roll; that roll takes only its injury band. "
+        "The caster's side, made inside the cast, takes both, as the casting "
+        "roll does.",
+        "injury band only",
+        "tarmar_engine/engine.py _oppose_cast",
+        RULING,
+        "#825 (tarmar-engine #31)",
+    ),
+)
+
 
 def ruling(key: str) -> HouseRuling:
     """Look one entry up by key.

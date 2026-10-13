@@ -90,8 +90,8 @@ Both state types now carry the same snapshot contract, so a consumer that
 serves battles out of a database can hold either profile's state:
 
 ```python
-snapshot = game.to_dict()          # JSON-safe; store it
-game = GameState.from_dict(snapshot)   # resumes exactly, dice included
+snapshot = game.to_dict()  # JSON-safe; store it
+game = GameState.from_dict(snapshot)  # resumes exactly, dice included
 ```
 
 `classic/persistence.py` (ported from melee's `board/persistence.py`, trimmed
@@ -122,9 +122,9 @@ splits the decision three ways, over the classic heuristics ported into
 ```python
 from tarmar_engine.classic import policy
 
-decision = policy.choose_option(game, figure)   # pure: the scored menu + a pick
-policy.enact(game, figure, decision.chosen)     # or enact a *player's* pick
-policy.declare_attacks(game)                    # combat phase, after everyone moved
+decision = policy.choose_option(game, figure)  # pure: the scored menu + a pick
+policy.enact(game, figure, decision.chosen)  # or enact a *player's* pick
+policy.declare_attacks(game)  # combat phase, after everyone moved
 ```
 
 `Candidate`/`Decision` are the **shared** types from `tarmar_engine.policy`, so
@@ -156,8 +156,8 @@ for candidate in policy.menu(game, wizard):
     candidate.letter, candidate.spell_key, candidate.target_id
     # "cast", "magic_fist", "dummy"   <- one entry per castable spell
 
-policy.enact(game, wizard, chosen)   # records the declaration
-policy.declare_attacks(game)         # queues the spell that was declared
+policy.enact(game, wizard, chosen)  # records the declaration
+policy.declare_attacks(game)  # queues the spell that was declared
 ```
 
 Each entry comes from `GameState.spell_targets` — the engine's single source
@@ -261,8 +261,8 @@ To put Push on the AI's menu, drive the turn with
 `functools.partial(policy.choose_option, magic=rules)`; with Channel rules
 injected, a menu built without them can offer a cast the engine refuses. A
 Runaway is flagged (`runaway: True`); with injected Runaway rules its later
-turns run too (#30, v0.9.13, below). Counterspell is tarmar-engine #31.
-Borrowing (#28) arrived in v0.9.12, below.
+turns run too (#30, v0.9.13, below). Borrowing (#28) arrived in v0.9.12 and
+Counterspell (#31) in v0.9.14, below.
 
 ## The hand-to-hand menu and placed moves (v0.9.9)
 
@@ -435,6 +435,73 @@ The readings on the page's silences are in `tarmar_engine.house_rulings`
 `runaway_effect_is_narrated_not_reapplied`,
 `anchor_takes_casting_penalties`, `ai_anchors_only_itself`,
 `anchored_spell_becomes_the_anchorers`), each marked for Spencer.
+
+## Counterspell, numbers injected (v0.9.14)
+
+Any mage may commit mana to counter an enemy caster's spell this turn, and
+a countered caster may press the spell again on later turns
+(tarmar-engine #31).
+`MagicRules.counterspell` takes a `CounterspellRules`: `opposed_dice` and
+`opposed_attribute` (`"INT"` or `"WIS"`) for the opposed roll,
+`mana_per_bonus` (a side gains 1 per that much mana invested),
+`ties_go_to_caster`, and `defender_min_mana` and `defender_max_mana`
+(`None`: the purse alone bounds a commitment; Channel does not). Every
+number is the caller's; the tests use invented ones. Without it nothing
+changes.
+
+- **The counter.** `choose_option(..., magic=rules)` offers `counter`
+  (`actions.COUNTER_OPTION`, keyed outside the lettered tables;
+  `Candidate.counter_mana`, `"counter_mana"` in its payload, `target_id` the
+  caster) to any mage against each enemy mage, once per commitment it can
+  afford, at a score of 0: the AI never counters. A counter names a caster,
+  not a cast: it is offered whether or not the caster has chosen its action
+  yet, so a defender that chooses first counters blind, and it opposes that
+  caster's cast this turn whatever its target. The choice is
+  `CombatantState.chosen_counter`
+  (`(caster id, mana)`). A counter is a whole action that stands still. In
+  phase 5 it pays its commitment and sets `CombatantState.counter` (a
+  `CounterState`: `caster_id`, `mana_committed`, `declared_turn`), with a
+  `status` event carrying `counter_declared`, `caster`, `mana` and
+  `mana_left`; a defender short of the mana declares nothing.
+- **The opposed roll.** When the caster casts, after its cost is known to
+  be payable and before the casting roll, every defender that chose a
+  counter against it and has not yet acted declares now, and each declared
+  counter opposes: one `roll` event per side with purpose `counter`, each
+  side rolling `opposed_dice` + its `opposed_attribute` + the bonus its mana
+  buys (the caster's whole casting cost, pushed mana included, less the
+  casting roll's injury and off-balance penalties; the defender's
+  commitment, less its own injury band). The caster must beat the highest
+  defender, ties by `ties_go_to_caster`. A `status` event carries
+  `counter_result`, `spell`, `caster_total`, `caster_bonus`, `caster_roll`,
+  `defender_totals` (`defender`, `total`, `mana`, `bonus`, `roll` each) and
+  `countered`. Every declared counter is spent either way.
+- **Countered.** The spell makes no casting roll (no tier, Control Roll or
+  Runaway), and its whole mana is paid, borrowing included, with the debt
+  roll after. A `status` event carries `spell_countered`, `spell`,
+  `defenders`, `contest_turns`, `mana_left` and the cast's Push, Channel and
+  Borrowing keys where those rules are injected. `CombatantState.contest` (a
+  `ContestState`: `spell_key`, `target_id`, `defender_ids`, `turns`) stands
+  on the caster.
+- **Escalation.** A caster whose `contest` is set is offered its casts of
+  that spell at that target flagged `escalate` (`"escalate"` in the payload)
+  at a score of 0; the AI takes its next best option. Casting it again pays
+  again and meets whatever counters the target chose this turn. The contest
+  ends, with a `status` event carrying `contest_ended`, `spell`, `reason`
+  and `turns`, when the caster chooses anything else (`another_action`, in
+  phase 3), when the pressed cast meets no counter (`unopposed`; it then
+  casts as an ordinary cast), or when the caster gets through (`through`).
+- **Lapsed.** A counter no cast meets lapses at the end of the Actions
+  phase, its mana spent: a `status` event carrying `counter_lapsed`,
+  `caster` and `mana`.
+- **Snapshot.** `counter`, `contest` and `chosen_counter` are written only
+  when set, so a battle without Counterspell rules snapshots as it always
+  has.
+
+The readings on the page's silences are in `tarmar_engine.house_rulings`
+(`counter_resolves_at_the_cast`, `counter_names_a_caster`,
+`ai_neither_counters_nor_escalates`, `committed_mana_is_spent`,
+`countered_cast_makes_no_casting_roll`, `contest_ends_on_any_other_action`),
+each marked for Spencer.
 
 ## What it sits on
 

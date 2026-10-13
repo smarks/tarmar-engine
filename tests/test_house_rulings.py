@@ -615,3 +615,141 @@ class RunawayRulingsTest(TestCase):
         anchor(state, 2, [[1, 1]])
         self.assertEqual(state.by_id(1).active_spells, [])
         self.assertEqual(state.by_id(2).active_spells, ["shield"])
+
+
+class CounterspellRulingsTest(TestCase):
+    """tarmar-engine #31's readings, each pinned to the code that makes it."""
+
+    def test_counter_resolves_at_the_cast(self):
+        from .test_counterspell import (
+            CASTER_LOW,
+            DEFENDER_HIGH,
+            choose_counter,
+            counter_rolls,
+            counter_state,
+            runner,
+        )
+
+        self.assertEqual(ruling("counter_resolves_at_the_cast").value, "at the cast")
+        # The slower defender's counter is met at the faster caster's cast.
+        state = counter_state(dexterity=8)
+        choose_counter(state, 3)
+        turn_runner, events = runner(state, [CASTER_LOW, DEFENDER_HIGH])
+        turn_runner.phase_actions()
+        caster_casts = next(
+            event for event in events if "spell_countered" in event["payload"]
+        )
+        self.assertEqual(caster_casts["actor"], "Fighter 1")
+        self.assertTrue(
+            all(
+                roll["sequence"] < caster_casts["sequence"]
+                for roll in counter_rolls(events)
+            )
+        )
+
+    def test_counter_names_a_caster(self):
+        from .test_counterspell import counter_state, counters, decide
+
+        self.assertEqual(
+            ruling("counter_names_a_caster").value, "any mage against an enemy mage"
+        )
+        # Offered before the caster has chosen anything, and against a caster
+        # aiming elsewhere: the counter names the caster.
+        undecided = counter_state()
+        undecided.by_id(1).chosen_letter = ""
+        undecided.by_id(1).chosen_target = None
+        self.assertEqual({c.target_id for c in counters(decide(undecided, 2))}, {1})
+        self.assertEqual(counters(decide(counter_state(spells=[]), 2)), [])
+
+    def test_ai_neither_counters_nor_escalates(self):
+        from tarmar_engine.state import ContestState
+
+        from .test_counterspell import counter_state, decide
+
+        self.assertEqual(
+            ruling("ai_neither_counters_nor_escalates").value, "player only"
+        )
+        defender = decide(counter_state(), 2)
+        self.assertIsNone(defender.chosen.counter_mana)
+        contested = counter_state()
+        contested.by_id(1).contest = ContestState("fire_missile", 2, [2], 1)
+        caster = decide(contested, 1)
+        self.assertFalse(caster.chosen.escalate)
+        self.assertTrue(any(candidate.escalate for candidate in caster.candidates))
+
+    def test_committed_mana_is_spent(self):
+        from .test_counterspell import choose_counter, counter_state, runner
+
+        self.assertEqual(ruling("committed_mana_is_spent").value, "spent")
+        state = counter_state()
+        state.by_id(1).chosen_letter = "k"
+        choose_counter(state, 2)
+        runner(state)[0].phase_actions()
+        self.assertEqual(state.by_id(2).mana, 6 - 2)
+        self.assertIsNone(state.by_id(2).counter)
+
+    def test_countered_cast_makes_no_casting_roll(self):
+        from .test_counterspell import (
+            CASTER_LOW,
+            DEFENDER_HIGH,
+            counter_state,
+            countered_cast,
+        )
+        from .test_magic import roll_purposes
+
+        self.assertEqual(
+            ruling("countered_cast_makes_no_casting_roll").value,
+            "no casting roll, mana paid",
+        )
+        state = counter_state()
+        events = countered_cast(state, [CASTER_LOW, DEFENDER_HIGH], push=2)
+        self.assertNotIn("casting", roll_purposes(events))
+        self.assertEqual(state.by_id(1).mana, 10 - 1 - 2)
+
+    def test_contest_ends_on_any_other_action(self):
+        from tarmar_engine.state import ContestState
+
+        from .test_counterspell import COUNTER_PROFILE, counter_state, runner
+
+        reason = ruling("contest_ends_on_any_other_action").value
+        state = counter_state()
+        caster = state.by_id(1)
+        caster.contest = ContestState("fire_missile", 2, [2], 1)
+        turn_runner, events = runner(state)
+
+        def dodge(battle, actor):
+            return policy.Decision(
+                chosen=policy.Candidate("c", "DODGE", 0.0, "test"), candidates=[]
+            )
+
+        self.assertIs(turn_runner.profile, COUNTER_PROFILE)
+        turn_runner.phase_initial_movement([caster], dodge)
+        self.assertIsNone(caster.contest)
+        ended = next(event for event in events if "contest_ended" in event["payload"])
+        self.assertEqual(ended["payload"]["reason"], reason)
+
+    def test_defender_off_balance_not_on_counter(self):
+        from .test_counterspell import (
+            CASTER_LOW,
+            DEFENDER_HIGH,
+            choose_counter,
+            counter_rolls,
+            counter_state,
+            runner,
+        )
+
+        self.assertEqual(
+            ruling("defender_off_balance_not_on_counter").value, "injury band only"
+        )
+        # Faster and slower than the caster, an off-balance defender's side of
+        # the opposed roll is its WIS 11 + 1 for 3 mana, with no penalty.
+        for dexterity in (16, 8):
+            state = counter_state(dexterity=dexterity, off_balance=True)
+            choose_counter(state, 3)
+            turn_runner, events = runner(state, [CASTER_LOW, DEFENDER_HIGH])
+            turn_runner.phase_actions()
+            with self.subTest(dexterity=dexterity):
+                self.assertEqual(
+                    counter_rolls(events)[1]["payload"]["modifier"], 11 + 1
+                )
+                self.assertFalse(state.by_id(2).off_balance)
