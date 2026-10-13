@@ -59,6 +59,8 @@ from .magic import (
     ChannelUnclassifiedSpell,
     MagicRules,
     PushRules,
+    RollUnderRule,
+    RunawayRules,
     attribute_score,
 )
 from .reactions import TarmarReactions
@@ -91,6 +93,13 @@ HTH_NO_GESTURE_MASTERY = 2
 # Options offered for a player to choose that the AI does not take: Sprint's
 # 6 Fatigue a turn, going prone, drawing a dagger mid-hold.
 PLAYER_ONLY_SCORE = 0.0
+# Anchoring one's own Runaway is the only way to stop it feeding (tarmar-
+# engine #30): flat, above every flat score here, and the AI's choice
+# whatever else scores (house reading ``ai_anchors_only_itself``).
+OWN_RUNAWAY_ANCHOR_SCORE = 10.0
+#: The menu key of the anchor option (tarmar-engine #30): a whole action,
+#: like a cast, that stands still.
+ANCHOR_OPTION = "anchor"
 
 #: Decimal places every score and every factor behind it is printed to.
 #: Scores are *built* from factors already rounded to this precision (see
@@ -149,6 +158,9 @@ class Candidate:
     #: take one, and where, is :func:`movement.legal_destinations`; the engine
     #: refuses any other in its log.
     destination: tuple[int, int] | None = None
+    #: The combatant whose Runaway the option anchors, the actor's own id for
+    #: its own (tarmar-engine #30), or ``None`` for any other option.
+    anchor_target: int | None = None
 
     def to_payload(self) -> dict:
         payload = {
@@ -173,6 +185,9 @@ class Candidate:
         # The same for a hex: a candidate that names none logs as it did.
         if self.destination is not None:
             payload["destination"] = list(self.destination)
+        # And for an anchor, only on the anchor option.
+        if self.anchor_target is not None:
+            payload["anchor_target"] = self.anchor_target
         return payload
 
 
@@ -712,7 +727,9 @@ def choose_option(
     player to choose; the AI does not push (:func:`_push_candidates`). With
     Borrowing rules, a cast or pushed cast the actor cannot afford is offered
     as a borrowing variant, for a player; the AI does not borrow
-    (:func:`_borrow_candidates`). A caller driving the engine with this
+    (:func:`_borrow_candidates`). With Runaway rules, a Runaway the actor
+    may anchor is offered, and the AI always anchors its own
+    (:func:`_anchor_candidates`). A caller driving the engine with this
     policy passes the same rules the profile carries, e.g.
     ``functools.partial(choose_option, magic=rules)``: the engine refuses a
     cast past the Channel, so a menu built without them can offer one it
@@ -729,7 +746,87 @@ def choose_option(
         decision.candidates.extend(
             _borrow_candidates(state, actor, magic, magic.borrowing)
         )
+    if magic is not None and magic.runaway is not None:
+        anchors = _anchor_candidates(state, actor, magic.runaway)
+        decision.candidates.extend(anchors)
+        own = next(
+            (
+                candidate
+                for candidate in anchors
+                if candidate.anchor_target == actor.combatant_id
+            ),
+            None,
+        )
+        if own is not None:
+            decision.chosen = own
     return decision
+
+
+def _anchor_candidates(
+    state: BattleState, actor: CombatantState, runaway: RunawayRules
+) -> list[Candidate]:
+    """The Runaways the actor may anchor (tarmar-engine #30).
+
+    Its own, when one is running: scored :data:`OWN_RUNAWAY_ANCHOR_SCORE`,
+    and :func:`choose_option` makes it the AI's choice. Another living
+    combatant's, when the actor is a mage (a spell known, or a spell skill
+    recorded) and has the mana the helper pays: scored
+    :data:`PLAYER_ONLY_SCORE`, for a player; the AI anchors only its own
+    (house reading ``ai_anchors_only_itself``). The rationale gives the
+    anchor roll's target as the engine will roll it.
+    """
+    candidates: list[Candidate] = []
+    if actor.runaway is not None:
+        spell = get_spell(actor.runaway.spell_key)
+        candidates.append(
+            Candidate(
+                ANCHOR_OPTION,
+                f"Anchor {spell.name}",
+                OWN_RUNAWAY_ANCHOR_SCORE,
+                f"{spell.name} has fed on {actor.name} for "
+                f"{actor.runaway.turns_running} turn(s): "
+                f"{_anchor_note(actor, runaway.self_anchor)}; the only way to "
+                f"stop it, so the AI always anchors its own = "
+                f"{score_text(OWN_RUNAWAY_ANCHOR_SCORE)}",
+                target_id=actor.combatant_id,
+                anchor_target=actor.combatant_id,
+            )
+        )
+    if not (actor.spells or actor.spell_skill_levels):
+        return candidates
+    for caster in state.combatants:
+        if caster is actor or not caster.alive or caster.runaway is None:
+            continue
+        cost = runaway.helper_cost(caster.runaway.original_cost)
+        if actor.mana < cost:
+            continue
+        spell = get_spell(caster.runaway.spell_key)
+        candidates.append(
+            Candidate(
+                ANCHOR_OPTION,
+                f"Anchor {caster.name}'s {spell.name}",
+                PLAYER_ONLY_SCORE,
+                f"Pay {cost} mana ({actor.mana - cost} left): "
+                f"{_anchor_note(actor, runaway.helper_anchor)}; the AI anchors "
+                f"only its own = {score_text(PLAYER_ONLY_SCORE)}",
+                target_id=caster.combatant_id,
+                anchor_target=caster.combatant_id,
+            )
+        )
+    return candidates
+
+
+def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
+    """An anchor roll as the menu prints it: less the injury band and an
+    owed off-balance penalty, as the engine takes them
+    (:func:`_casting_penalties`)."""
+    injury, off_balance = _casting_penalties(actor)
+    attribute = attribute_score(actor, rule.attribute)
+    target = attribute - injury - off_balance
+    return (
+        f"anchor roll {rule.dice} ≤ {rule.attribute} {attribute} less "
+        f"{injury} injury and {off_balance} off-balance = {target}"
+    )
 
 
 def _within_channel(

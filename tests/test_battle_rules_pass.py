@@ -596,8 +596,8 @@ class BareHandedIsHthTest(TestCase):
 
 class ManaOnFailureTest(TestCase):
     """#816 — mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative
-    effect"; runaway.md (on 18): "Spell drains mana equal to original casting
-    cost"."""
+    effect"; on 18 a Runaway, whose first effect, the drain, is paid at once
+    out of the casting's mana."""
 
     def cast(self, faces):
         state = duel_state()

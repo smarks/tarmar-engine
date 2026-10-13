@@ -517,3 +517,101 @@ class HandToHandAndDestinationRulingsTest(TestCase):
             combat_math.GAME_MASTER_AGREEMENT,
             ruling("hth_agreement_by_game_master").value,
         )
+
+
+class RunawayRulingsTest(TestCase):
+    """tarmar-engine #30's readings, each pinned to the code that makes it."""
+
+    def test_one_runaway_at_a_time(self):
+        from .test_magic import cast
+        from .test_runaway import RUNAWAY_PROFILE, running_state
+
+        self.assertEqual(ruling("one_runaway_at_a_time").value, 1)
+        state = running_state()
+        first = state.by_id(1).runaway
+        cast(state, [[6, 6, 6]], profile=RUNAWAY_PROFILE, spell="heal")
+        self.assertIs(state.by_id(1).runaway, first)
+
+    def test_runaway_drain_in_renew_phase(self):
+        from .test_engine import ScriptedRoller
+        from .test_runaway import RUNAWAY_PROFILE, running_state
+
+        phase = ruling("runaway_drain_in_renew_phase").value
+        self.assertEqual(dict(engine.PHASES)[phase], "Renew Spells")
+        # Unconscious, the caster is still fed on.
+        state = running_state(conscious=False)
+        events: list[dict] = []
+        runner = engine.TurnRunner(
+            state, ScriptedRoller(), events.append, profile=RUNAWAY_PROFILE
+        )
+        runner.run(policy.choose_option)
+        drains = [event for event in events if event["payload"].get("runaway_drain")]
+        self.assertEqual([event["phase"] for event in drains], [phase])
+        self.assertEqual(state.by_id(1).mana, 10 - 5)
+
+    def test_runaway_effect_is_narrated_not_reapplied(self):
+        from .test_magic import status_payloads
+        from .test_runaway import feed, running_state
+
+        keys = ruling("runaway_effect_is_narrated_not_reapplied").value
+        state = running_state()
+        events = feed(state)
+        drain = status_payloads(events, "runaway_drain")[0]
+        self.assertEqual((drain[keys[0]], drain[keys[1]]), (1, 2))
+        # No effect is rolled or applied: the target is untouched.
+        self.assertEqual(
+            [event for event in events if event["event_type"] in ("roll", "damage")],
+            [],
+        )
+        self.assertEqual(state.by_id(2).fatigue, 40)
+
+    def test_anchor_takes_casting_penalties(self):
+        from tarmar_engine import combat_math
+        from tarmar_engine.profile import TARMAR
+
+        from .test_runaway import anchor, anchor_roll, running_state, with_helper
+
+        self.assertEqual(
+            ruling("anchor_takes_casting_penalties").value,
+            "injury band and off-balance",
+        )
+        injured = running_state(fatigue=1)
+        injury = TARMAR.reactions.injury_penalty(injured.by_id(1))
+        self.assertGreater(injury, 0)
+        self.assertEqual(
+            anchor_roll(anchor(injured, 1, [[8, 8]]))["target_number"], 12 - injury
+        )
+        unsteady = with_helper(running_state(), off_balance=True)
+        self.assertEqual(
+            anchor_roll(anchor(unsteady, 2, [[8, 8]]))["target_number"],
+            13 - combat_math.OFF_BALANCE_PENALTY,
+        )
+
+    def test_ai_anchors_only_itself(self):
+        from .test_runaway import runaway_magic_rules, running_state, with_helper
+
+        self.assertEqual(ruling("ai_anchors_only_itself").value, "its own only")
+        state = with_helper(running_state())
+        rules = runaway_magic_rules()
+        own = policy.choose_option(state, state.by_id(1), magic=rules)
+        self.assertEqual(own.chosen.anchor_target, 1)
+        other = policy.choose_option(state, state.by_id(2), magic=rules)
+        self.assertIsNone(other.chosen.anchor_target)
+        self.assertTrue(
+            any(candidate.anchor_target == 1 for candidate in other.candidates)
+        )
+
+    def test_anchored_spell_becomes_the_anchorers(self):
+        from tarmar_engine.state import RunawayState
+
+        from .test_runaway import anchor, running_state, with_helper
+
+        self.assertEqual(
+            ruling("anchored_spell_becomes_the_anchorers").value,
+            "CombatantState.active_spells",
+        )
+        state = with_helper(running_state(active_spells=["shield"]))
+        state.by_id(1).runaway = RunawayState("shield", 1)
+        anchor(state, 2, [[1, 1]])
+        self.assertEqual(state.by_id(1).active_spells, [])
+        self.assertEqual(state.by_id(2).active_spells, ["shield"])

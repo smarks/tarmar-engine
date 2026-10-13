@@ -182,8 +182,8 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
     HouseRuling(
         "mana_on_failure",
         "A spell's mana is spent on success, on a 17 ('mana lost') and on an "
-        "18 (Runaway 'drains mana equal to original casting cost'); every "
-        "other failure keeps it.",
+        "18 (a Runaway, whose first effect, the drain, is paid at once out of "
+        "the casting's mana); every other failure keeps it.",
         frozenset({17, 18}),
         "tarmar_engine/engine.py CASTING_MANA_LOST_ROLLS",
         RULING,
@@ -545,6 +545,81 @@ HOUSE_RULINGS += (
         "tarmar_engine/engine.py _regain_mana",
         RULING,
         "#825 (tarmar-engine #28)",
+    ),
+)
+
+HOUSE_RULINGS += (
+    HouseRuling(
+        "one_runaway_at_a_time",
+        "A combatant already feeding a Runaway that starts another keeps the "
+        "first: the second is logged and starts nothing, so one spell at a "
+        "time feeds on a combatant.",
+        1,
+        "tarmar_engine/engine.py _begin_runaway",
+        RULING,
+        "#825 (tarmar-engine #30)",
+    ),
+    HouseRuling(
+        "runaway_drain_in_renew_phase",
+        "A Runaway feeds on its caster in phase 2, Renew Spells, before the "
+        "renewals, on every turn after the one it began (that turn's cost is "
+        "the casting's own), conscious caster or not.",
+        2,
+        "tarmar_engine/engine.py phase_renew_spells, _feed_runaway",
+        RULING,
+        "#825 (tarmar-engine #30)",
+    ),
+    HouseRuling(
+        "runaway_effect_is_narrated_not_reapplied",
+        "The page leaves the growth of a Runaway's effect to the Game Master, "
+        "so the engine does not apply the spell's effect again on its later "
+        "turns: the drain event carries the turns it has run and the "
+        "injected growth per turn, for the caller to narrate. Once anchored, "
+        "the growth (the injected bonus per turn x the turns it ran) is added "
+        "where a tier's bonus is to the anchorer's next cast of that spell, "
+        "and consumed by it, with no time limit. A continuing spell's "
+        "renewal rolls no effect, so for it the growth is narrative only, "
+        "and its record goes when the spell leaves the anchorer's active "
+        "spells.",
+        ("turn", "effect_bonus_per_turn"),
+        "tarmar_engine/engine.py _feed_runaway",
+        RULING,
+        "#825 (tarmar-engine #30)",
+    ),
+    HouseRuling(
+        "anchor_takes_casting_penalties",
+        "Both anchor rolls, the caster's own and a helper's, are roll-under "
+        "against the injected attribute less the casting roll's injury band "
+        "and off-balance penalty, as the Control Roll and the debt roll take "
+        "them (one roll-under reading for the magic rolls).",
+        "injury band and off-balance",
+        "tarmar_engine/engine.py anchor_runaway; tarmar_engine/policy.py _anchor_note",
+        RULING,
+        "#825 (tarmar-engine #30)",
+    ),
+    HouseRuling(
+        "ai_anchors_only_itself",
+        "The page says nothing of the AI. It always anchors its own Runaway "
+        "when it acts, since anchoring is the only way to survive one, and "
+        "never another's: a helper's anchor is on the menu at a score of 0, "
+        "for a player.",
+        "its own only",
+        "tarmar_engine/policy.py choose_option, _anchor_candidates",
+        RULING,
+        "#825 (tarmar-engine #30)",
+    ),
+    HouseRuling(
+        "anchored_spell_becomes_the_anchorers",
+        "A continuing spell's Runaway, anchored, becomes an ordinary active "
+        "spell of whoever anchored it, the caster or a helper; the caster "
+        "loses it if it held it. The anchorer keeps it going by renewing it "
+        "in phase 2 or it lapses unpaid, as any continuing spell (the engine "
+        "offers no other choice to end it). Any other spell has had its "
+        "effect, so anchoring it simply ends the Runaway.",
+        "CombatantState.active_spells",
+        "tarmar_engine/engine.py anchor_runaway",
+        RULING,
+        "#825 (tarmar-engine #30)",
     ),
 )
 

@@ -34,11 +34,12 @@ Phase map (turn-sequence.md):
 Rules gaps deliberately noted rather than invented: bleeding from a severe
 critical is reported as a status event but not ticked (the rules publish no
 rate — same stance as ``tarmar_rules``'s report-only flags). The casting
-success tiers, Push, Channel and Borrowing run only on a profile with
-injected :class:`~tarmar_engine.magic.MagicRules` (tarmar-engine
-#26/#27/#29/#28), which carry every number they use; Runaway's later turns
-and Counterspell are not modelled yet (tarmar-engine #30, #31, from
-tarmar-studio #825).
+success tiers, Push, Channel, Borrowing and Runaway's later turns run only
+on a profile with injected :class:`~tarmar_engine.magic.MagicRules`
+(tarmar-engine #26/#27/#29/#28/#30), which carry every number they use;
+Counterspell is not modelled yet (tarmar-engine #31, from tarmar-studio
+#825). A Runaway feeds on its caster in phase 2, before the renewals, and is
+anchored as a phase-5 action.
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -61,6 +62,7 @@ from .magic import (
     CastingSuccessTier,
     MagicRules,
     PushRules,
+    RunawayRules,
     attribute_score,
     spell_effect_kind,
 )
@@ -70,6 +72,7 @@ from .state import (
     BattleState,
     CombatantState,
     GroundWeapon,
+    RunawayState,
     WeaponState,
     bare_handed_damage,
 )
@@ -93,18 +96,20 @@ SPRINT_FATIGUE_COST = 6
 # (fumble/bad fumble/catastrophic), regardless of the caster's attribute.
 # The low-end specials do not change the success/failure verdict (Spencer's
 # ruling on #292's scope); their tiers and bonuses are injected through
-# MagicRules (tarmar_engine.magic, tarmar-engine #26). The engine tracks none
-# of Runaway's later state yet (tarmar-engine #30).
+# MagicRules (tarmar_engine.magic, tarmar-engine #26). Runaway's later turns
+# run on injected RunawayRules (tarmar-engine #30).
 CASTING_FUMBLE_ROLL_FLOOR = 16
 
 # mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative effect",
-# and 18 "triggers Runaway", whose first effect (runaway.md) is that the
-# "Spell drains mana equal to original casting cost". Those are the failures
-# the pages say cost mana: a spell's mana is paid when it succeeds or on a
-# 17 or 18, and any other failure keeps it (tarmar-studio #816,
+# and 18 "triggers Runaway", whose first effect, the drain, is paid at once
+# out of the casting's mana. Those are the failures the pages say cost mana:
+# a spell's mana is paid when it succeeds or on a 17 or 18, and any other
+# failure keeps it (tarmar-studio #816,
 # coordinator's ruling under the standing rule; Spencer may overrule).
-# Runaway's later turns are not modelled (tarmar-engine #30).
-CASTING_MANA_LOST_ROLLS = frozenset({17, 18})
+# With injected RunawayRules the Runaway total starts a Runaway whose later
+# turns the engine runs (tarmar-engine #30).
+CASTING_RUNAWAY_ROLL = 18
+CASTING_MANA_LOST_ROLLS = frozenset({17, CASTING_RUNAWAY_ROLL})
 
 # Gait by movement option, kept under this name for every reader of it; the
 # table lives with the rest of the movement rules (tarmar_engine.movement).
@@ -423,19 +428,31 @@ class TurnRunner:
             )
         return order
 
-    def phase_renew_spells(self) -> None:
-        self.begin_phase(2, "Renew Spells", "DEX+INT+WIS order, high to low")
-        casters = sorted(
-            (c for c in self.state.combatants if c.alive and c.active_spells),
+    def _in_renewal_order(
+        self, wanted: Callable[[CombatantState], bool]
+    ) -> list[CombatantState]:
+        """The living combatants ``wanted`` admits, in phase 2's DEX+INT+WIS
+        order, high first."""
+        return sorted(
+            (c for c in self.state.combatants if c.alive and wanted(c)),
             key=lambda c: (-c.renewal_order_key, c.combatant_id),
         )
-        for caster in casters:
+
+    def phase_renew_spells(self) -> None:
+        """Phase 2: every Runaway feeds (with injected Runaway rules), then
+        the continuing spells are renewed or end."""
+        self.begin_phase(2, "Renew Spells", "DEX+INT+WIS order, high to low")
+        magic = self.profile.magic
+        if magic is not None and magic.runaway is not None:
+            for caster in self._in_renewal_order(lambda c: c.runaway is not None):
+                self._feed_runaway(caster, magic.runaway)
+        for caster in self._in_renewal_order(lambda c: bool(c.active_spells)):
             for key in list(caster.active_spells):
                 spell = get_spell(key)
                 if not caster.active:
                     # casting-spells.md: "Unrenewed spells end immediately."
                     # An unconscious caster renews nothing (#826).
-                    caster.active_spells.remove(key)
+                    self._end_active_spell(caster, key)
                     self.emit(
                         "status",
                         f"{caster.name} is unconscious and cannot renew "
@@ -455,7 +472,7 @@ class TurnRunner:
                     # Mastery 2+); anything else lapses." (#821) Both sides
                     # of a hold have their hands full ("holding on or being
                     # held"), so the grappler too — coordinator's ruling.
-                    caster.active_spells.remove(key)
+                    self._end_active_spell(caster, key)
                     held = "is grappled" if caster.grappled_by is not None else (
                         "is holding a grapple"
                     )
@@ -477,13 +494,20 @@ class TurnRunner:
                         payload={"spell": key, "mana_left": caster.mana},
                     )
                 else:
-                    caster.active_spells.remove(key)
+                    self._end_active_spell(caster, key)
                     self.emit(
                         "status",
                         f"{caster.name} cannot pay for {spell.name}; it ends",
                         actor=caster.name,
                         payload={"spell": key, "ended": True},
                     )
+
+    @staticmethod
+    def _end_active_spell(caster: CombatantState, key: str) -> None:
+        """A continuing spell ends for its caster, and with it any growth an
+        anchored Runaway of it earned (``anchored_turns_running``)."""
+        caster.active_spells.remove(key)
+        caster.anchored_turns_running.pop(key, None)
 
     @staticmethod
     def _decision_payload(decision: policy.Decision) -> dict:
@@ -510,6 +534,7 @@ class TurnRunner:
             combatant.chosen_spell = decision.chosen.spell_key
             combatant.chosen_push_mana = decision.chosen.push_mana
             combatant.chosen_borrow = decision.chosen.borrow
+            combatant.chosen_anchor = decision.chosen.anchor_target
             combatant.chosen_destination = decision.chosen.destination
             # "Forecast" up front because this block is written before any
             # die is thrown: its P(hit) is what the AI expected, not what
@@ -730,16 +755,23 @@ class TurnRunner:
                     actor=combatant.name,
                 )
                 continue
-            combatant.alive = False
             combatant.fatal_chain.append(sequence)
-            self.emit(
-                "death",
-                f"{combatant.name} dies",
-                actor=combatant.name,
-                payload={"fatal_chain": list(combatant.fatal_chain)},
-            )
-            # A corpse neither holds nor is held (#11).
-            self._release_grapples_involving(combatant)
+            self._die(combatant)
+
+    def _die(self, combatant: CombatantState) -> None:
+        """The engine's one death: the combatant dies, the ``death`` event
+        cites its fatal chain, its grapples end, and any Runaway ends with
+        it."""
+        combatant.alive = False
+        combatant.runaway = None
+        self.emit(
+            "death",
+            f"{combatant.name} dies",
+            actor=combatant.name,
+            payload={"fatal_chain": list(combatant.fatal_chain)},
+        )
+        # A corpse neither holds nor is held (#11).
+        self._release_grapples_involving(combatant)
 
     def _placed_destination(self, combatant: CombatantState) -> tuple[int, int] | None:
         """The chosen hex, if the chosen option may still move there.
@@ -1114,6 +1146,9 @@ class TurnRunner:
             return
         if letter in ("h", "r"):
             self.cast_spell(combatant)
+            return
+        if letter == policy.ANCHOR_OPTION:
+            self.anchor_runaway(combatant)
             return
         if letter in ("b", "j"):
             self.melee_attack(combatant)
@@ -2276,7 +2311,7 @@ class TurnRunner:
                     f"{combatant.name} pushes {push_mana} mana into "
                     f"{spell.name}; the cap is {cap}"
                 )
-        cost = spell.level + push_mana
+        cost = self._casting_cost(spell, push_mana)
         # The Channel used and its kind, with Channel rules injected.
         channel_used: tuple[int, str] | None = None
         if magic is not None and magic.channel is not None:
@@ -2423,8 +2458,31 @@ class TurnRunner:
             self._resolve_cast(
                 combatant, spell, magic, sum(record.faces), cast_sequence, refund_cap
             )
+        elif sum(record.faces) == CASTING_RUNAWAY_ROLL:
+            self._begin_runaway(combatant, spell, cost)
         if borrowed and borrowing is not None:
             self._debt_roll(combatant, spell, borrowing)
+
+    @staticmethod
+    def _anchored_growth(
+        combatant: CombatantState, spell: Spell, magic: MagicRules
+    ) -> int:
+        """The growth a Runaway the caster anchored earned, added to its next
+        cast of that spell's rolled effect and consumed by it
+        (``anchored_turns_running``). 0, and nothing consumed, for a spell
+        with no rolled effect (a continuing spell keeps its entry until it
+        leaves ``active_spells``) or with no Runaway rules injected."""
+        if magic.runaway is None or spell_effect_kind(spell) is None:
+            return 0
+        turns = combatant.anchored_turns_running.pop(spell.key, None)
+        if turns is None:
+            return 0
+        return magic.runaway.effect_bonus(turns)
+
+    @staticmethod
+    def _casting_cost(spell: Spell, push_mana: int) -> int:
+        """A casting's whole mana: the spell's cost and any pushed mana."""
+        return spell.level + push_mana
 
     def _resolve_cast(
         self,
@@ -2469,6 +2527,12 @@ class TurnRunner:
             if push_bonus:
                 effect_bonus += push_bonus
                 bonus_sources.append(f"{push_bonus:+d} pushed mana")
+        # An anchored Runaway's growth is used up only once the spell is sure
+        # to take effect, past any Control Roll.
+        growth = 0 if magic is None else self._anchored_growth(combatant, spell, magic)
+        if growth:
+            effect_bonus += growth
+            bonus_sources.append(f"{growth:+d} anchored Runaway")
         if effect_bonus:
             self.emit(
                 "status",
@@ -2652,8 +2716,8 @@ class TurnRunner:
         per mana invested, and the same injury and off-balance penalties the
         casting roll took. A natural total on the injected automatic-Runaway
         list is a Runaway whatever the target; otherwise a failure's margin
-        picks its band. A Runaway is flagged in the payload; its later turns
-        are tarmar-engine #30's.
+        picks its band. A Runaway is flagged in the payload and, with injected
+        Runaway rules, begins (:meth:`_begin_runaway`).
 
         Returns:
             Whether the spell takes effect, and the push's effect bonus.
@@ -2714,6 +2778,8 @@ class TurnRunner:
                 "runaway": runaway,
             },
         )
+        if runaway:
+            self._begin_runaway(combatant, spell, self._casting_cost(spell, push_mana))
         return takes_effect, push_bonus
 
     def _debt_roll(
@@ -2732,7 +2798,8 @@ class TurnRunner:
         on this cast. A natural total on the injected
         automatic list fails whatever the target. A failure is narrated by
         its injected label, in a second event, and flagged a Runaway when the
-        rules make it one; the spell has already resolved and stands.
+        rules make it one, which with injected Runaway rules begins
+        (:meth:`_begin_runaway`); the spell has already resolved and stands.
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
@@ -2782,6 +2849,270 @@ class TurnRunner:
                 "runaway": failure.is_runaway,
             },
         )
+        if failure.is_runaway:
+            self._begin_runaway(
+                combatant,
+                spell,
+                self._casting_cost(spell, combatant.chosen_push_mana),
+            )
+
+    # ----------------------------------------------------------------- runaway
+    def _runaway_rules(self, combatant: CombatantState) -> RunawayRules:
+        """The profile's injected Runaway rules.
+
+        Raises:
+            ValueError: when the profile has none, for an action that needs
+                them.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.runaway is None:
+            raise ValueError(
+                f"{combatant.name} anchors a Runaway but the "
+                f"{self.profile.name!r} profile has no Runaway rules"
+            )
+        return magic.runaway
+
+    def _begin_runaway(
+        self,
+        combatant: CombatantState,
+        spell: Spell,
+        original_cost: int,
+        caught_from: int | None = None,
+    ) -> None:
+        """Start a Runaway on a combatant, with injected Runaway rules.
+
+        Without them nothing happens: the payload flag that called it is the
+        whole of a Runaway, as before tarmar-engine #30. A combatant already
+        feeding a Runaway keeps that one (house reading
+        ``one_runaway_at_a_time``), and the log says so.
+
+        Args:
+            combatant: The combatant the spell runs away from.
+            spell: The spell.
+            original_cost: The mana its casting cost, pushed mana included.
+            caught_from: The combatant a failed helper's anchor caught it
+                from, or ``None``.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.runaway is None:
+            return
+        if combatant.runaway is not None:
+            kept = get_spell(combatant.runaway.spell_key)
+            self.emit(
+                "info",
+                f"{combatant.name} already feeds a runaway {kept.name}; "
+                f"{spell.name} starts no second Runaway",
+                actor=combatant.name,
+                payload={"spell": spell.key, "runaway_kept": kept.key},
+            )
+            return
+        combatant.runaway = RunawayState(
+            spell_key=spell.key,
+            original_cost=original_cost,
+            turns_running=0,
+            caught_from=caught_from,
+        )
+        payload: dict[str, str | int | bool] = {
+            "runaway_begins": True,
+            "spell": spell.key,
+            "original_cost": original_cost,
+        }
+        caught_note = ""
+        if caught_from is not None:
+            payload["caught_from"] = caught_from
+            caught_note = f", caught from {self.state.by_id(caught_from).name}"
+        self.emit(
+            "status",
+            f"{spell.name} runs away and will feed on {combatant.name} each turn "
+            f"({original_cost} mana cast{caught_note})",
+            actor=combatant.name,
+            payload=payload,
+        )
+
+    def _feed_runaway(self, caster: CombatantState, rules: RunawayRules) -> None:
+        """One later turn of a caster's Runaway, in phase 2 (house reading
+        ``runaway_drain_in_renew_phase``).
+
+        The drain comes off the caster's mana first. When the mana is gone a
+        conscious caster falls unconscious by the engine's one path
+        (:meth:`_fall_unconscious`), and the rest of the drain, and every
+        later turn's, comes off the injected overflow pool. Past the injected
+        death line the caster dies (:meth:`_die`) and the Runaway ends with
+        them. The spell's effect is not applied again: the turns it has run
+        and the injected growth per turn are carried in the payload for the
+        caller to narrate (house reading
+        ``runaway_effect_is_narrated_not_reapplied``).
+        """
+        running = caster.runaway
+        if running is None:
+            return
+        spell = get_spell(running.spell_key)
+        running.turns_running += 1
+        drain = rules.drain(running.original_cost)
+        drained_mana = min(drain, max(0, caster.mana))
+        caster.mana -= drained_mana
+        drained_pool = drain - drained_mana
+        pool = rules.overflow_pool
+        setattr(caster, pool, getattr(caster, pool) - drained_pool)
+        pool_left = getattr(caster, pool)
+        falls = caster.conscious and caster.mana <= 0
+        drained = f"{drained_mana} mana ({caster.mana} left)"
+        if drained_pool:
+            drained += f" and {drained_pool} {pool} ({pool_left} left)"
+        message = (
+            f"{spell.name} feeds on {caster.name}, turn {running.turns_running}: "
+            f"it drains {drained}"
+        )
+        if falls:
+            message += f"; {caster.name} falls unconscious"
+        drain_sequence = self.emit(
+            "status",
+            message,
+            actor=caster.name,
+            payload={
+                "runaway_drain": True,
+                "spell": spell.key,
+                "turn": running.turns_running,
+                "drained_mana": drained_mana,
+                "drained_pool": drained_pool,
+                "pool": pool,
+                "pool_left": pool_left,
+                "mana": caster.mana,
+                "unconscious": falls or not caster.conscious,
+                "effect_bonus_per_turn": rules.effect_bonus_per_turn,
+            },
+        )
+        if falls:
+            self._fall_unconscious(caster, [])
+        death_line = rules.death_line(caster)
+        if not drained_pool or death_line is None:
+            return
+        if not rules.past_death_line(caster):
+            return
+        self.emit(
+            "status",
+            f"{spell.name} has drained {caster.name}'s {pool} to {pool_left}, "
+            f"at or past the line at {death_line}; {caster.name} dies",
+            actor=caster.name,
+            payload={
+                "runaway_death": True,
+                "spell": spell.key,
+                "pool": pool,
+                "pool_left": pool_left,
+                "death_line": death_line,
+            },
+        )
+        caster.fatal_chain.append(drain_sequence)
+        self._die(caster)
+
+    def anchor_runaway(self, anchorer: CombatantState) -> None:
+        """Phase 5's anchor: take a Runaway back under control.
+
+        A combatant anchoring its own Runaway rolls the injected self-anchor
+        roll; one anchoring another's pays the injected helper cost first,
+        whatever comes of it, and rolls the helper roll. Either roll is
+        roll-under against the injected attribute less the casting roll's
+        injury band and off-balance penalty (house reading
+        ``anchor_takes_casting_penalties``). Held: the Runaway ends; a
+        continuing spell becomes an ordinary active spell of the anchorer, to
+        renew or let lapse, and any other spell, its effect already had,
+        simply stops (house reading ``anchored_spell_becomes_the_anchorers``).
+        Either way the turns it ran are recorded for its growth
+        (:meth:`_anchored_growth`).
+        Failed: the Runaway runs on, and a failed helper is caught by one of
+        its own when the rules say so.
+
+        Raises:
+            ValueError: with no Runaway rules injected, or no anchor chosen.
+        """
+        rules = self._runaway_rules(anchorer)
+        if anchorer.chosen_anchor is None:
+            raise ValueError(f"{anchorer.name} anchors no one's Runaway")
+        owner = self.state.by_id(anchorer.chosen_anchor)
+        running = owner.runaway
+        if running is None or not owner.alive:
+            self.emit(
+                "info",
+                f"{anchorer.name} finds no Runaway on {owner.name} to anchor",
+                actor=anchorer.name,
+                payload={"anchor_target": owner.combatant_id},
+            )
+            return
+        spell = get_spell(running.spell_key)
+        helping = owner is not anchorer
+        rule = rules.helper_anchor if helping else rules.self_anchor
+        cost = rules.helper_cost(running.original_cost) if helping else 0
+        if anchorer.mana < cost:
+            self.emit(
+                "info",
+                f"{anchorer.name} lacks the {cost} mana to anchor "
+                f"{owner.name}'s {spell.name}",
+                actor=anchorer.name,
+                payload={"anchor_target": owner.combatant_id},
+            )
+            return
+        anchorer.mana -= cost
+        target = attribute_score(anchorer, rule.attribute) - self._casting_penalties(
+            anchorer
+        )
+        anchor = self._roll_under(
+            rule.dice, purpose="anchor", target=target, automatic_totals=frozenset()
+        )
+        held = anchor.margin <= 0
+        anchor_sequence = self.emit_roll(
+            anchor.record,
+            actor=anchorer.name,
+            versus=rule.attribute,
+            roll_under=True,
+            outcome="held" if held else "failed",
+        )
+        caught = not held and helping and rules.helper_failure_catches_helper
+        payload: dict[str, str | int | bool | None] = {
+            "spell": spell.key,
+            "anchor_target": owner.combatant_id,
+            "helper": anchorer.combatant_id if helping else None,
+            "held": held,
+            "anchor_roll": anchor_sequence,
+            "target": target,
+            "paid": cost,
+            "mana_left": anchorer.mana,
+            "caught": caught,
+        }
+        whose = f"{owner.name}'s {spell.name}" if helping else spell.name
+        paid_note = f" ({cost} mana paid, {anchorer.mana} left)" if helping else ""
+        if held:
+            owner.runaway = None
+            if spell.key in owner.active_spells:
+                self._end_active_spell(owner, spell.key)
+            if spell.continuing and spell.key not in anchorer.active_spells:
+                anchorer.active_spells.append(spell.key)
+            anchorer.anchored_turns_running[spell.key] = running.turns_running
+            payload["runaway_turns_running"] = running.turns_running
+            control = (
+                f"it is {anchorer.name}'s to renew or let lapse"
+                if spell.continuing
+                else "it stops"
+            )
+            self.emit(
+                "status",
+                f"{anchorer.name} anchors {whose} after {running.turns_running} "
+                f"turn(s){paid_note}; {control}",
+                actor=anchorer.name,
+                payload=payload,
+            )
+            return
+        caught_note = f"; {anchorer.name} is caught by it" if caught else ""
+        self.emit(
+            "status",
+            f"{anchorer.name} fails to anchor {whose}{paid_note}; it runs on"
+            f"{caught_note}",
+            actor=anchorer.name,
+            payload=payload,
+        )
+        if caught:
+            self._begin_runaway(
+                anchorer, spell, running.original_cost, caught_from=owner.combatant_id
+            )
 
     # ------------------------------------------------------------------ damage
     def apply_damage(
@@ -2859,6 +3190,11 @@ class TurnRunner:
             return
         if not self.profile.reactions.unconscious(combatant):
             return
+        self._fall_unconscious(combatant, chain)
+
+    def _fall_unconscious(self, combatant: CombatantState, chain: list[int]) -> None:
+        """The engine's one fall into unconsciousness: the figure drops,
+        the event is logged, and its grapples end."""
         combatant.conscious = False
         combatant.prone = True
         if chain:
