@@ -57,6 +57,7 @@ from .magic import (
     BorrowingRules,
     ChannelRules,
     ChannelUnclassifiedSpell,
+    CounterspellRules,
     MagicRules,
     PushRules,
     RollUnderRule,
@@ -161,6 +162,11 @@ class Candidate:
     #: The combatant whose Runaway the option anchors, the actor's own id for
     #: its own (tarmar-engine #30), or ``None`` for any other option.
     anchor_target: int | None = None
+    #: The mana a counter commits against the caster in ``target_id``
+    #: (tarmar-engine #31), or ``None`` for any other option.
+    counter_mana: int | None = None
+    #: Does the cast press a countered spell again (tarmar-engine #31)?
+    escalate: bool = False
 
     def to_payload(self) -> dict:
         payload = {
@@ -188,6 +194,11 @@ class Candidate:
         # And for an anchor, only on the anchor option.
         if self.anchor_target is not None:
             payload["anchor_target"] = self.anchor_target
+        # And for a counter and an escalation, only on those options.
+        if self.counter_mana is not None:
+            payload["counter_mana"] = self.counter_mana
+        if self.escalate:
+            payload["escalate"] = True
         return payload
 
 
@@ -729,7 +740,11 @@ def choose_option(
     as a borrowing variant, for a player; the AI does not borrow
     (:func:`_borrow_candidates`). With Runaway rules, a Runaway the actor
     may anchor is offered, and the AI always anchors its own
-    (:func:`_anchor_candidates`). A caller driving the engine with this
+    (:func:`_anchor_candidates`). With Counterspell rules, a cast pressing a
+    countered spell again is flagged and left to a player
+    (:func:`_mark_escalations`), and a counter against each enemy mage is
+    offered, for a player (:func:`_counter_candidates`);
+    the AI neither counters nor escalates. A caller driving the engine with this
     policy passes the same rules the profile carries, e.g.
     ``functools.partial(choose_option, magic=rules)``: the engine refuses a
     cast past the Channel, so a menu built without them can offer one it
@@ -746,6 +761,8 @@ def choose_option(
         decision.candidates.extend(
             _borrow_candidates(state, actor, magic, magic.borrowing)
         )
+    if magic is not None and magic.counterspell is not None:
+        _mark_escalations(actor, decision)
     if magic is not None and magic.runaway is not None:
         anchors = _anchor_candidates(state, actor, magic.runaway)
         decision.candidates.extend(anchors)
@@ -759,7 +776,114 @@ def choose_option(
         )
         if own is not None:
             decision.chosen = own
+    if magic is not None and magic.counterspell is not None:
+        decision.candidates.extend(
+            _counter_candidates(state, actor, magic.counterspell)
+        )
     return decision
+
+
+def _is_mage(actor: CombatantState) -> bool:
+    """A spell known, or a spell skill recorded."""
+    return bool(actor.spells or actor.spell_skill_levels)
+
+
+def _mark_escalations(actor: CombatantState, decision: Decision) -> None:
+    """Flag every cast that presses the actor's countered spell again.
+
+    A cast of the contest's spell at the contest's target escalates
+    (tarmar-engine #31): the caster pays again for another opposed roll. Each
+    such cast, pushed and borrowing variants included, is marked
+    ``escalate`` and scored :data:`PLAYER_ONLY_SCORE`, for a player; the AI
+    does not escalate (house reading ``ai_neither_counters_nor_escalates``),
+    so when it had chosen one it takes the best of the rest by the rule it
+    chose with (the highest score, the first listed on a tie). Any other
+    choice ends the contest when the engine records it.
+    """
+    contest = actor.contest
+    if contest is None:
+        return
+    spell = get_spell(contest.spell_key)
+    for candidate in decision.candidates:
+        if (
+            candidate.spell_key != contest.spell_key
+            or candidate.target_id != contest.target_id
+        ):
+            continue
+        candidate.escalate = True
+        candidate.score = PLAYER_ONLY_SCORE
+        candidate.rationale = (
+            f"Press the countered {spell.name} again (countered "
+            f"{contest.turns} time(s)), paying again for another opposed roll; "
+            f"{candidate.rationale}; the AI does not escalate = "
+            f"{score_text(PLAYER_ONLY_SCORE)}"
+        )
+    if not decision.chosen.escalate:
+        return
+    others = [candidate for candidate in decision.candidates if not candidate.escalate]
+    decision.chosen = max(others, key=lambda candidate: candidate.score)
+
+
+def _counter_candidates(
+    state: BattleState, actor: CombatantState, counterspell: CounterspellRules
+) -> list[Candidate]:
+    """The counters the actor may declare (tarmar-engine #31).
+
+    A mage counters a named enemy caster, not a chosen cast (house reading
+    ``counter_names_a_caster``): for each enemy mage, one candidate per
+    commitment the actor can afford
+    (:meth:`.magic.CounterspellRules.commitments`), whether or not that
+    caster has chosen its action yet, so a defender that chooses first
+    counters blind. The counter opposes that caster's cast this turn
+    whatever its target, and lapses, its mana spent, if no cast comes. The
+    rationale names the cast when the caster has already chosen one.
+    Scored :data:`PLAYER_ONLY_SCORE` and
+    appended last, for a player; the AI does not counter (house reading
+    ``ai_neither_counters_nor_escalates``). The rationale names the bonus the
+    commitment buys on the opposed roll, less the injury band the defender's
+    roll takes.
+    """
+    if not _is_mage(actor):
+        return []
+    candidates: list[Candidate] = []
+    injury, _off_balance = _casting_penalties(actor)
+    attribute = attribute_score(actor, counterspell.opposed_attribute)
+    for caster in state.enemies_of(actor):
+        if not _is_mage(caster):
+            continue
+        for mana in counterspell.commitments(actor.mana):
+            bonus = counterspell.bonus_for(mana)
+            candidates.append(
+                Candidate(
+                    actions.COUNTER_OPTION,
+                    f"{actions.option_name(actions.COUNTER_OPTION)} "
+                    f"{caster.name} ({mana} MANA)",
+                    PLAYER_ONLY_SCORE,
+                    f"{_counter_note(caster)}: "
+                    f"commit {mana} mana ({actor.mana - mana} left) for "
+                    f"{bonus:+d} on the opposed roll {counterspell.opposed_dice} "
+                    f"+ {counterspell.opposed_attribute} {attribute} less "
+                    f"{injury} injury; the AI does not counter = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}",
+                    target_id=caster.combatant_id,
+                    counter_mana=mana,
+                )
+            )
+    return candidates
+
+
+def _counter_note(caster: CombatantState) -> str:
+    """What a counter against this caster meets, as far as the menu knows:
+    the cast it has chosen, or that it has chosen nothing yet."""
+    if actions.base_option(caster.chosen_letter) not in actions.CAST_OPTIONS:
+        return f"Oppose whatever {caster.name} casts this turn (not yet known)"
+    spell = get_spell(caster.chosen_spell)
+    pressed = (
+        f", pressed again after {caster.contest.turns} counter(s)"
+        if caster.contest is not None
+        else ""
+    )
+    return f"Oppose {caster.name}'s {spell.name}{pressed}"
 
 
 def _anchor_candidates(
@@ -792,7 +916,7 @@ def _anchor_candidates(
                 anchor_target=actor.combatant_id,
             )
         )
-    if not (actor.spells or actor.spell_skill_levels):
+    if not _is_mage(actor):
         return candidates
     for caster in state.combatants:
         if caster is actor or not caster.alive or caster.runaway is None:

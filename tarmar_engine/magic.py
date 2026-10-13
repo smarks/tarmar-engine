@@ -1,6 +1,6 @@
-"""Injected magic rules: the casting success tiers, Push, Channel and
-Borrowing and Runaway (tarmar-engine #26, #27, #29, #28, #30; split from
-tarmar-studio #825).
+"""Injected magic rules: the casting success tiers, Push, Channel,
+Borrowing, Runaway and Counterspell (tarmar-engine #26, #27, #29, #28, #30,
+#31; split from tarmar-studio #825).
 
 **No rulebook numbers live here.** The magic-mechanics pages these mechanics
 come from are DM-only, and this package is public. Following the classic
@@ -16,7 +16,7 @@ A profile with no ``MagicRules`` (the default, :data:`~tarmar_engine.profile.
 TARMAR`) runs the engine exactly as before: no tiers, no Push, no Channel,
 the same events and payloads.
 
-Five mechanics are modelled so far:
+Six mechanics are modelled so far:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -51,6 +51,12 @@ Five mechanics are modelled so far:
   roll to anchor it again, and another mage may pay and roll to do it for
   them; whoever anchors it holds an ordinary active spell, to renew or let
   lapse.
+* **Counterspell.** Any mage may commit mana to counter an enemy caster's
+  spell this turn (:class:`CounterspellRules`). When the spell is cast,
+  before its casting roll, caster and defender make an opposed roll on an
+  injected attribute, each gaining a bonus per step of mana invested; a
+  defender who wins cancels the spell, its mana spent, and the caster may
+  press it again on a later turn, paying again for another opposed roll.
 
 The outcome names, tier names and labels are injected too: the engine's own
 vocabulary is only "borrows", "debt", "held", "failed" and whether an
@@ -640,6 +646,71 @@ class RunawayRules:
 
 
 @dataclass(frozen=True)
+class CounterspellRules:
+    """Counterspell's numbers: the opposed roll, its bonus and its tie, and
+    the bounds on what a defender commits.
+
+    Attributes:
+        opposed_dice: The dice both sides roll.
+        opposed_attribute: One of :data:`MAGIC_ATTRIBUTES`; each side adds
+            its own score.
+        mana_per_bonus: A side's total gains 1 per this much mana invested:
+            the caster's whole casting cost, pushed mana included, and the
+            defender's commitment. Greater than 0.
+        ties_go_to_caster: Does an equal total let the spell through?
+        defender_min_mana: The least a defender may commit; not negative.
+        defender_max_mana: The most a defender may commit, or ``None``: the
+            purse alone bounds it. Channel does not (an engine reading: the
+            defender casts no spell of its own, so no spell's kind of magic
+            names a Channel to apply).
+    """
+
+    opposed_dice: str
+    opposed_attribute: str
+    mana_per_bonus: int
+    ties_go_to_caster: bool
+    defender_min_mana: int
+    defender_max_mana: int | None = None
+
+    def __post_init__(self) -> None:
+        parse_dice_expression(self.opposed_dice)  # raises on a bad expression
+        if self.opposed_attribute not in MAGIC_ATTRIBUTES:
+            raise ValueError(
+                f"opposed_attribute must be one of {sorted(MAGIC_ATTRIBUTES)}, "
+                f"not {self.opposed_attribute!r}"
+            )
+        if self.mana_per_bonus <= 0:
+            raise ValueError("the mana per bonus step must be greater than 0")
+        if self.defender_min_mana < 0:
+            raise ValueError("a defender's least commitment must not be negative")
+        if (
+            self.defender_max_mana is not None
+            and self.defender_max_mana < self.defender_min_mana
+        ):
+            raise ValueError("a defender's most commitment is below its least")
+
+    def bonus_for(self, mana_invested: int) -> int:
+        """The opposed roll's bonus for this much mana invested."""
+        return mana_invested // self.mana_per_bonus
+
+    def commitments(self, mana: int) -> range:
+        """Every commitment a defender with ``mana`` may make, least first;
+        empty when it cannot afford the least."""
+        most = (
+            mana
+            if self.defender_max_mana is None
+            else min(mana, self.defender_max_mana)
+        )
+        return range(self.defender_min_mana, most + 1)
+
+    def caster_gets_through(self, caster_total: int, defender_total: int) -> bool:
+        """Does the caster's total beat the defender's, by the tie rule?"""
+        if caster_total == defender_total:
+            return self.ties_go_to_caster
+        return caster_total > defender_total
+
+
+@dataclass(frozen=True)
 class MagicRules:
     """Every magic-mechanics number the engine needs, injected by the caller.
 
@@ -652,6 +723,8 @@ class MagicRules:
         borrowing: Borrowing's numbers, or ``None`` when no caster may borrow.
         runaway: Runaway's numbers, or ``None``: a Runaway is flagged where it
             starts and has no later turns.
+        counterspell: Counterspell's numbers, or ``None``: no spell may be
+            countered.
     """
 
     casting_success_tiers: tuple[CastingSuccessTier, ...] = ()
@@ -659,6 +732,7 @@ class MagicRules:
     channel: ChannelRules | None = None
     borrowing: BorrowingRules | None = None
     runaway: RunawayRules | None = None
+    counterspell: CounterspellRules | None = None
 
     def __post_init__(self) -> None:
         seen: set[int] = set()

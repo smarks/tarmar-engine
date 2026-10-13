@@ -127,7 +127,12 @@ def is_yielded(key: str) -> bool:
 def option_name(key: str) -> str:
     """The printed name of any option key the menu can carry."""
     base = base_option(key)
-    name = MOVE_VARIANTS.get(base) or ALL_OPTIONS.get(base) or base.upper()
+    name = (
+        MOVE_VARIANTS.get(base)
+        or ALL_OPTIONS.get(base)
+        or MAGIC_ACTIONS.get(base)
+        or base.upper()
+    )
     if is_yielded(key):
         return f"{name} (YIELD: MOVE IN FINAL MOVEMENT)"
     return name
@@ -158,6 +163,17 @@ GRAPPLER_ACTIONS: dict[str, str] = {
     "squeeze": "SQUEEZE",
     "release": "RELEASE",
 }
+
+# The two CAST SPELL letters: disengaged (h) and engaged or in hand-to-hand (r).
+CAST_OPTIONS: frozenset[str] = frozenset({"h", "r"})
+
+# Counterspell (tarmar-engine #31) is a magic reaction with no row in
+# action-options.md's tables. It is keyed by its own token, as the grapple
+# vocabularies are, so the lettered tables the drift guard pins stay the
+# document's. A whole action that stands still; offered only with injected
+# Counterspell rules (``tarmar_engine.magic.CounterspellRules``).
+COUNTER_OPTION = "counter"
+MAGIC_ACTIONS: dict[str, str] = {COUNTER_OPTION: "COUNTER SPELL"}
 
 
 def legal_actions(

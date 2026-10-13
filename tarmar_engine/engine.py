@@ -36,10 +36,12 @@ critical is reported as a status event but not ticked (the rules publish no
 rate — same stance as ``tarmar_rules``'s report-only flags). The casting
 success tiers, Push, Channel, Borrowing and Runaway's later turns run only
 on a profile with injected :class:`~tarmar_engine.magic.MagicRules`
-(tarmar-engine #26/#27/#29/#28/#30), which carry every number they use;
-Counterspell is not modelled yet (tarmar-engine #31, from tarmar-studio
-#825). A Runaway feeds on its caster in phase 2, before the renewals, and is
-anchored as a phase-5 action.
+(tarmar-engine #26/#27/#29/#28/#30/#31), which carry every number they use.
+A Runaway feeds on its caster in phase 2, before the renewals, and is
+anchored as a phase-5 action. A counter is declared as a phase-5 action and
+meets its caster's spell when the spell is cast, before the casting roll,
+whatever the two figures' DEX order (house reading
+``counter_resolves_at_the_cast``).
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -60,6 +62,7 @@ from .dice import parse_dice_expression
 from .magic import (
     BorrowingRules,
     CastingSuccessTier,
+    CounterspellRules,
     MagicRules,
     PushRules,
     RunawayRules,
@@ -71,6 +74,8 @@ from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
     BattleState,
     CombatantState,
+    ContestState,
+    CounterState,
     GroundWeapon,
     RunawayState,
     WeaponState,
@@ -110,6 +115,14 @@ CASTING_FUMBLE_ROLL_FLOOR = 16
 # turns the engine runs (tarmar-engine #30).
 CASTING_RUNAWAY_ROLL = 18
 CASTING_MANA_LOST_ROLLS = frozenset({17, CASTING_RUNAWAY_ROLL})
+
+#: Why a Counterspell contest ended (tarmar-engine #31), by the key its
+#: ``contest_ended`` event carries, as the log says it.
+CONTEST_END_REASONS: dict[str, str] = {
+    "another_action": "chooses another action",
+    "unopposed": "presses it again and no counter meets it",
+    "through": "gets past the counter",
+}
 
 # Gait by movement option, kept under this name for every reader of it; the
 # table lives with the rest of the movement rules (tarmar_engine.movement).
@@ -206,6 +219,10 @@ class TurnRunner:
         # it is, and is spent by it (#811).
         self._off_balance_actor: int | None = None
         self._acting = False
+        # The defenders whose counter action has been taken this Actions
+        # phase, at their own action or at their caster's cast, whichever
+        # came first (tarmar-engine #31).
+        self._counters_taken: set[int] = set()
 
     # ------------------------------------------------------------------ events
     def emit(
@@ -535,6 +552,7 @@ class TurnRunner:
             combatant.chosen_push_mana = decision.chosen.push_mana
             combatant.chosen_borrow = decision.chosen.borrow
             combatant.chosen_anchor = decision.chosen.anchor_target
+            combatant.chosen_counter = self._counter_choice(decision.chosen)
             combatant.chosen_destination = decision.chosen.destination
             # "Forecast" up front because this block is written before any
             # die is thrown: its P(hit) is what the AI expected, not what
@@ -548,6 +566,8 @@ class TurnRunner:
                 actor=combatant.name,
                 payload=self._decision_payload(decision),
             )
+            if combatant.contest is not None and not self._escalates(combatant):
+                self._end_contest(combatant, "another_action")
             # A hex the option may not take is refused here, in the log, and
             # the option makes its derived move instead (tarmar-engine #20).
             self._placed_destination(combatant)
@@ -597,6 +617,7 @@ class TurnRunner:
 
     def phase_actions(self) -> None:
         self.begin_phase(5, "Actions", "adjusted-DEX order, high to low")
+        self._counters_taken = set()
         order = sorted(
             self.state.active_combatants(),
             key=lambda c: (-c.dexterity, c.combatant_id),
@@ -605,6 +626,7 @@ class TurnRunner:
             if not combatant.active:
                 continue  # felled earlier in this very phase
             self.execute_action(combatant)
+        self._lapse_counters()
 
     # Phase 6 -----------------------------------------------------------------
     def phase_forced_retreat(self) -> None:
@@ -1149,6 +1171,9 @@ class TurnRunner:
             return
         if letter == policy.ANCHOR_OPTION:
             self.anchor_runaway(combatant)
+            return
+        if letter == actions.COUNTER_OPTION:
+            self.declare_counter(combatant)
             return
         if letter in ("b", "j"):
             self.melee_attack(combatant)
@@ -2276,9 +2301,13 @@ class TurnRunner:
         Borrowing rules a cast the caster chose to borrow for, and cannot
         afford, empties the pool and adds the shortfall to its debt when the
         cast pays; after the spell has resolved, whatever became of it, the
-        caster makes the debt roll (:meth:`_debt_roll`). With no
-        ``MagicRules`` none of these runs and a cast logs exactly what it
-        always has.
+        caster makes the debt roll (:meth:`_debt_roll`). With injected
+        Counterspell rules, a cast the caster can pay for first meets every
+        counter declared against it (:meth:`_oppose_cast`), before the
+        casting roll: countered, the spell makes no casting roll, its whole
+        mana is paid (borrowing included, and the debt roll follows), and the
+        caster may press it again on a later turn. With no ``MagicRules``
+        none of these runs and a cast logs exactly what it always has.
 
         Raises:
             ValueError: for a push or a borrowing the profile's rules do not
@@ -2378,6 +2407,34 @@ class TurnRunner:
                     f"{combatant.name} borrows {shortfall} mana for {spell.name} "
                     f"owing {combatant.debt}; the debt cap is {cap}"
                 )
+        channel_note = "" if channel is None else f"; Channel {channel}"
+        contest = self._oppose_cast(combatant, spell, cost)
+        if contest is not None:
+            cost_note = self._pay_cast(combatant, spell, push_mana, shortfall)
+            defenders = ", ".join(
+                self.state.by_id(defender_id).name
+                for defender_id in contest.defender_ids
+            )
+            self.emit(
+                "status",
+                f"{combatant.name}'s {spell.name} is countered by {defenders}: "
+                f"no casting roll ({cost_note}{channel_note}); it may be pressed "
+                "again on a later turn",
+                actor=combatant.name,
+                payload={
+                    "spell_countered": True,
+                    "spell": spell.key,
+                    "defenders": list(contest.defender_ids),
+                    "contest_turns": contest.turns,
+                    "mana_left": combatant.mana,
+                    **self._cast_cost_keys(
+                        combatant, push_mana, channel_used, shortfall
+                    ),
+                },
+            )
+            if shortfall and borrowing is not None:
+                self._debt_roll(combatant, spell, borrowing)
+            return
         attribute_name = spell.attribute
         base_attribute = (
             combatant.intelligence if attribute_name == "INT" else combatant.wisdom
@@ -2410,41 +2467,22 @@ class TurnRunner:
         pays = succeeded or record.total in CASTING_MANA_LOST_ROLLS
         borrowed = shortfall if pays else 0
         if pays:
-            combatant.mana -= cost - borrowed
-            combatant.debt += borrowed
-            paid_text = (
-                f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
-            )
-            cost_note = f"{paid_text} mana, {combatant.mana} left"
-            if borrowed:
-                cost_note += f", borrows {borrowed}, debt {combatant.debt}"
+            cost_note = self._pay_cast(combatant, spell, push_mana, borrowed)
         else:
             cost_note = f"no mana spent, {combatant.mana} left"
-        if channel is not None:
-            cost_note += f"; Channel {channel}"
         payload: dict[str, str | int | bool] = {
             "spell": spell.key,
             "success": succeeded,
             "mana_left": combatant.mana,
             "casting_roll": cast_sequence,
+            **self._cast_cost_keys(combatant, push_mana, channel_used, borrowed),
         }
-        # Only a profile that offers Push carries the key, so every other
-        # cast logs the payload it always has.
-        if magic is not None and magic.push is not None:
-            payload["push_mana"] = push_mana
-        # Likewise the Channel keys, only with Channel rules injected.
-        if channel_used is not None:
-            payload["channel"], payload["channel_kind"] = channel_used
-        # And the Borrowing keys, only with Borrowing rules injected.
-        if borrowing is not None:
-            payload["borrowed"] = borrowed
-            payload["debt"] = combatant.debt
         self.emit(
             "action",
             f"{combatant.name} casts {spell.name} "
             f"(3d6 ≤ {attribute_name} {attribute}): "
             f"{'success' if succeeded else 'failure'} "
-            f"({cost_note})",
+            f"({cost_note}{channel_note})",
             actor=combatant.name,
             payload=payload,
         )
@@ -2483,6 +2521,42 @@ class TurnRunner:
     def _casting_cost(spell: Spell, push_mana: int) -> int:
         """A casting's whole mana: the spell's cost and any pushed mana."""
         return spell.level + push_mana
+
+    def _pay_cast(
+        self, caster: CombatantState, spell: Spell, push_mana: int, borrowed: int
+    ) -> str:
+        """Pay a casting's whole mana, ``borrowed`` of it added to the debt
+        (tarmar-engine #28); the payment as the log prints it."""
+        cost = self._casting_cost(spell, push_mana)
+        caster.mana -= cost - borrowed
+        caster.debt += borrowed
+        paid_text = f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
+        cost_note = f"{paid_text} mana, {caster.mana} left"
+        if borrowed:
+            cost_note += f", borrows {borrowed}, debt {caster.debt}"
+        return cost_note
+
+    def _cast_cost_keys(
+        self,
+        caster: CombatantState,
+        push_mana: int,
+        channel_used: tuple[int, str] | None,
+        borrowed: int,
+    ) -> dict[str, str | int]:
+        """The payload keys a cast's mana adds, each only with the rules that
+        bring it injected, so a profile without them logs the payload it
+        always has: ``push_mana`` with Push, ``channel`` and ``channel_kind``
+        with Channel, ``borrowed`` and ``debt`` with Borrowing."""
+        magic = self.profile.magic
+        keys: dict[str, str | int] = {}
+        if magic is not None and magic.push is not None:
+            keys["push_mana"] = push_mana
+        if channel_used is not None:
+            keys["channel"], keys["channel_kind"] = channel_used
+        if magic is not None and magic.borrowing is not None:
+            keys["borrowed"] = borrowed
+            keys["debt"] = caster.debt
+        return keys
 
     def _resolve_cast(
         self,
@@ -3112,6 +3186,269 @@ class TurnRunner:
         if caught:
             self._begin_runaway(
                 anchorer, spell, running.original_cost, caught_from=owner.combatant_id
+            )
+
+    # ------------------------------------------------------------ counterspell
+    @staticmethod
+    def _counter_choice(candidate: policy.Candidate) -> tuple[int, int] | None:
+        """The ``(caster id, mana)`` a chosen counter declares, or ``None``.
+
+        Raises:
+            ValueError: for a counter that names its caster by no id.
+        """
+        if candidate.counter_mana is None:
+            return None
+        if not isinstance(candidate.target_id, int):
+            raise ValueError(f"{candidate.name} names no caster to counter")
+        return candidate.target_id, candidate.counter_mana
+
+    @staticmethod
+    def _escalates(caster: CombatantState) -> bool:
+        """Does the caster's chosen action press its countered spell again:
+        a cast of the contest's spell at the contest's target?"""
+        contest = caster.contest
+        return (
+            contest is not None
+            and actions.base_option(caster.chosen_letter) in actions.CAST_OPTIONS
+            and caster.chosen_spell == contest.spell_key
+            and caster.chosen_target == contest.target_id
+        )
+
+    def _end_contest(self, caster: CombatantState, reason: str) -> None:
+        """End the caster's contest and say why (a key of
+        :data:`CONTEST_END_REASONS`)."""
+        contest = caster.contest
+        if contest is None:
+            return
+        caster.contest = None
+        spell = get_spell(contest.spell_key)
+        self.emit(
+            "status",
+            f"{caster.name} {CONTEST_END_REASONS[reason]}: the contest over "
+            f"{spell.name} ends after {contest.turns} counter(s)",
+            actor=caster.name,
+            payload={
+                "contest_ended": True,
+                "spell": spell.key,
+                "reason": reason,
+                "turns": contest.turns,
+            },
+        )
+
+    def _counterspell_rules(self, combatant: CombatantState) -> CounterspellRules:
+        """The profile's injected Counterspell rules.
+
+        Raises:
+            ValueError: when the profile has none, for a counter chosen.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.counterspell is None:
+            raise ValueError(
+                f"{combatant.name} counters a spell but the "
+                f"{self.profile.name!r} profile has no Counterspell rules"
+            )
+        return magic.counterspell
+
+    def declare_counter(self, defender: CombatantState) -> None:
+        """Phase 5's counter: pay the commitment and stand against the caster.
+
+        Taken at the defender's own action, or at its caster's cast when the
+        caster acts first (:meth:`_oppose_cast`), whichever comes first; the
+        other is then a logged no-op. A defender short of the mana declares
+        nothing. A declared counter meets the caster's next cast this turn,
+        or lapses at the end of the Actions phase with its mana spent
+        (:meth:`_lapse_counters`).
+
+        Raises:
+            ValueError: with no Counterspell rules injected, no counter
+                chosen, or a commitment outside the injected bounds.
+        """
+        rules = self._counterspell_rules(defender)
+        if defender.chosen_counter is None:
+            raise ValueError(f"{defender.name} counters no one's spell")
+        caster_id, mana = defender.chosen_counter
+        caster = self.state.by_id(caster_id)
+        if defender.combatant_id in self._counters_taken:
+            self.emit(
+                "info",
+                f"{defender.name}'s counter was declared at {caster.name}'s cast",
+                actor=defender.name,
+                payload={"counter_taken_at_cast": True, "caster": caster_id},
+            )
+            return
+        self._counters_taken.add(defender.combatant_id)
+        most = rules.defender_max_mana
+        if mana < rules.defender_min_mana or (most is not None and mana > most):
+            raise ValueError(
+                f"{defender.name} commits {mana} mana to a counter; the rules "
+                f"allow {rules.defender_min_mana} to "
+                f"{'the purse' if most is None else most}"
+            )
+        if defender.mana < mana:
+            self.emit(
+                "info",
+                f"{defender.name} lacks the {mana} mana to counter {caster.name}",
+                actor=defender.name,
+                payload={"caster": caster_id},
+            )
+            return
+        defender.mana -= mana
+        defender.counter = CounterState(
+            caster_id=caster_id, mana_committed=mana, declared_turn=self.state.turn
+        )
+        self.emit(
+            "status",
+            f"{defender.name} commits {mana} mana to counter {caster.name}'s "
+            f"spell ({defender.mana} left)",
+            actor=defender.name,
+            payload={
+                "counter_declared": True,
+                "caster": caster_id,
+                "mana": mana,
+                "mana_left": defender.mana,
+            },
+        )
+
+    def _oppose_cast(
+        self, caster: CombatantState, spell: Spell, cost: int
+    ) -> ContestState | None:
+        """Meet a cast with every counter against its caster (tarmar-engine
+        #31); the contest a countered cast leaves standing, or ``None``.
+
+        A defender that chose a counter against this caster and has not
+        acted yet declares it now (house reading
+        ``counter_resolves_at_the_cast``). With no counter declared the cast
+        goes on, and a contest it was pressing ends. Otherwise each side rolls
+        the injected dice plus its score in the injected attribute plus the
+        bonus its mana buys: the caster's whole casting cost, pushed mana
+        included, less the casting roll's injury band and off-balance
+        penalty; each defender's commitment, less its own injury band. The
+        caster must beat the highest defender, ties by the injected rule.
+        Every declared counter is spent either way. Through, the contest
+        ends; countered, it stands on the caster for a later turn.
+        """
+        magic = self.profile.magic
+        rules = None if magic is None else magic.counterspell
+        if rules is None:
+            return None
+        for defender in self.state.active_combatants():
+            choice = defender.chosen_counter
+            if (
+                choice is not None
+                and choice[0] == caster.combatant_id
+                and defender.combatant_id not in self._counters_taken
+            ):
+                self.declare_counter(defender)
+        opposing = [
+            (defender, counter)
+            for defender in sorted(
+                self.state.active_combatants(),
+                key=lambda combatant: combatant.combatant_id,
+            )
+            if (counter := defender.counter) is not None
+            and counter.caster_id == caster.combatant_id
+        ]
+        if not opposing:
+            self._end_contest(caster, "unopposed")
+            return None
+        attribute = rules.opposed_attribute
+        caster_bonus = rules.bonus_for(cost)
+        caster_record = self.roll_unlogged(
+            rules.opposed_dice,
+            purpose="counter",
+            modifier=attribute_score(caster, attribute)
+            + caster_bonus
+            - self._casting_penalties(caster),
+        )
+        defender_records = [
+            (
+                defender,
+                counter,
+                self.roll_unlogged(
+                    rules.opposed_dice,
+                    purpose="counter",
+                    modifier=attribute_score(defender, attribute)
+                    + rules.bonus_for(counter.mana_committed)
+                    - self.profile.reactions.injury_penalty(defender),
+                ),
+            )
+            for defender, counter in opposing
+        ]
+        highest = max(record.total for _, _, record in defender_records)
+        through = rules.caster_gets_through(caster_record.total, highest)
+        caster_sequence = self.emit_roll(
+            caster_record,
+            actor=caster.name,
+            versus=attribute,
+            outcome="gets through" if through else "countered",
+        )
+        defender_totals: list[dict[str, int]] = []
+        for defender, counter, record in defender_records:
+            sequence = self.emit_roll(
+                record,
+                actor=defender.name,
+                versus=attribute,
+                outcome="overcome" if through else "counters",
+            )
+            defender_totals.append(
+                {
+                    "defender": defender.combatant_id,
+                    "total": record.total,
+                    "mana": counter.mana_committed,
+                    "bonus": rules.bonus_for(counter.mana_committed),
+                    "roll": sequence,
+                }
+            )
+            defender.counter = None
+        defender_ids = [defender.combatant_id for defender, _ in opposing]
+        self.emit(
+            "status",
+            f"{caster.name}'s {spell.name} "
+            f"{'gets through' if through else 'is countered'}: "
+            f"{caster_record.total} against "
+            f"{', '.join(str(entry['total']) for entry in defender_totals)}",
+            actor=caster.name,
+            payload={
+                "counter_result": True,
+                "spell": spell.key,
+                "caster_total": caster_record.total,
+                "caster_bonus": caster_bonus,
+                "caster_roll": caster_sequence,
+                "defender_totals": defender_totals,
+                "countered": not through,
+            },
+        )
+        if through:
+            self._end_contest(caster, "through")
+            return None
+        turns = 1 if caster.contest is None else caster.contest.turns + 1
+        caster.contest = ContestState(
+            spell_key=spell.key,
+            target_id=caster.chosen_target,
+            defender_ids=defender_ids,
+            turns=turns,
+        )
+        return caster.contest
+
+    def _lapse_counters(self) -> None:
+        """At the end of the Actions phase, every counter no cast met lapses,
+        its mana spent (house reading ``committed_mana_is_spent``)."""
+        for defender in self.state.combatants:
+            counter = defender.counter
+            if counter is None:
+                continue
+            defender.counter = None
+            caster = self.state.by_id(counter.caster_id)
+            self.emit(
+                "status",
+                f"{defender.name}'s counter against {caster.name} meets no "
+                f"spell; its {counter.mana_committed} mana is spent",
+                actor=defender.name,
+                payload={
+                    "counter_lapsed": True,
+                    "caster": counter.caster_id,
+                    "mana": counter.mana_committed,
+                },
             )
 
     # ------------------------------------------------------------------ damage

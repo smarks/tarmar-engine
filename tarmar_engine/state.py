@@ -121,6 +121,48 @@ class RunawayState:
 
 
 @dataclass
+class CounterState:
+    """A counter a defender has declared against a caster (tarmar-engine #31).
+
+    Kept on the defender from its declaration until the caster's cast meets
+    it, or until the Actions phase ends, whichever comes first; only a
+    profile with injected Counterspell rules
+    (``tarmar_engine.magic.CounterspellRules``) declares one.
+
+    Attributes:
+        caster_id: The caster the counter opposes.
+        mana_committed: The mana the defender paid to declare it.
+        declared_turn: The turn it was declared.
+    """
+
+    caster_id: int
+    mana_committed: int
+    declared_turn: int
+
+
+@dataclass
+class ContestState:
+    """A spell standing countered, which its caster may press again
+    (tarmar-engine #31).
+
+    Kept on the caster across turns, and in the snapshot, until the caster
+    gets the spell through, a cast of it meets no counter, or the caster
+    chooses anything but casting it again at the same target.
+
+    Attributes:
+        spell_key: The spell countered.
+        target_id: The target it was cast at.
+        defender_ids: The combatants whose counter stopped it last.
+        turns: How many times it has been countered in this contest.
+    """
+
+    spell_key: str
+    target_id: int | str | None
+    defender_ids: list[int]
+    turns: int
+
+
+@dataclass
 class CombatantState:
     """One combatant's full mutable state plus the frozen stat snapshot."""
 
@@ -205,6 +247,13 @@ class CombatantState:
     #: rolled effect while the key is here. A key leaves when its spell
     #: leaves ``active_spells``. Written to a snapshot only when non-empty.
     anchored_turns_running: dict[str, int] = field(default_factory=dict)
+    #: The counter this combatant has declared and not yet seen resolved
+    #: (tarmar-engine #31), or ``None``. Written to a snapshot only when set.
+    counter: CounterState | None = None
+    #: The spell of this combatant's that stands countered, which it may
+    #: press again (tarmar-engine #31), or ``None``. Persists across turns.
+    #: Written to a snapshot only when set.
+    contest: ContestState | None = None
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
@@ -270,6 +319,10 @@ class CombatantState:
     #: id for its own (tarmar-engine #30), or ``None``. Written to a snapshot
     #: only when set.
     chosen_anchor: int | None = None
+    #: The counter the chosen action declares, ``(caster id, mana to
+    #: commit)`` (tarmar-engine #31), or ``None``. Written to a snapshot only
+    #: when set.
+    chosen_counter: tuple[int, int] | None = None
     #: The hex the chosen option places the figure at, axial ``(q, r)``, or
     #: ``None`` for the move the option derives itself (tarmar-engine #20;
     #: ``tarmar_engine.movement``).
@@ -355,6 +408,7 @@ class CombatantState:
         self.chosen_push_mana = 0
         self.chosen_borrow = False
         self.chosen_anchor = None
+        self.chosen_counter = None
         self.chosen_destination = None
         self.moved_this_turn = False
         self.dealt_damage_this_turn = False
@@ -376,6 +430,9 @@ SNAPSHOT_FIELDS_WRITTEN_WHEN_SET: tuple[str, ...] = (
     "runaway",
     "chosen_anchor",
     "anchored_turns_running",
+    "counter",
+    "contest",
+    "chosen_counter",
 )
 
 
@@ -445,8 +502,9 @@ class BattleState:
     def to_dict(self) -> dict:
         data = asdict(self)
         # A Game Master's agreement (tarmar-studio #867), Borrowing's debt
-        # and choice (tarmar-engine #28) and a Runaway and its anchor choice
-        # (#30) are written only when set, so a battle that uses none of them
+        # and choice (tarmar-engine #28), a Runaway and its anchor choice
+        # (#30) and a counter, a contest and a counter choice (#31) are
+        # written only when set, so a battle that uses none of them
         # snapshots as it always has. "Set" is "not the default": a chosen
         # anchor may name combatant 0.
         for combatant in data["combatants"]:
@@ -466,14 +524,21 @@ class BattleState:
             if entry.pop("weapon_stressed", False):
                 weapon.stressed = True
             spares = [WeaponState(**spare) for spare in entry.pop("spare_weapons", [])]
-            # JSON has no tuple: a hex comes back as a list, and a hex is
-            # compared and hashed as a tuple (tarmar-engine #20).
-            destination = entry.pop("chosen_destination", None)
-            if destination is not None:
-                entry["chosen_destination"] = tuple(destination)
+            # JSON has no tuple: a hex (tarmar-engine #20) and a counter
+            # choice (#31) come back as lists, and each is compared as a tuple.
+            for name in ("chosen_destination", "chosen_counter"):
+                pair = entry.pop(name, None)
+                if pair is not None:
+                    entry[name] = tuple(pair)
             runaway = entry.pop("runaway", None)
             if runaway is not None:
                 entry["runaway"] = RunawayState(**runaway)
+            counter = entry.pop("counter", None)
+            if counter is not None:
+                entry["counter"] = CounterState(**counter)
+            contest = entry.pop("contest", None)
+            if contest is not None:
+                entry["contest"] = ContestState(**contest)
             combatants.append(
                 CombatantState(weapon=weapon, spare_weapons=spares, **entry)
             )
