@@ -119,6 +119,18 @@ PREFERRED_STANDOFF = 3
 WALK_SLOW_MAX = 2
 
 EventSink = Callable[[dict], None]
+
+
+def _net_text(start: tuple[int, int], end: tuple[int, int]) -> str:
+    """The ground a move covered, for a movement line that counts its steps.
+
+    Steps taken and ground covered differ when a figure goes round or is
+    turned aside: a line that read "jogs 9 hex(es)" for nine steps ending a
+    hex from the start was read as nine hexes covered (tarmar-engine #37).
+    """
+    return f", ending {hexes.distance(start, end)} hex(es) from its start"
+
+
 #: Chooses a forced retreat's hex and whether the pusher advances:
 #: ``(state, pusher, victim, hexes, may_advance) -> RetreatChoice``.
 RetreatChooser = Callable[..., "policy.RetreatChoice"]
@@ -843,13 +855,15 @@ class TurnRunner:
             return
         self.emit(
             "movement",
-            f"{combatant.name} {gait}s {steps} hex(es) to {combatant.position}",
+            f"{combatant.name} {gait}s {steps} hex(es) to {combatant.position}"
+            f"{_net_text(start, combatant.position)}",
             actor=combatant.name,
             payload={
                 "from": list(start),
                 "to": list(combatant.position),
                 "gait": gait,
                 "hexes": steps,
+                "net_hexes": hexes.distance(start, combatant.position),
                 "destination": list(destination),
             },
         )
@@ -882,11 +896,12 @@ class TurnRunner:
     def move_towards_target(self, combatant: CombatantState, gait: str = "") -> None:
         """Movement toward the chosen target at the option's gait.
 
-        Steps one hex at a time toward the chosen target, stopping the moment
-        the mover becomes engaged (movement.md: figures stop immediately when
-        engaged). Running costs 1 Fatigue and sprinting 6 (movement.md);
-        jogging is free in combat. ``gait`` defaults to the chosen option's
-        (MOVE runs, CHARGE ATTACK jogs).
+        Walks :func:`movement.approach_route` toward the chosen target, the
+        straight line or, when that is blocked, a clear path round, stopping
+        the moment the mover becomes engaged (movement.md: figures stop
+        immediately when engaged). Running costs 1 Fatigue and sprinting 6
+        (movement.md); jogging is free in combat. ``gait`` defaults to the
+        chosen option's (MOVE runs, CHARGE ATTACK jogs).
         """
         if combatant.chosen_target is None:
             return
@@ -896,27 +911,14 @@ class TurnRunner:
                 actions.base_option(combatant.chosen_letter), "jog"
             )
         allowance = movement.gait_allowance(combatant, gait)
+        approach = movement.approach_route(self.state, combatant, target, allowance)
         start = combatant.position
         steps = 0
-        for _step in range(allowance):
+        for cell, facing in approach.route:
             if self.profile.engagement.is_engaged(self.state, combatant):
                 break
-            if combat_math.figures_adjacent(combatant, target):
-                break
-            occupied = self.state.occupied_hexes() - set(combatant.footprint)
-            stepped = hexes.step_towards(
-                combatant.position,
-                target.position,
-                occupied,
-                self.state.arena_radius,
-                combatant.size_hexes,
-            )
-            if stepped == combatant.position:
-                break
-            combatant.position = stepped
-            combatant.facing = hexes.direction_towards(
-                combatant.position, target.position
-            )
+            combatant.position = cell
+            combatant.facing = facing
             steps += 1
         self.face_towards(combatant, target.position)
         combatant.moved_this_turn = steps > 0
@@ -924,13 +926,15 @@ class TurnRunner:
             return
         self.emit(
             "movement",
-            f"{combatant.name} {gait}s {steps} hex(es) toward {target.name}",
+            f"{combatant.name} {gait}s {steps} hex(es) toward {target.name}"
+            f"{_net_text(start, combatant.position)}",
             actor=combatant.name,
             payload={
                 "from": list(start),
                 "to": list(combatant.position),
                 "gait": gait,
                 "hexes": steps,
+                "net_hexes": hexes.distance(start, combatant.position),
             },
         )
         cost = GAIT_FATIGUE_COSTS.get(gait, 0)
@@ -981,13 +985,15 @@ class TurnRunner:
             combatant.moved_this_turn = True
             self.emit(
                 "movement",
-                f"{combatant.name} steps {steps} hex(es) back from {nearest.name}",
+                f"{combatant.name} steps {steps} hex(es) back from {nearest.name}"
+                f"{_net_text(start, combatant.position)}",
                 actor=combatant.name,
                 payload={
                     "from": list(start),
                     "to": list(combatant.position),
                     "gait": "walk (slow)",
                     "hexes": steps,
+                    "net_hexes": hexes.distance(start, combatant.position),
                 },
             )
 

@@ -16,7 +16,7 @@ from tarmar_engine import actions, combat_math, hexes, movement, policy
 from tarmar_engine.policy import Candidate, Decision
 from tarmar_engine.state import BattleState, WeaponState
 
-from .test_battle_rules_pass import DAGGER, letters, runner_for
+from .test_battle_rules_pass import DAGGER, SMALL_BOW, letters, runner_for
 from .test_engine import duel_state, events_of_type
 from .test_state import make_combatant
 
@@ -267,13 +267,8 @@ class HthDisengageTest(TestCase):
         disengage = next(c for c in decision.candidates if c.letter == "v")
         self.assertIsNone(disengage.destination)
         self.assertIn("toward (-1, 0)", disengage.rationale)
-        self.assertAlmostEqual(
-            disengage.score,
-            policy.round_score(
-                policy.DISENGAGE_BASE_SCORE * policy.four_d6_at_most(12)
-            ),
-            places=3,
-        )
+        figure, partner = state.by_id(1), state.by_id(2)
+        self.assertEqual(disengage.score, break_away_score(state, figure, partner))
 
     def test_a_struggle_free_with_nowhere_to_step_leaves_hand_to_hand(self):
         """Struggle Free is "the same roll as a plain HTH Disengage", so it
@@ -310,6 +305,109 @@ class HthDisengageTest(TestCase):
         self.assertEqual(policy.four_d6_at_most(4), 1 / 1296)
         self.assertEqual(policy.four_d6_at_most(24), 1.0)
         self.assertEqual(policy.four_d6_at_most(14), 721 / 1296)
+
+
+def break_away_score(state, figure, partner) -> float:
+    """v's score worked by hand (tarmar-engine #38): two turns' expected
+    damage, halved — this turn spent on the roll, next turn the weapon in
+    hand if free and the strike in close if not."""
+    escape = policy.four_d6_at_most(figure.dexterity)
+    weapon, _rationale = policy._attack_forecast(figure, partner, ranged=False)
+    strike, _rationale = policy._hth_strike_forecast(state, figure, partner)
+    return policy.round_score(
+        (policy.product_of(escape, weapon) + policy.product_of(1 - escape, strike)) / 2
+    )
+
+
+def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None):
+    """tarmar-engine #38's pair, in hand-to-hand: an armoured broadsword
+    fighter and a lightly armoured archer, who traded bare-handed blows for
+    dozens of turns in tarmar-studio's seeded simulations."""
+    fighter = make_combatant(
+        1,
+        name="Fighter",
+        q=0,
+        r=0,
+        facing=0,
+        armour_tier="Medium",
+        stops=3,
+        dexterity=fighter_dexterity,
+    )
+    if fighter_weapon is not None:
+        fighter.weapon = fighter_weapon
+    archer = make_combatant(
+        2,
+        name="Archer",
+        q=1,
+        r=0,
+        facing=3,
+        weapon=SMALL_BOW,
+        armour_tier="Light",
+        stops=2,
+    )
+    return in_hand_to_hand(BattleState(arena_radius=8, combatants=[fighter, archer]))
+
+
+def scores(decision):
+    return {candidate.letter: candidate.score for candidate in decision.candidates}
+
+
+def scores_rationale(decision, letter):
+    return next(c.rationale for c in decision.candidates if c.letter == letter)
+
+
+class HthBreakAwayTest(TestCase):
+    """#38 — v is scored by what breaking away buys: the figure's weapon
+    against its partner once free, for the chance of getting free and the
+    turn the roll takes."""
+
+    def test_the_armoured_swordsman_breaks_away_from_the_archer(self):
+        state = fighter_and_archer()
+        fighter, archer = state.by_id(1), state.by_id(2)
+        decision = policy.choose_option(state, fighter)
+        self.assertEqual(decision.chosen.letter, "v")
+        self.assertEqual(
+            decision.chosen.score, break_away_score(state, fighter, archer)
+        )
+        self.assertIn("the Broadsword", decision.chosen.rationale)
+        self.assertGreater(decision.chosen.score, scores(decision)["t"])
+
+    def test_the_archer_whose_bow_is_scarcely_better_strikes(self):
+        state = fighter_and_archer()
+        decision = policy.choose_option(state, state.by_id(2))
+        self.assertEqual(decision.chosen.letter, "t")
+
+    def test_a_dagger_is_no_better_free_than_in_close(self):
+        state = fighter_and_archer(fighter_weapon=DAGGER)
+        decision = policy.choose_option(state, state.by_id(1))
+        self.assertEqual(decision.chosen.letter, "t")
+
+    def test_a_bare_handed_figure_gains_nothing_by_breaking_away(self):
+        state = fighter_and_archer(fighter_weapon=WeaponState())
+        decision = policy.choose_option(state, state.by_id(1))
+        self.assertEqual(decision.chosen.letter, "t")
+        self.assertIn("no weapon in hand", scores_rationale(decision, "v"))
+        # Free, it has nothing to fight with: only the failed roll's strike.
+        held = 1 - policy.four_d6_at_most(11)
+        self.assertEqual(
+            scores(decision)["v"],
+            policy.round_score(policy.product_of(held, scores(decision)["t"]) / 2),
+        )
+
+    def test_the_boundary_is_whether_the_escape_pays_for_the_turn(self):
+        """DEX 10 and 11 forecast the same blows; only P(escape) differs, and
+        it decides: v wins exactly when P x weapon + (1 - P) x strike, the
+        next turn's worth, beats two strikes."""
+        for dexterity, expected in ((10, "t"), (11, "v")):
+            with self.subTest(dexterity=dexterity):
+                state = fighter_and_archer(fighter_dexterity=dexterity)
+                fighter, archer = state.by_id(1), state.by_id(2)
+                decision = policy.choose_option(state, fighter)
+                self.assertEqual(decision.chosen.letter, expected)
+                strike = scores(decision)["t"]
+                breaking = scores(decision)["v"]
+                self.assertLess(abs(breaking - strike), 0.05)
+                self.assertEqual(breaking, break_away_score(state, fighter, archer))
 
 
 class CandidateDestinationTest(TestCase):

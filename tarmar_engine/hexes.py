@@ -50,6 +50,8 @@ modelled here):
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from hexarena.axial import (
     AxialHex,
     axial_add,
@@ -199,6 +201,7 @@ def step_towards(
     occupied: set[Hex],
     radius: int,
     size_hexes: int = 1,
+    avoid: Collection[Hex] = frozenset(),
 ) -> Hex:
     """One straight-line step of a figure's anchor toward ``target``.
 
@@ -208,9 +211,17 @@ def step_towards(
     facing the mover will adopt — lands clear of ``occupied``. When the
     straight line is blocked and no neighbour is strictly closer, an
     equal-distance sidestep is taken instead (again first by direction order)
-    so a single blocker does not freeze the mover; steps per turn are bounded
-    by gait, so this cannot loop. Returns ``origin`` unchanged only when boxed
-    in outright. ``occupied`` must not include the mover's own footprint.
+    so a single blocker does not freeze the mover. Returns ``origin``
+    unchanged only when boxed in outright. ``occupied`` must not include the
+    mover's own footprint.
+
+    ``avoid`` holds the anchors the mover has already stood on this move,
+    which it never steps back onto. Sidesteps alone can otherwise return a
+    blocked figure to where it began: the step is a pure function of the
+    board, so a figure back on a hex it left repeats the same steps for the
+    rest of its gait (tarmar-engine #37). A strictly closer hex is never one
+    already stood on, since the walk never moves away, so only sidesteps are
+    affected.
     """
     origin_distance = distance(origin, target)
     sidestep = None
@@ -218,6 +229,8 @@ def step_towards(
     best_distance = origin_distance
     for direction in range(6):
         candidate = add(origin, direction)
+        if candidate in avoid:
+            continue
         landing = footprint(candidate, direction_towards(candidate, target), size_hexes)
         if any(cell in occupied or not in_arena(cell, radius) for cell in landing):
             continue

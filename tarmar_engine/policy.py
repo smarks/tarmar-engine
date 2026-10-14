@@ -48,6 +48,7 @@ the step it expects. A player may give any option
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from . import actions, combat_math, hexes, movement, weapons
@@ -287,19 +288,44 @@ def _beast_caution(
     )
 
 
-def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState | None:
-    """Closest active enemy; ties broken by lowest fatigue, then id."""
-    enemies = state.enemies_of(actor)
-    if not enemies:
-        return None
-    return min(
-        enemies,
+def enemies_by_distance(
+    state: BattleState, actor: CombatantState
+) -> list[CombatantState]:
+    """Active enemies, closest first; ties broken by lowest fatigue, then id."""
+    return sorted(
+        state.enemies_of(actor),
         key=lambda enemy: (
             combat_math.figure_distance(actor, enemy),
             enemy.fatigue,
             enemy.combatant_id,
         ),
     )
+
+
+def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState | None:
+    """Closest active enemy, the first of :func:`enemies_by_distance`."""
+    ranked = enemies_by_distance(state, actor)
+    return ranked[0] if ranked else None
+
+
+def _approaches(
+    state: BattleState, actor: CombatantState, gait: str
+) -> Iterator[tuple[CombatantState, int, movement.Approach]]:
+    """Each enemy, closest first, with its distance now and where the
+    engine's own approach at ``gait`` would leave the actor
+    (:func:`movement.approach_route`), worked out only as far as asked.
+
+    MOVE and CHARGE read past a nearest enemy no clear path gets nearer to,
+    so a blocked figure goes for one it can reach rather than standing
+    (tarmar-engine #37).
+    """
+    allowance = movement.gait_allowance(actor, gait)
+    for enemy in enemies_by_distance(state, actor):
+        yield (
+            enemy,
+            combat_math.figure_distance(actor, enemy),
+            movement.approach_route(state, actor, enemy, allowance),
+        )
 
 
 def _attack_forecast(
@@ -666,27 +692,51 @@ def _hth_disengage_candidate(
     state: BattleState,
     actor: CombatantState,
     partners: list[CombatantState],
-    hurt: bool,
 ) -> Candidate:
     """v DISENGAGE from hand-to-hand: "Roll 4d6 ≤ DEX → stand, move to
-    adjacent", scored as a plain DISENGAGE times the chance the roll makes."""
+    adjacent", scored by what breaking away buys (tarmar-engine #38).
+
+    Over this turn and the next: this turn goes on the roll, and next turn
+    the figure fights its partner with the weapon in its hand if it got free
+    (P(escape)), and strikes in close as it could have this turn if not. The
+    two turns' expected damage, halved, is a per-turn figure the HTH strike's
+    own forecast (t) compares with directly. A figure whose weapon outclasses
+    what it strikes with in close breaks away when the chance of getting free
+    pays for the turn; one whose weapon is no better never does, since half
+    of two strikes' worth is never more than one.
+    """
+    partner = partners[0]
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
-    urgency = 4 if hurt else 1
-    score = product_of(DISENGAGE_BASE_SCORE, urgency, probability)
+    held = 1 - probability
+    strike, _strike_rationale = _hth_strike_forecast(state, actor, partner)
+    if actor.weapon.item_id:
+        free, _free_rationale = _attack_forecast(
+            actor, partner, ranged=actor.weapon.is_missile
+        )
+        once_free = f"the {actor.weapon.name} {score_text(free)}"
+    else:
+        free = 0.0
+        once_free = f"no weapon in hand, {score_text(free)}"
+    escaped = product_of(probability, free)
+    still_held = product_of(held, strike)
+    score = round_score((escaped + still_held) / 2)
     # The forecast names the step expected; the engine works it out when the
     # figure acts, so the candidate names no hex (#20).
-    step = movement.step_away_hex(state, actor, partners[0])
+    step = movement.step_away_hex(state, actor, partner)
     where = f" toward {step}" if step is not None else ""
     return Candidate(
         "v",
         actions.option_name("v"),
         score,
         f"Break away{where}: 4d6 ≤ DEX {effective_dex} — P(escape) "
-        f"{score_text(probability)} x {score_text(DISENGAGE_BASE_SCORE)} base "
-        f"x {urgency} ({'hurt' if hurt else 'unhurt'}) = {score_text(score)}",
+        f"{score_text(probability)}; next turn against {partner.name}, "
+        f"{once_free} if free, {score_text(strike)} striking in close if "
+        f"not; this turn spent, so ({score_text(probability)} x "
+        f"{score_text(free)} + {score_text(held)} x {score_text(strike)}) / 2 "
+        f"= {score_text(score)}",
     )
 
 
@@ -1280,11 +1330,42 @@ def _score_options(
                 # The jog the engine would charge at: a figure barred from
                 # jogging charges at its walk (tarmar-engine #17).
                 jog = movement.gait_allowance(actor, "jog")
+                run_gait = movement.MOVEMENT_GAITS["a"]
+                run = movement.gait_allowance(actor, run_gait)
+                # The enemy to close on: the nearest one a clear path gets
+                # nearer to, not a nearer one it cannot (#37).
+                nearable = None
+                if distance > 1:
+                    nearable = next(
+                        (
+                            (other, now)
+                            for other, now, approach in _approaches(
+                                state, actor, run_gait
+                            )
+                            if approach.distance < now
+                        ),
+                        None,
+                    )
+                target, target_distance = nearable or (enemy, distance)
+                passed_over = (
+                    f" ({enemy.name}, {distance} hexes off, cannot be neared)"
+                    if target is not enemy
+                    else ""
+                )
+                distance = target_distance
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
                 if distance <= 1:
                     score = 0.0
                     band = "already adjacent, so moving gains nothing"
+                elif nearable is None:
+                    # Blocked from every enemy: the move the engine would
+                    # make gets no nearer, so it would stand still (#37).
+                    score = 0.0
+                    band = (
+                        f"no clear path within a {run}-hex run gets nearer "
+                        "to any enemy, so moving gains nothing"
+                    )
                 elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
@@ -1302,29 +1383,53 @@ def _score_options(
                         letter,
                         name,
                         score,
-                        f"Close the {distance} hexes to {enemy.name}: "
-                        f"{band} = {score_text(score)}",
-                        target_id=enemy.combatant_id,
+                        f"Close the {distance} hexes to {target.name}"
+                        f"{passed_over}: {band} = {score_text(score)}",
+                        target_id=target.combatant_id,
                     )
                 )
         elif letter == "b" and enemy is not None:
-            score, rationale = _melee_score(actor, enemy)
             distance = combat_math.figure_distance(actor, enemy)
-            reach = movement.gait_allowance(actor, "jog") + 1
-            if distance > reach:
+            jog_gait = movement.MOVEMENT_GAITS["b"]
+            jog = movement.gait_allowance(actor, jog_gait)
+            # The charge's reach is where the engine's own approach ends, so a
+            # figure blocked short of its target is not sent at it turn after
+            # turn to fall short; it charges the nearest enemy it can reach
+            # (#37).
+            target = enemy if distance <= 1 else None
+            arrival = distance
+            if target is None:
+                for index, (other, _now, approach) in enumerate(
+                    _approaches(state, actor, jog_gait)
+                ):
+                    if index == 0:
+                        arrival = approach.distance
+                    if approach.distance <= 1:
+                        target = other
+                        break
+            if target is None:
+                target = enemy
                 score = 0.0
                 rationale = (
-                    f"{enemy.name} is {distance} hexes away, beyond the "
-                    f"{reach}-hex charge reach = 0.000"
+                    f"{enemy.name} is {combat_math.hexes_text(distance)} away and "
+                    f"a {jog}-hex jog along a clear path ends "
+                    f"{combat_math.hexes_text(arrival)} from it, out of charge "
+                    f"reach, as is every other enemy = {score_text(score)}"
                 )
+            else:
+                score, rationale = _melee_score(actor, target)
+                if target is not enemy:
+                    rationale = (
+                        f"{enemy.name} is nearer but out of charge reach; {rationale}"
+                    )
             score, rationale = _beast_caution(actor, hurt, score, rationale)
             candidates.append(
                 Candidate(
                     letter,
                     name,
                     score,
-                    f"Charge {enemy.name}: {rationale}",
-                    target_id=enemy.combatant_id,
+                    f"Charge {target.name}: {rationale}",
+                    target_id=target.combatant_id,
                 )
             )
         elif letter == "c":
@@ -1342,6 +1447,20 @@ def _score_options(
                 ),
                 default=None,
             )
+            # The move it says it makes is the one the engine will make: a
+            # threat no clear jog gets nearer to is dodged standing (#37).
+            movement_note = ""
+            if closing_on is not None:
+                jog = movement.gait_allowance(actor, movement.MOVEMENT_GAITS["c"])
+                nearer = movement.approach_route(
+                    state, actor, closing_on, jog
+                ).distance < combat_math.figure_distance(actor, closing_on)
+                movement_note = (
+                    f", jogging toward {closing_on.name}"
+                    if nearer
+                    else f", standing, since no clear jog gets nearer to "
+                    f"{closing_on.name}"
+                )
             candidates.append(
                 Candidate(
                     letter,
@@ -1349,12 +1468,7 @@ def _score_options(
                     score,
                     f"+4 TN vs missiles; {len(missile_threats)} missile "
                     f"threat(s) x {score_text(DODGE_BASE_SCORE)} each "
-                    f"= {score_text(score)}"
-                    + (
-                        f", jogging toward {closing_on.name}"
-                        if closing_on is not None
-                        else ""
-                    ),
+                    f"= {score_text(score)}{movement_note}",
                     target_id=None if closing_on is None else closing_on.combatant_id,
                 )
             )
@@ -1460,7 +1574,7 @@ def _score_options(
                 )
             )
         elif letter == "v" and partners:
-            candidates.append(_hth_disengage_candidate(state, actor, partners, hurt))
+            candidates.append(_hth_disengage_candidate(state, actor, partners))
         elif letter == "o" and hth_targets:
             # Deterministic target pick (lowest id among the enemies an HTH
             # entry condition admits, #823) — score is always 0, so this
