@@ -67,6 +67,18 @@ def engages(enemy: CombatantState) -> bool:
     return enemy.active and not enemy.prone and weapons.is_armed(enemy)
 
 
+def engaging_fronts(
+    state: BattleState, actor: CombatantState
+) -> list[tuple[frozenset[tuple[int, int]], int]]:
+    """``(front hexes, size)`` of every enemy that :func:`engages`: what
+    :func:`hexes.figure_engaged` weighs a body against, wherever it stands."""
+    return [
+        (enemy.front_hexes, enemy.size_hexes)
+        for enemy in state.enemies_of(actor)
+        if engages(enemy)
+    ]
+
+
 def is_engaged(state: BattleState, actor: CombatantState) -> bool:
     """Is ``actor`` engaged per movement.md's table, footprints included?
 
@@ -74,12 +86,9 @@ def is_engaged(state: BattleState, actor: CombatantState) -> bool:
     (``engagement.TarmarEngagement``) reads this same function, so the AI's
     menu and the engine's movement stop cannot disagree.
     """
-    enemies = [
-        (enemy.front_hexes, enemy.size_hexes)
-        for enemy in state.enemies_of(actor)
-        if engages(enemy)
-    ]
-    return hexes.figure_engaged(actor.footprint, actor.size_hexes, enemies)
+    return hexes.figure_engaged(
+        actor.footprint, actor.size_hexes, engaging_fronts(state, actor)
+    )
 
 
 #: The entry reason for a pair a Game Master has ruled agree to hand-to-hand

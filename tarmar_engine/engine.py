@@ -128,8 +128,7 @@ def _net_text(start: tuple[int, int], end: tuple[int, int]) -> str:
     turned aside: a line that read "jogs 9 hex(es)" for nine steps ending a
     hex from the start was read as nine hexes covered (tarmar-engine #37).
     """
-    net = combat_math.hexes_text(hexes.distance(start, end))
-    return f", ending {net} from its start"
+    return f", ending {hexes.distance(start, end)} hex(es) from its start"
 
 
 #: Chooses a forced retreat's hex and whether the pusher advances:

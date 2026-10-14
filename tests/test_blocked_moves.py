@@ -11,7 +11,7 @@ four hexes 3 from the Mammoth's footprint where the old walk circled.
 from unittest import TestCase
 
 from tarmar_engine import combat_math, engine, hexes, movement, policy
-from tarmar_engine.state import BattleState
+from tarmar_engine.state import BattleState, CombatantState
 
 from .test_battle_rules_pass import SMALL_BOW, runner_for
 from .test_engine import SeededStubRoller, events_of_type, make_beast_combatant
@@ -22,16 +22,20 @@ ARCHER_HEX = (2, -7)
 ISSUE_BLOCKERS = [(4, -7), (2, -8)]
 
 
-def rim_board(blockers: list[tuple[int, int]]) -> BattleState:
+def rim_board(
+    blockers: list[tuple[int, int]],
+    mammoth_hex: tuple[int, int] = (5, -8),
+    others: tuple[CombatantState, ...] = (),
+) -> BattleState:
     """The Mammoth on the rim facing the archer's way, the archer, and
     unconscious figures (still on the board, taking up hexes) at
-    ``blockers``."""
+    ``blockers``; ``others`` join the fight."""
     mammoth = make_beast_combatant(
         1,
         size_hexes=4,
         name="Mammoth",
-        q=5,
-        r=-8,
+        q=mammoth_hex[0],
+        r=mammoth_hex[1],
         facing=3,
         move_jog=9,
         move_run=12,
@@ -45,7 +49,7 @@ def rim_board(blockers: list[tuple[int, int]]) -> BattleState:
         make_combatant(10 + index, q=cell[0], r=cell[1], conscious=False)
         for index, cell in enumerate(blockers)
     ]
-    return BattleState(arena_radius=8, combatants=[mammoth, archer, *downed])
+    return BattleState(arena_radius=8, combatants=[mammoth, archer, *downed, *others])
 
 
 def charge(state: BattleState) -> list[dict]:
@@ -73,6 +77,17 @@ class BlockedMoveTest(TestCase):
         anchors = [mammoth.position, *(cell for cell, _facing in route)]
         self.assertEqual(len(anchors), len(set(anchors)))
 
+    def test_the_straight_walk_alone_goes_round_without_circling(self):
+        """The line never steps back onto a hex it stood on, so on the
+        issue's board it finds the way round by itself, before any path
+        search; stepping back, it circled and got no nearer."""
+        state = rim_board(ISSUE_BLOCKERS)
+        mammoth, archer = state.by_id(1), state.by_id(2)
+        line, _blocked = movement._line_towards(state, mammoth, archer, 9)
+        anchors = [mammoth.position, *(cell for cell, _facing in line.route)]
+        self.assertEqual(len(anchors), len(set(anchors)))
+        self.assertEqual(line.distance, 1)
+
     def test_the_mammoth_goes_round_and_closes_in(self):
         state = rim_board(ISSUE_BLOCKERS)
         charge(state)
@@ -99,9 +114,13 @@ class BlockedMoveTest(TestCase):
         it can, then stands, rather than stepping aside and back."""
         state = rim_board(hexes.neighbors(ARCHER_HEX))
         mammoth, archer = state.by_id(1), state.by_id(2)
-        charge(state)
+        (move,) = events_of_type(charge(state), "movement")
         first = mammoth.position
         self.assertEqual(combat_math.figure_distance(mammoth, archer), 2)
+        # One step straight in, not a walk round the archer that ends no
+        # nearer than that step did.
+        self.assertEqual(move["payload"]["hexes"], 1)
+        self.assertEqual(move["payload"]["net_hexes"], 1)
         self.assertEqual(charge(state), [])
         self.assertEqual(mammoth.position, first)
 
@@ -113,7 +132,7 @@ class BlockedMoveTest(TestCase):
         self.assertEqual(
             line["message"],
             f"Mammoth jogs {line['payload']['hexes']} hex(es) toward Ulfa, "
-            f"ending {combat_math.hexes_text(net)} from its start",
+            f"ending {net} hex(es) from its start",
         )
         self.assertEqual(line["payload"]["net_hexes"], net)
         self.assertLess(net, line["payload"]["hexes"])
@@ -156,3 +175,60 @@ class UnreachableChargeTest(TestCase):
         self.assertFalse(
             any("fell short" in event["message"] for event in mammoth_events)
         )
+
+
+#: Where the Mammoth stands once it has got as near the boxed-in archer as
+#: any path allows: 2 hexes off.
+PARKED = (4, -8)
+
+
+def parked_beside_a_boxed_archer(fighter_hex: tuple[int, int]) -> BattleState:
+    """The boxed-in archer's board with the Mammoth parked, and a second
+    enemy, Brin, on clear ground at ``fighter_hex``."""
+    brin = make_combatant(3, name="Brin", q=fighter_hex[0], r=fighter_hex[1], facing=1)
+    return rim_board(hexes.neighbors(ARCHER_HEX), mammoth_hex=PARKED, others=(brin,))
+
+
+class AnotherEnemyWithinReachTest(TestCase):
+    """A figure blocked from its nearest enemy goes for one a clear path gets
+    it nearer to, rather than standing because the nearest is unreachable."""
+
+    def test_the_board(self):
+        state = parked_beside_a_boxed_archer((0, 3))
+        mammoth = state.by_id(1)
+        self.assertEqual(combat_math.figure_distance(mammoth, state.by_id(2)), 2)
+        self.assertEqual(combat_math.figure_distance(mammoth, state.by_id(3)), 10)
+        self.assertEqual(policy.nearest_enemy(state, mammoth), state.by_id(2))
+
+    def test_it_closes_on_an_enemy_it_can_get_nearer_to(self):
+        state = parked_beside_a_boxed_archer((0, 3))
+        decision = policy.choose_option(state, state.by_id(1))
+        self.assertEqual(decision.chosen.letter, "a")
+        self.assertEqual(decision.chosen.target_id, 3)
+        self.assertGreater(decision.chosen.score, 0.0)
+        self.assertIn("Ulfa, 2 hexes off, cannot be neared", decision.chosen.rationale)
+
+    def test_it_charges_an_enemy_it_can_reach(self):
+        state = parked_beside_a_boxed_archer((2, 2))
+        decision = policy.choose_option(state, state.by_id(1))
+        self.assertEqual(decision.chosen.letter, "b")
+        self.assertEqual(decision.chosen.target_id, 3)
+        self.assertIn(
+            "Ulfa is nearer but out of charge reach", decision.chosen.rationale
+        )
+
+    def test_the_engine_takes_it_toward_that_enemy(self):
+        state = parked_beside_a_boxed_archer((0, 3))
+        mammoth, brin = state.by_id(1), state.by_id(3)
+        decision = policy.choose_option(state, mammoth)
+        mammoth.chosen_letter = decision.chosen.letter
+        mammoth.chosen_target = decision.chosen.target_id
+        runner_for(state).move_towards_target(mammoth)
+        self.assertLess(combat_math.figure_distance(mammoth, brin), 10)
+
+    def test_a_dodge_that_cannot_move_says_it_stands(self):
+        state = rim_board(hexes.neighbors(ARCHER_HEX), mammoth_hex=PARKED)
+        decision = policy.choose_option(state, state.by_id(1))
+        self.assertEqual(decision.chosen.letter, "c")
+        self.assertIn("standing", decision.chosen.rationale)
+        self.assertNotIn("jogging toward", decision.chosen.rationale)

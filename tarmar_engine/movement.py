@@ -128,17 +128,6 @@ def in_hand_to_hand(state: BattleState, combatant: CombatantState) -> bool:
     return False
 
 
-def _engaging_fronts(
-    state: BattleState, combatant: CombatantState
-) -> list[tuple[frozenset[Hex], int]]:
-    """``(front hexes, size)`` of every enemy able to engage the figure."""
-    return [
-        (enemy.front_hexes, enemy.size_hexes)
-        for enemy in state.enemies_of(combatant)
-        if combat_math.engages(enemy)
-    ]
-
-
 def _paths(
     state: BattleState, combatant: CombatantState, allowance: int
 ) -> dict[Hex, list[Hex]]:
@@ -150,7 +139,7 @@ def _paths(
     reached but not passed through, and a figure engaged where it stands
     reaches nothing.
     """
-    engagers = _engaging_fronts(state, combatant)
+    engagers = combat_math.engaging_fronts(state, combatant)
     occupied = state.occupied_hexes() - set(combatant.footprint)
 
     def fits(anchor: Hex, facing: int) -> tuple[Hex, ...] | None:
@@ -212,11 +201,12 @@ def _line_towards(
     already got are dropped: a figure that cannot gain ground stands rather
     than shuffling a hex aside and back again on the next turn (#37).
 
-    Returns the walk and whether it was blocked: turned aside or boxed in
-    by the board rather than stopped by engagement, the rule (movement.md).
+    Returns the walk and whether the board blocked it: a sidestep taken, or
+    no step to take. A walk that engagement stopped is not blocked, since
+    movement.md stops an engaged figure where it is.
     """
     occupied = state.occupied_hexes() - set(combatant.footprint)
-    engagers = _engaging_fronts(state, combatant)
+    engagers = combat_math.engaging_fronts(state, combatant)
     anchor = combatant.position
     body = combatant.footprint
     stood_on = {anchor}

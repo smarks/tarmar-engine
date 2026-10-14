@@ -15,8 +15,8 @@ from .replay_scenarios import RECORDED, SEEDS, fixture_path, record
 from .test_engine import SeededStubRoller
 
 #: The ground covered, added to every movement line after the fixtures were
-#: recorded (tarmar-engine #37): ", ending 3 hexes from its start".
-NET_DISTANCE_SUFFIX = re.compile(r", ending \d+ hex(es)? from its start$")
+#: recorded (tarmar-engine #37): ", ending 3 hex(es) from its start".
+NET_DISTANCE_SUFFIX = re.compile(r", ending \d+ hex\(es\) from its start$")
 
 
 def _comparable(event: dict) -> dict:
