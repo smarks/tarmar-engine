@@ -27,9 +27,10 @@ from .test_magic import (
     example_magic_rules,
     roll_purposes,
     status_payloads,
+    with_casting_failure,
     wizard_state,
 )
-from .test_runaway import example_runaway_rules
+from .test_runaway import RUNAWAY_TOTAL_FACES, example_runaway_rules
 from .test_state import make_combatant
 
 
@@ -381,12 +382,17 @@ class OpposedRollTest(TestCase):
         self.assertEqual((state.by_id(2).mana, state.by_id(3).mana), (4, 4))
 
     def test_a_countered_cast_starts_no_runaway(self):
-        # A natural 18 would be the casting roll's Runaway total; none is made.
+        # The invented casting Runaway total waits next in the dice; no casting
+        # roll is made to reach it.
         profile = TarmarProfile(
-            magic=replace(counterspell_magic_rules(), runaway=example_runaway_rules())
+            magic=with_casting_failure(
+                replace(counterspell_magic_rules(), runaway=example_runaway_rules())
+            )
         )
         state = counter_state()
-        countered_cast(state, [CASTER_LOW, DEFENDER_HIGH, [6, 6, 6]], profile=profile)
+        countered_cast(
+            state, [CASTER_LOW, DEFENDER_HIGH, RUNAWAY_TOTAL_FACES], profile=profile
+        )
         self.assertIsNone(state.by_id(1).runaway)
 
     def test_a_countered_borrowing_cast_borrows_and_rolls_its_debt(self):

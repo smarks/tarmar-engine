@@ -249,7 +249,9 @@ numbers.** `tarmar_engine.magic` holds each mechanic's structure, and every
 number and table arrives in a `MagicRules` the caller builds from its own
 canon and passes as `TarmarProfile(magic=rules)`. The default profile
 (`TARMAR`, `magic=None`) runs exactly as before: no new events and no new
-payload keys. The tests use invented numbers.
+payload keys. (Since v0.9.15 the casting roll's failure totals are injected
+too, so the default profile no longer carries them; see "The casting roll's
+failure totals" below.) The tests use invented numbers.
 
 | `MagicRules` field | What the engine does with it |
 |---|---|
@@ -388,7 +390,8 @@ payload flag, as before.
 
 - **Where it begins.** The Control Roll's Runaway band and automatic totals,
   a Borrowing failure that is a Runaway, and the casting roll's Runaway
-  total each set `CombatantState.runaway` (a `RunawayState`: `spell_key`,
+  total (injected through `MagicRules.casting_failure` since v0.9.15) each
+  set `CombatantState.runaway` (a `RunawayState`: `spell_key`,
   `original_cost`, pushed mana included, `turns_running`, `caught_from`)
   and emit a `status` event carrying `runaway_begins`, `spell` and
   `original_cost`. A combatant already feeding one keeps it, and an `info`
@@ -502,6 +505,43 @@ The readings on the page's silences are in `tarmar_engine.house_rulings`
 `ai_neither_counters_nor_escalates`, `committed_mana_is_spent`,
 `countered_cast_makes_no_casting_roll`, `contest_ends_on_any_other_action`),
 each marked for Spencer.
+
+## The casting roll's failure totals, numbers injected (v0.9.15)
+
+Which natural totals fail a casting roll whatever the caster's attribute,
+which failures still spend the spell's mana, and which total starts a
+Runaway came from a DM-only page, so they are injected like every other
+magic number (tarmar-engine #46). `MagicRules.casting_failure` takes a
+`CastingFailureRules`: `fumble_floor` (natural totals at or above it fail
+whatever the attribute; at least 1), `mana_lost_totals` (failing totals on
+which the mana is spent anyway; default none) and `runaway_total` (the total
+that starts a Runaway, `None` for none; it must be a failing total, at or
+above the floor, and among the mana-losing totals, since a Runaway's first
+drain is paid out of the casting's mana). Every mana-losing total must be at
+or above the floor too, so whether a failure spends the mana never depends on
+the caster's attribute. Every number is the caller's; the tests use invented
+ones.
+
+- **The verdict.** A casting roll succeeds at or under the caster's
+  effective attribute and, with `casting_failure` injected, under
+  `fumble_floor`. The success tiers, the Control Roll and the spell's
+  effect follow a success only, as before.
+- **The mana.** A success pays the cast; a failure pays it only on a total
+  in `mana_lost_totals`, and borrows only then. Every other failure keeps
+  the mana ("no mana spent" in the cast message).
+- **The Runaway.** A failing cast whose natural total is `runaway_total`
+  begins a Runaway, run on later turns when `MagicRules.runaway` is
+  injected too.
+- **Without it.** With `casting_failure=None`, or no `MagicRules` at all,
+  the attribute alone judges the roll, no failure costs mana, and no cast
+  starts a Runaway. **This changes the default profile:** before v0.9.15
+  `TARMAR` failed the casting roll's top totals, spent the mana on some of
+  them and started a Runaway on one, from constants in `engine.py` that are
+  now gone. A caller that wants that behaviour injects the numbers from its
+  own canon.
+
+The `mana_on_failure` house ruling now states the structure without the
+totals (`tarmar_engine.house_rulings`, marked for Spencer).
 
 ## What it sits on
 

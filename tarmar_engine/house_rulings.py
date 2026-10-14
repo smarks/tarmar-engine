@@ -181,11 +181,13 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
     ),
     HouseRuling(
         "mana_on_failure",
-        "A spell's mana is spent on success, on a 17 ('mana lost') and on an "
-        "18 (a Runaway, whose first effect, the drain, is paid at once out of "
-        "the casting's mana); every other failure keeps it.",
-        frozenset({17, 18}),
-        "tarmar_engine/engine.py CASTING_MANA_LOST_ROLLS",
+        "A spell's mana is spent on success and on the failing natural totals "
+        "the injected casting failure rules name "
+        "(CastingFailureRules.mana_lost_totals); every other failure keeps it. "
+        "The Runaway total is among them, because a Runaway's first effect, "
+        "the drain, is paid at once out of the casting's mana.",
+        True,
+        "tarmar_engine/engine.py cast_spell",
         RULING,
         "#816",
     ),

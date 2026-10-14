@@ -1,6 +1,6 @@
-"""Injected magic rules: the casting success tiers, Push, Channel,
-Borrowing, Runaway and Counterspell (tarmar-engine #26, #27, #29, #28, #30,
-#31; split from tarmar-studio #825).
+"""Injected magic rules: the casting success tiers, the casting failure
+totals, Push, Channel, Borrowing, Runaway and Counterspell (tarmar-engine #26,
+#46, #27, #29, #28, #30, #31; split from tarmar-studio #825).
 
 **No rulebook numbers live here.** The magic-mechanics pages these mechanics
 come from are DM-only, and this package is public. Following the classic
@@ -13,10 +13,11 @@ that owns the canon (tarmar-studio) builds the real one from it; this
 package's tests build one from invented numbers.
 
 A profile with no ``MagicRules`` (the default, :data:`~tarmar_engine.profile.
-TARMAR`) runs the engine exactly as before: no tiers, no Push, no Channel,
-the same events and payloads.
+TARMAR`) runs the engine with none of them: no tiers, no Push, no Channel,
+and a casting roll judged against the caster's attribute alone, a failure
+keeping its mana and starting no Runaway (tarmar-engine #46).
 
-Six mechanics are modelled so far:
+Seven mechanics are modelled so far:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -24,6 +25,11 @@ Six mechanics are modelled so far:
   spell's rolled effect where the spell has one (:func:`spell_effect_kind`).
   A tier never turns a failed roll into a success (Spencer's ruling on
   tarmar-studio #292's scope).
+* **Casting failure totals.** A casting roll succeeds at or under the
+  caster's attribute; with :class:`CastingFailureRules` injected, a natural
+  total at or above the injected floor fails whatever the attribute, the
+  injected failing totals spend the spell's mana anyway (every other failure
+  keeps it), and the injected Runaway total starts a Runaway.
 * **Push.** A cast may invest extra mana (:class:`PushRules`). On a
   successful casting roll the caster then makes a Control Roll, roll-under,
   against an attribute less a penalty per mana invested; a failure's margin
@@ -145,6 +151,61 @@ class CastingSuccessTier:
             raise ValueError(f"tier {self.key!r} covers no natural totals")
         if self.mana_refund < 0:
             raise ValueError(f"tier {self.key!r} has a negative mana refund")
+
+
+@dataclass(frozen=True)
+class CastingFailureRules:
+    """How a casting roll fails on its natural total, injected by the caller.
+
+    The structure stays in the engine: a natural total at or above the floor
+    fails the spell whatever the caster's attribute, some failing totals spend
+    the spell's mana anyway, and one failing total starts a Runaway. The
+    numbers arrive here.
+
+    Attributes:
+        fumble_floor: Natural totals (dice faces summed) at or above this fail
+            the spell whatever the caster's attribute.
+        mana_lost_totals: Failing natural totals on which the spell's mana is
+            spent anyway. Every other failure keeps it. Each is at or above
+            ``fumble_floor``, so whether a total spends the mana never
+            depends on the caster's attribute.
+        runaway_total: The natural total that starts a Runaway, or None when no
+            failing total does. It is one of ``mana_lost_totals``: a
+            Runaway's first drain is paid out of the casting's mana.
+    """
+
+    fumble_floor: int
+    mana_lost_totals: frozenset[int] = frozenset()
+    runaway_total: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.fumble_floor < 1:
+            raise ValueError(
+                f"the fumble floor must be at least 1, not {self.fumble_floor}"
+            )
+        if self.runaway_total is not None and self.runaway_total < self.fumble_floor:
+            raise ValueError(
+                f"the Runaway total {self.runaway_total} is below the fumble "
+                f"floor {self.fumble_floor}; a Runaway total must be a failing "
+                "total"
+            )
+        below_floor = sorted(
+            total for total in self.mana_lost_totals if total < self.fumble_floor
+        )
+        if below_floor:
+            raise ValueError(
+                f"mana-lost totals {below_floor} are below the fumble floor "
+                f"{self.fumble_floor}; whether they spend the mana would depend "
+                "on the caster's attribute"
+            )
+        if (
+            self.runaway_total is not None
+            and self.runaway_total not in self.mana_lost_totals
+        ):
+            raise ValueError(
+                f"the Runaway total {self.runaway_total} is not a mana-lost "
+                "total; a Runaway's first drain is paid out of the casting's mana"
+            )
 
 
 @dataclass(frozen=True)
@@ -725,6 +786,10 @@ class MagicRules:
             starts and has no later turns.
         counterspell: Counterspell's numbers, or ``None``: no spell may be
             countered.
+        casting_failure: How a casting roll fails on its natural total, or
+            ``None``: no natural total fails on its own (the roll is judged
+            against the attribute alone), no failure costs mana, and no cast
+            starts a Runaway.
     """
 
     casting_success_tiers: tuple[CastingSuccessTier, ...] = ()
@@ -733,6 +798,7 @@ class MagicRules:
     borrowing: BorrowingRules | None = None
     runaway: RunawayRules | None = None
     counterspell: CounterspellRules | None = None
+    casting_failure: CastingFailureRules | None = None
 
     def __post_init__(self) -> None:
         seen: set[int] = set()

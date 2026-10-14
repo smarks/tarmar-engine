@@ -1,12 +1,13 @@
 """Probe tests for the injected magic rules: casting success tiers
-(tarmar-engine #26) and Push (tarmar-engine #27), split from tarmar-studio
-#825.
+(tarmar-engine #26), the casting failure totals (tarmar-engine #46) and Push
+(tarmar-engine #27), split from tarmar-studio #825.
 
 Every number and name here is invented. The magic-mechanics pages are
 DM-only and this repository is public, so the tests build their
 :class:`MagicRules` from values that are plainly not the rulebook's — a 2d6
 Control Roll against WIS, tiers on natural 6, 7 and 8 named "radiant",
-"keen" and "tidy", bands named "wobble", "sputter" and "torrent" — and check
+"keen" and "tidy", bands named "wobble", "sputter" and "torrent", a casting
+fumble floor of 12 with mana lost on 12 and 14 and a Runaway on 14 — and check
 the engine's *structure*: each hook fires in the right phase and order, and
 each injected value is the one the engine used. The real rules are built by
 the caller that owns the canon.
@@ -17,6 +18,7 @@ from unittest import TestCase
 
 from tarmar_engine import combat_math, engine, policy
 from tarmar_engine.magic import (
+    CastingFailureRules,
     CastingSuccessTier,
     ControlBand,
     MagicRules,
@@ -76,6 +78,22 @@ def example_push_rules() -> PushRules:
     )
 
 
+def example_casting_failure_rules() -> CastingFailureRules:
+    """Invented casting failure rules for the tests. Not Tarmar's numbers:
+    natural totals of 12 and up fail, 12 and 14 spend the mana anyway, and 14
+    starts a Runaway."""
+    return CastingFailureRules(
+        fumble_floor=12,
+        mana_lost_totals=frozenset({12, 14}),
+        runaway_total=14,
+    )
+
+
+def with_casting_failure(rules: MagicRules) -> MagicRules:
+    """These magic rules with the example casting failure rules injected."""
+    return replace(rules, casting_failure=example_casting_failure_rules())
+
+
 def example_magic_rules() -> MagicRules:
     """Invented magic rules for the tests. Not Tarmar's numbers."""
     return MagicRules(
@@ -104,6 +122,10 @@ def example_magic_rules() -> MagicRules:
 
 
 MAGIC_PROFILE = TarmarProfile(magic=example_magic_rules())
+#: The example magic rules with the example casting failure rules injected.
+CASTING_FAILURE_PROFILE = TarmarProfile(
+    magic=with_casting_failure(example_magic_rules())
+)
 
 
 def profile_with(**push_changes) -> TarmarProfile:
@@ -280,6 +302,70 @@ class CastingSuccessTierTest(TestCase):
         caster.fatigue = caster.max_fatigue - 20
         cast(state, [[2, 2, 2], [3]], spell="heal")
         self.assertEqual(caster.fatigue, caster.max_fatigue - 20 + 3 + 5)
+
+
+class CastingFailureTest(TestCase):
+    """#46: the casting roll's failure totals, injected through
+    :class:`CastingFailureRules`."""
+
+    def cast_outcome(self, faces, *, profile=CASTING_FAILURE_PROFILE, **caster):
+        """Cast Fire Missile with these casting dice; the caster, the action
+        payload and the roll purposes."""
+        state = wizard_state(**caster)
+        events = cast(state, faces, profile=profile)
+        action = events_of_type(events, "action")[0]["payload"]
+        return state.by_id(1), action, roll_purposes(events)
+
+    def test_the_injected_floor_fails_a_total_the_attribute_passes(self):
+        for faces in ([4, 4, 4], [5, 4, 4], [5, 5, 4]):  # 12, 13, 14 under INT 18
+            with self.subTest(faces=faces):
+                _caster, action, purposes = self.cast_outcome([faces], intelligence=18)
+                self.assertFalse(action["success"])
+                self.assertEqual(purposes, ["casting"])
+
+    def test_a_total_under_the_floor_is_judged_by_the_attribute(self):
+        # 11, under the floor and under INT 18.
+        caster, action, _purposes = self.cast_outcome(
+            [[4, 4, 3], [2, 2, 2], [3]], intelligence=18
+        )
+        self.assertTrue(action["success"])
+        self.assertEqual(caster.mana, 9)
+
+    def test_the_mana_lost_totals_pay_and_every_other_failure_keeps_it(self):
+        # INT 10: every total here fails.
+        cases = (
+            ([4, 4, 3], 10),  # 11, over the attribute, under the floor
+            ([4, 4, 4], 9),  # 12, a mana-lost total
+            ([5, 4, 4], 10),  # 13, past the floor but not a mana-lost total
+            ([5, 5, 4], 9),  # 14, a mana-lost total
+        )
+        for faces, mana_left in cases:
+            with self.subTest(faces=faces):
+                caster, action, _purposes = self.cast_outcome([faces], intelligence=10)
+                self.assertFalse(action["success"])
+                self.assertEqual(caster.mana, mana_left)
+
+    def test_without_casting_failure_rules_the_attribute_alone_judges(self):
+        # The example magic rules inject no casting failure rules.
+        self.assertIsNone(example_magic_rules().casting_failure)
+        for profile in (MAGIC_PROFILE, TARMAR):
+            with self.subTest(profile=profile.magic is not None):
+                caster, action, _purposes = self.cast_outcome(
+                    [[6, 6, 6], [2, 2, 2], [3]], profile=profile, intelligence=18
+                )
+                self.assertTrue(action["success"])
+                self.assertEqual(caster.mana, 9)
+
+    def test_without_casting_failure_rules_no_failure_costs_mana(self):
+        # INT 10: every total here fails.
+        for faces in ([4, 4, 3], [4, 4, 4], [5, 4, 4], [5, 5, 4], [6, 6, 6]):
+            for profile in (MAGIC_PROFILE, TARMAR):
+                with self.subTest(faces=faces, profile=profile.magic is not None):
+                    caster, action, _purposes = self.cast_outcome(
+                        [faces], profile=profile, intelligence=10
+                    )
+                    self.assertFalse(action["success"])
+                    self.assertEqual(caster.mana, 10)
 
 
 class PushTest(TestCase):
@@ -596,6 +682,37 @@ class MagicTurnPhaseTest(TestCase):
 
 class MagicRulesValidationTest(TestCase):
     """A malformed injected table is refused when it is built, not mid-battle."""
+
+    def test_the_casting_fumble_floor_must_be_at_least_one(self):
+        with self.assertRaises(ValueError):
+            CastingFailureRules(fumble_floor=0)
+
+    def test_the_casting_runaway_total_must_be_a_failing_total(self):
+        with self.assertRaises(ValueError):
+            CastingFailureRules(
+                fumble_floor=9, mana_lost_totals=frozenset({8}), runaway_total=8
+            )
+        at_the_floor = CastingFailureRules(
+            fumble_floor=9, mana_lost_totals=frozenset({9}), runaway_total=9
+        )
+        self.assertEqual(at_the_floor.runaway_total, 9)
+
+    def test_the_casting_runaway_total_must_lose_its_mana(self):
+        # Its first drain is paid out of the casting's mana.
+        with self.assertRaises(ValueError):
+            CastingFailureRules(
+                fumble_floor=9, mana_lost_totals=frozenset({10}), runaway_total=11
+            )
+        with self.assertRaises(ValueError):
+            CastingFailureRules(fumble_floor=9, runaway_total=11)
+
+    def test_no_mana_lost_total_lies_below_the_casting_floor(self):
+        with self.assertRaises(ValueError):
+            CastingFailureRules(fumble_floor=9, mana_lost_totals=frozenset({8, 10}))
+        no_runaway = CastingFailureRules(
+            fumble_floor=9, mana_lost_totals=frozenset({9, 10})
+        )
+        self.assertIsNone(no_runaway.runaway_total)
 
     def test_tiers_may_not_share_a_natural_total(self):
         with self.assertRaises(ValueError):

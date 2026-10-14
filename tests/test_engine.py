@@ -1119,14 +1119,16 @@ class CastingTest(TestCase):
         defender = state.by_id(2)
         self.assertEqual(defender.fatigue, defender.max_fatigue - 5)
 
-    def test_failed_casting_roll_still_costs_mana(self):
+    def test_a_failed_casting_roll_keeps_its_mana_without_failure_rules(self):
+        # The default profile injects no casting failure rules (#46), so no
+        # failing total spends the spell's mana.
         state = self._wizard_state()
         caster = state.by_id(1)
         caster.chosen_spell = "fire_missile"
         events = []
         runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
         runner.cast_spell(caster)
-        self.assertEqual(caster.mana, 9)
+        self.assertEqual(caster.mana, 10)
         self.assertIn("failure", events_of_type(events, "action")[0]["message"])
         self.assertEqual(events_of_type(events, "damage"), [])
 
@@ -1209,17 +1211,15 @@ class CastingTest(TestCase):
         self.assertEqual(caster.active_spells, [])
         self.assertIn("failure", events_of_type(events, "action")[0]["message"])
 
-    def test_casting_roll_of_16_fails_regardless_of_attribute(self):
-        # mana-pool.md: a 16 is a fumble ("spell fails") even when it would
-        # otherwise be <= the caster's attribute.
+    def test_a_casting_roll_over_the_attribute_fails_and_rolls_nothing_more(self):
         state = self._wizard_state()
         caster = state.by_id(1)
-        caster.intelligence = 18
+        caster.intelligence = 12
         caster.chosen_spell = "fire_missile"
         caster.chosen_target = 2
         events = []
-        # 3d6 = [6, 6, 4] = 16 <= 18, but mana-pool.md's table overrides it.
-        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 4]]), events.append)
+        # 3d6 = [5, 4, 4] = 13 > 12.
+        runner = engine.TurnRunner(state, ScriptedRoller([[5, 4, 4]]), events.append)
         runner.cast_spell(caster)
         self.assertIn("failure", events_of_type(events, "action")[0]["message"])
         purposes = [
@@ -1227,40 +1227,32 @@ class CastingTest(TestCase):
         ]
         self.assertEqual(purposes, ["casting"])  # no aim/damage roll on a failed cast
 
-    def test_casting_roll_of_17_fails_regardless_of_attribute(self):
-        state = self._wizard_state()
-        caster = state.by_id(1)
-        caster.intelligence = 18
-        caster.chosen_spell = "fire_missile"
-        caster.chosen_target = 2
-        events = []
-        # 3d6 = [6, 6, 5] = 17 <= 18.
-        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 5]]), events.append)
-        runner.cast_spell(caster)
-        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
+    def test_without_failure_rules_the_attribute_alone_judges_a_high_total(self):
+        # The default profile injects no casting failure rules (#46): no
+        # natural total fails on its own, however high.
+        for faces in ([6, 6, 4], [6, 6, 5], [6, 6, 6]):
+            with self.subTest(faces=faces):
+                state = self._wizard_state()
+                caster = state.by_id(1)
+                caster.wisdom = 18  # shield rolls against WIS (#291)
+                caster.chosen_spell = "shield"
+                events = []
+                runner = engine.TurnRunner(
+                    state, ScriptedRoller([faces]), events.append
+                )
+                runner.cast_spell(caster)
+                self.assertEqual(caster.active_spells, ["shield"])
+                self.assertEqual(caster.mana, 9)
 
-    def test_casting_roll_of_18_fails_regardless_of_attribute(self):
+    def test_a_casting_roll_equal_to_the_attribute_succeeds(self):
+        # Roll-under is inclusive; the low-end specials stay narrated-only,
+        # per Spencer's ruling on #292's scope.
         state = self._wizard_state()
         caster = state.by_id(1)
-        caster.intelligence = 18
-        caster.chosen_spell = "fire_missile"
-        caster.chosen_target = 2
-        events = []
-        # 3d6 = [6, 6, 6] = 18 <= 18.
-        runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 6]]), events.append)
-        runner.cast_spell(caster)
-        self.assertIn("failure", events_of_type(events, "action")[0]["message"])
-
-    def test_casting_roll_of_15_still_succeeds_under_a_high_attribute(self):
-        # Regression guard: only 16-18 change the verdict; 15 and below are
-        # untouched (the low-end 3/4/5 specials stay narrated-only, per
-        # Spencer's ruling on #292's scope).
-        state = self._wizard_state()
-        caster = state.by_id(1)
-        caster.wisdom = 18  # shield rolls against WIS (#291)
+        caster.wisdom = 15  # shield rolls against WIS (#291)
         caster.chosen_spell = "shield"
         events = []
-        # 3d6 = [6, 6, 3] = 15 <= 18.
+        # 3d6 = [6, 6, 3] = 15 <= 15.
         runner = engine.TurnRunner(state, ScriptedRoller([[6, 6, 3]]), events.append)
         runner.cast_spell(caster)
         self.assertEqual(caster.active_spells, ["shield"])

@@ -84,10 +84,20 @@ class HouseRulingsRecordTest(TestCase):
         self.assertEqual(ruling("unconscious_caster_spells_end").authority, RULING)
         self.assertEqual(ruling("dodge_closes_on_missile_threat").authority, TACTIC)
 
+    def test_mana_on_failure(self):
+        from .test_magic import CASTING_FAILURE_PROFILE, cast, wizard_state
+
+        self.assertIs(ruling("mana_on_failure").value, True)
+        # INT 10 and the invented casting failure rules (mana lost on 12 and
+        # 14): both totals fail, and only the named one spends the mana.
+        pays = wizard_state(intelligence=10)
+        cast(pays, [[4, 4, 4]], profile=CASTING_FAILURE_PROFILE)  # 12: named
+        self.assertEqual(pays.by_id(1).mana, 9)
+        keeps = wizard_state(intelligence=10)
+        cast(keeps, [[5, 4, 4]], profile=CASTING_FAILURE_PROFILE)  # 13: not named
+        self.assertEqual(keeps.by_id(1).mana, 10)
+
     def test_the_pass_rulings(self):
-        self.assertEqual(
-            engine.CASTING_MANA_LOST_ROLLS, ruling("mana_on_failure").value
-        )
         self.assertEqual(
             tarmar_rules.CRIT_DAMAGE_ROLLS,
             ruling("critical_modifier_once").value["critical_dice_rolls"],
@@ -157,11 +167,12 @@ class MagicRulingsTest(TestCase):
         self.assertEqual(control, 12 - 2 - (14 - casting))  # ...and the control
 
     def test_pushed_mana_paid_with_cost(self):
-        from .test_magic import cast, wizard_state
+        from .test_magic import CASTING_FAILURE_PROFILE, cast, wizard_state
 
         self.assertEqual(ruling("pushed_mana_paid_with_cost").value, "with the cost")
         state = wizard_state(intelligence=18)
-        cast(state, [[6, 6, 5]], push=2)  # 17: fails and loses its mana
+        # 12: the invented floor, a failure that loses its mana.
+        cast(state, [[4, 4, 4]], profile=CASTING_FAILURE_PROFILE, push=2)
         self.assertEqual(state.by_id(1).mana, 10 - 1 - 2)
 
     def test_tier_refund_before_control(self):
@@ -359,16 +370,18 @@ class BorrowingRulingsTest(TestCase):
         self.assertEqual(debt_payload(cleared)["debt"], 0)
 
     def test_borrowed_when_the_cast_pays(self):
-        from .test_borrowing import borrow_cast, borrower
+        from .test_borrowing import FAILING_BORROWING_PROFILE, borrow_cast, borrower
 
         self.assertEqual(
             ruling("borrowed_when_the_cast_pays").value, "when the cast pays"
         )
-        keeps = borrower(mana=0)
-        borrow_cast(keeps, [[5, 5, 5]])  # 15: fails and keeps its mana
+        # The invented casting failure rules: 13 fails and keeps its mana,
+        # 12 fails and loses it.
+        keeps = borrower(mana=0, intelligence=18)
+        borrow_cast(keeps, [[5, 4, 4]], profile=FAILING_BORROWING_PROFILE)
         self.assertEqual(keeps.by_id(1).debt, 0)
         loses = borrower(mana=0, intelligence=18)
-        borrow_cast(loses, [[6, 6, 5], [1, 1]])  # 17: fails and loses it
+        borrow_cast(loses, [[4, 4, 4], [1, 1]], profile=FAILING_BORROWING_PROFILE)
         self.assertEqual(loses.by_id(1).debt, 3)
 
     def test_borrowing_counts_toward_channel(self):
@@ -524,12 +537,18 @@ class RunawayRulingsTest(TestCase):
 
     def test_one_runaway_at_a_time(self):
         from .test_magic import cast
-        from .test_runaway import RUNAWAY_PROFILE, running_state
+        from .test_runaway import (
+            FAILING_RUNAWAY_PROFILE,
+            RUNAWAY_TOTAL_FACES,
+            running_state,
+        )
 
         self.assertEqual(ruling("one_runaway_at_a_time").value, 1)
         state = running_state()
         first = state.by_id(1).runaway
-        cast(state, [[6, 6, 6]], profile=RUNAWAY_PROFILE, spell="heal")
+        cast(
+            state, [RUNAWAY_TOTAL_FACES], profile=FAILING_RUNAWAY_PROFILE, spell="heal"
+        )
         self.assertIs(state.by_id(1).runaway, first)
 
     def test_runaway_drain_in_renew_phase(self):

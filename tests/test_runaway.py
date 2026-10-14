@@ -2,7 +2,8 @@
 tarmar-studio #825).
 
 Every number here is invented, as in ``test_magic`` and ``test_borrowing``:
-a drain of 2 x the original cost + 1 a turn, moving to fatigue once the mana
+a casting roll's Runaway on a natural 14 (``test_magic``'s casting failure
+rules), a drain of 2 x the original cost + 1 a turn, moving to fatigue once the mana
 is gone, death at 2 x the fatigue maximum below zero, a 2d8 self anchor
 against WIS, a 2d8 helper anchor against INT at 3 x the original cost, a
 failed helper caught, and a growth of 2 a turn. The tests check the engine's
@@ -34,6 +35,7 @@ from .test_magic import (
     control_payload,
     example_magic_rules,
     status_payloads,
+    with_casting_failure,
     wizard_state,
 )
 
@@ -60,6 +62,13 @@ def runaway_magic_rules(**changes) -> MagicRules:
 
 
 RUNAWAY_PROFILE = TarmarProfile(magic=runaway_magic_rules())
+#: Runaway rules with the example casting failure rules beside them, so the
+#: casting roll's injected Runaway total starts one.
+FAILING_RUNAWAY_PROFILE = TarmarProfile(
+    magic=with_casting_failure(runaway_magic_rules())
+)
+#: The example casting roll's Runaway total, 14.
+RUNAWAY_TOTAL_FACES = [5, 5, 4]
 #: Borrowing whose failure is a Runaway, with Runaway rules beside it.
 SURGE_PROFILE = TarmarProfile(
     magic=replace(borrowing_magic_rules(failure=SURGE), runaway=example_runaway_rules())
@@ -198,18 +207,33 @@ class RunawayBeginsTest(TestCase):
 
     def test_the_casting_rolls_runaway_total(self):
         state = wizard_state()
-        events = cast(state, [[6, 6, 6]], profile=RUNAWAY_PROFILE)
+        events = cast(state, [RUNAWAY_TOTAL_FACES], profile=FAILING_RUNAWAY_PROFILE)
         self.assertEqual(state.by_id(1).runaway, RunawayState("fire_missile", 1))
         self.assertEqual(self.begins(events)[0]["original_cost"], 1)
-        # The other mana-lost failure starts nothing.
+        # The other mana-lost failure, 12, starts nothing.
         lost = wizard_state(intelligence=18)
-        cast(lost, [[6, 6, 5]], profile=RUNAWAY_PROFILE)
+        cast(lost, [[4, 4, 4]], profile=FAILING_RUNAWAY_PROFILE)
         self.assertIsNone(lost.by_id(1).runaway)
+        self.assertEqual(lost.by_id(1).mana, 9)
+
+    def test_without_casting_failure_rules_no_cast_starts_a_runaway(self):
+        # INT 10: every total here fails, and none is a Runaway total.
+        for faces in ([4, 4, 4], RUNAWAY_TOTAL_FACES, [6, 6, 5], [6, 6, 6]):
+            with self.subTest(faces=faces):
+                state = wizard_state(intelligence=10)
+                events = cast(state, [faces], profile=RUNAWAY_PROFILE)
+                self.assertIsNone(state.by_id(1).runaway)
+                self.assertEqual(self.begins(events), [])
 
     def test_without_runaway_rules_the_flag_is_all(self):
         cases = (
             (wizard_state(), [[3, 3, 3], [1, 1]], 1, example_magic_rules()),
-            (wizard_state(), [[6, 6, 6]], 0, example_magic_rules()),
+            (
+                wizard_state(),
+                [RUNAWAY_TOTAL_FACES],
+                0,
+                with_casting_failure(example_magic_rules()),
+            ),
         )
         for state, faces, push, rules in cases:
             with self.subTest(faces=faces):
@@ -230,7 +254,9 @@ class RunawayBeginsTest(TestCase):
 
     def test_a_second_runaway_keeps_the_first(self):
         state = running_state()
-        events = cast(state, [[6, 6, 6]], profile=RUNAWAY_PROFILE, spell="heal")
+        events = cast(
+            state, [RUNAWAY_TOTAL_FACES], profile=FAILING_RUNAWAY_PROFILE, spell="heal"
+        )
         self.assertEqual(state.by_id(1).runaway, RunawayState("fire_missile", 2))
         self.assertEqual(self.begins(events), [])
         self.assertEqual(
