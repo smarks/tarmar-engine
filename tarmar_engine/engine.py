@@ -61,6 +61,7 @@ from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
     BorrowingRules,
+    CastingFailureRules,
     CastingSuccessTier,
     CounterspellRules,
     MagicRules,
@@ -96,25 +97,6 @@ PHASES: tuple[tuple[int, str], ...] = (
 # movement.md fatigue costs per gait (combat turns).
 RUN_FATIGUE_COST = 1
 SPRINT_FATIGUE_COST = 6
-
-# mana-pool.md: a natural 3d6 casting roll of 16-18 fails the spell outright
-# (fumble/bad fumble/catastrophic), regardless of the caster's attribute.
-# The low-end specials do not change the success/failure verdict (Spencer's
-# ruling on #292's scope); their tiers and bonuses are injected through
-# MagicRules (tarmar_engine.magic, tarmar-engine #26). Runaway's later turns
-# run on injected RunawayRules (tarmar-engine #30).
-CASTING_FUMBLE_ROLL_FLOOR = 16
-
-# mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative effect",
-# and 18 "triggers Runaway", whose first effect, the drain, is paid at once
-# out of the casting's mana. Those are the failures the pages say cost mana:
-# a spell's mana is paid when it succeeds or on a 17 or 18, and any other
-# failure keeps it (tarmar-studio #816,
-# coordinator's ruling under the standing rule; Spencer may overrule).
-# With injected RunawayRules the Runaway total starts a Runaway whose later
-# turns the engine runs (tarmar-engine #30).
-CASTING_RUNAWAY_ROLL = 18
-CASTING_MANA_LOST_ROLLS = frozenset({17, CASTING_RUNAWAY_ROLL})
 
 #: Why a Counterspell contest ended (tarmar-engine #31), by the key its
 #: ``contest_ended`` event carries, as the log says it.
@@ -2443,6 +2425,9 @@ class TurnRunner:
         # effective attribute the roll checks against, and so does an
         # off-balance figure's −2 on this action (#811).
         attribute = base_attribute - self._casting_penalties(combatant)
+        # How a casting roll fails on its natural total is injected
+        # (tarmar-engine #46); with none, the attribute alone judges it.
+        casting_failure = None if magic is None else magic.casting_failure
         record, cast_sequence = self.roll(
             "3d6",
             purpose="casting",
@@ -2452,19 +2437,23 @@ class TurnRunner:
             roll_under=True,
             judge=lambda cast: (
                 "success"
-                if cast.total <= attribute and cast.total < CASTING_FUMBLE_ROLL_FLOOR
+                if self._casting_roll_succeeds(cast.total, attribute, casting_failure)
                 else "failure"
             ),
         )
-        succeeded = (
-            record.total <= attribute and record.total < CASTING_FUMBLE_ROLL_FLOOR
+        succeeded = self._casting_roll_succeeds(
+            record.total, attribute, casting_failure
         )
         # casting-spells.md: "Spells cost mana equal to the spell's level";
-        # mana-pool.md names mana lost on a failure only on a 17 (#816).
+        # a failure spends it only on the failing totals the injected casting
+        # failure rules name (#816, tarmar-engine #46).
         # A pushed cast pays its pushed mana with the spell's cost
         # (tarmar-engine #27).
         # A borrowing cast borrows only when it pays (tarmar-engine #28).
-        pays = succeeded or record.total in CASTING_MANA_LOST_ROLLS
+        pays = succeeded or (
+            casting_failure is not None
+            and record.total in casting_failure.mana_lost_totals
+        )
         borrowed = shortfall if pays else 0
         if pays:
             cost_note = self._pay_cast(combatant, spell, push_mana, borrowed)
@@ -2496,7 +2485,10 @@ class TurnRunner:
             self._resolve_cast(
                 combatant, spell, magic, sum(record.faces), cast_sequence, refund_cap
             )
-        elif sum(record.faces) == CASTING_RUNAWAY_ROLL:
+        elif (
+            casting_failure is not None
+            and sum(record.faces) == casting_failure.runaway_total
+        ):
             self._begin_runaway(combatant, spell, cost)
         if borrowed and borrowing is not None:
             self._debt_roll(combatant, spell, borrowing)
@@ -2516,6 +2508,25 @@ class TurnRunner:
         if turns is None:
             return 0
         return magic.runaway.effect_bonus(turns)
+
+    @staticmethod
+    def _casting_roll_succeeds(
+        natural_total: int,
+        attribute: int,
+        casting_failure: CastingFailureRules | None,
+    ) -> bool:
+        """Does a casting roll succeed? At or under the attribute, and under
+        the injected fumble floor where one is injected (tarmar-engine #46).
+
+        Args:
+            natural_total: The casting roll's total.
+            attribute: The effective attribute it is rolled under.
+            casting_failure: The injected casting failure rules, or ``None``:
+                the attribute alone judges the roll.
+        """
+        if natural_total > attribute:
+            return False
+        return casting_failure is None or natural_total < casting_failure.fumble_floor
 
     @staticmethod
     def _casting_cost(spell: Spell, push_mana: int) -> int:

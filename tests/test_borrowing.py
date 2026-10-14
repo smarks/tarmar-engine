@@ -28,6 +28,7 @@ from .test_magic import (
     example_magic_rules,
     roll_purposes,
     status_payloads,
+    with_casting_failure,
     wizard_state,
 )
 
@@ -63,6 +64,10 @@ def channel_borrowing_rules() -> MagicRules:
 
 
 BORROWING_PROFILE = TarmarProfile(magic=borrowing_magic_rules())
+#: Borrowing with the example casting failure rules beside it.
+FAILING_BORROWING_PROFILE = TarmarProfile(
+    magic=with_casting_failure(borrowing_magic_rules())
+)
 
 
 def borrower(**overrides) -> BattleState:
@@ -423,15 +428,19 @@ class BorrowingCastTest(TestCase):
         self.assertEqual(events_of_type(events, "damage")[0]["payload"]["raw"], 11)
 
     def test_a_failure_that_keeps_its_mana_borrows_nothing(self):
-        state = borrower(mana=0)
-        events = borrow_cast(state, [[5, 5, 5]])  # 15: fails, no mana lost
+        state = borrower(mana=0, intelligence=18)
+        # 13: past the example floor, not a mana-lost total.
+        events = borrow_cast(state, [[5, 4, 4]], profile=FAILING_BORROWING_PROFILE)
         self.assertEqual((state.by_id(1).mana, state.by_id(1).debt), (0, 0))
         self.assertEqual(action_payload(events)["borrowed"], 0)
         self.assertEqual(roll_purposes(events), ["casting"])
 
     def test_a_failure_that_loses_its_mana_still_borrows_and_rolls(self):
         state = borrower(mana=0, intelligence=18)
-        events = borrow_cast(state, [[6, 6, 5], [1, 1]])  # 17: fails, mana lost
+        # 12: the example floor, and a mana-lost total.
+        events = borrow_cast(
+            state, [[4, 4, 4], [1, 1]], profile=FAILING_BORROWING_PROFILE
+        )
         self.assertEqual((state.by_id(1).mana, state.by_id(1).debt), (0, 3))
         self.assertEqual(roll_purposes(events), ["casting", "debt"])
 

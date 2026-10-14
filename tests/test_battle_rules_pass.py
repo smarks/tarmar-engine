@@ -14,6 +14,7 @@ from tarmar_engine.policy import Candidate, Decision
 from tarmar_engine.state import BattleState, GroundWeapon, WeaponState
 
 from .test_engine import ScriptedRoller, duel_state, events_of_type
+from .test_magic import CASTING_FAILURE_PROFILE
 from .test_state import make_combatant
 
 SPEC = Path(tarmar_engine.__file__).resolve().parent / "spec"
@@ -595,31 +596,36 @@ class BareHandedIsHthTest(TestCase):
 
 
 class ManaOnFailureTest(TestCase):
-    """#816 — mana-pool.md: "17 | Bad fumble—spell fails, mana lost, negative
-    effect"; on 18 a Runaway, whose first effect, the drain, is paid at once
-    out of the casting's mana."""
+    """#816 — a spell's mana is spent on success and on the failing natural
+    totals the injected casting failure rules name; every other failure keeps
+    it. The page's totals are DM-only (tarmar-engine #46), so these are
+    ``test_magic``'s invented rules: mana lost on 12 and 14, a floor of 12."""
 
     def cast(self, faces):
         state = duel_state()
         caster = state.by_id(1)
-        caster.intelligence = 12
+        caster.intelligence = 10
         caster.mana = caster.max_mana = 10
         caster.chosen_spell = "fire_missile"
         events = []
-        runner_for(state, [faces], events).cast_spell(caster)
+        runner_for(state, [faces], events, profile=CASTING_FAILURE_PROFILE).cast_spell(
+            caster
+        )
         return caster, events
 
     def test_an_ordinary_failure_keeps_the_mana(self):
-        for faces in ([5, 5, 5], [6, 5, 5]):  # 15 over INT 12; 16 the fumble
+        # 11 over INT 10; 13 past the floor but not a mana-lost total.
+        for faces in ([4, 4, 3], [5, 4, 4]):
             caster, events = self.cast(faces)
             self.assertEqual(caster.mana, 10, faces)
             self.assertIn(
                 "no mana spent", events_of_type(events, "action")[0]["message"]
             )
 
-    def test_a_bad_fumble_loses_it(self):
-        caster, _events = self.cast([6, 6, 5])
-        self.assertEqual(caster.mana, 9)
+    def test_a_mana_lost_total_loses_it(self):
+        for faces in ([4, 4, 4], [5, 5, 4]):  # 12 and 14
+            caster, _events = self.cast(faces)
+            self.assertEqual(caster.mana, 9, faces)
 
     def test_success_pays(self):
         caster, _events = self.cast([2, 2, 2])
