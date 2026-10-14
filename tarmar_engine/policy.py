@@ -1280,11 +1280,23 @@ def _score_options(
                 # The jog the engine would charge at: a figure barred from
                 # jogging charges at its walk (tarmar-engine #17).
                 jog = movement.gait_allowance(actor, "jog")
+                run = movement.gait_allowance(actor, movement.MOVEMENT_GAITS["a"])
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
                 if distance <= 1:
                     score = 0.0
                     band = "already adjacent, so moving gains nothing"
+                elif (
+                    movement.approach_route(state, actor, enemy, run).distance
+                    >= distance
+                ):
+                    # Blocked on every side: the move the engine would make
+                    # gets no nearer, so it would stand still (#37).
+                    score = 0.0
+                    band = (
+                        f"no clear path within a {run}-hex run gets nearer, "
+                        "so moving gains nothing"
+                    )
                 elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
@@ -1310,12 +1322,18 @@ def _score_options(
         elif letter == "b" and enemy is not None:
             score, rationale = _melee_score(actor, enemy)
             distance = combat_math.figure_distance(actor, enemy)
-            reach = movement.gait_allowance(actor, "jog") + 1
-            if distance > reach:
+            jog = movement.gait_allowance(actor, movement.MOVEMENT_GAITS["b"])
+            # The charge's reach is where the engine's own approach ends, so a
+            # figure blocked short of its target is not sent at it turn after
+            # turn to fall short (#37).
+            arrival = movement.approach_route(state, actor, enemy, jog).distance
+            if arrival > 1:
                 score = 0.0
                 rationale = (
-                    f"{enemy.name} is {distance} hexes away, beyond the "
-                    f"{reach}-hex charge reach = 0.000"
+                    f"{enemy.name} is {combat_math.hexes_text(distance)} away and "
+                    f"a {jog}-hex jog along a clear path ends "
+                    f"{combat_math.hexes_text(arrival)} from it, out of charge "
+                    f"reach = {score_text(score)}"
                 )
             score, rationale = _beast_caution(actor, hurt, score, rationale)
             candidates.append(

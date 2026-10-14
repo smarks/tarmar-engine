@@ -8,10 +8,15 @@ options). Each fixture here was recorded before the pass's first change.
 """
 
 import json
+import re
 from unittest import TestCase
 
 from .replay_scenarios import RECORDED, SEEDS, fixture_path, record
 from .test_engine import SeededStubRoller
+
+#: The ground covered, added to every movement line after the fixtures were
+#: recorded (tarmar-engine #37): ", ending 3 hexes from its start".
+NET_DISTANCE_SUFFIX = re.compile(r", ending \d+ hex(es)? from its start$")
 
 
 def _comparable(event: dict) -> dict:
@@ -22,7 +27,17 @@ def _comparable(event: dict) -> dict:
     counts the modifier once (#824) — so weapons with a damage modifier
     forecast slightly differently. The choice itself, and everything the
     dice then did, must not move.
+
+    A movement line gained the ground it covered (#37), in its message and
+    as the payload's ``net_hexes``. Both are additive and are set aside; the
+    steps taken and the hexes moved from and to must not move.
     """
+    if event["event_type"] == "movement":
+        payload = {
+            key: value for key, value in event["payload"].items() if key != "net_hexes"
+        }
+        message = NET_DISTANCE_SUFFIX.sub("", event["message"])
+        return event | {"message": message, "payload": payload}
     if event["event_type"] != "decision":
         return event
     chosen = event["payload"]["chosen"]

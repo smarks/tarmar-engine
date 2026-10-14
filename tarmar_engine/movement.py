@@ -3,8 +3,9 @@
 movement.md's Speed table gives each gait its hexes, and action-options.md's
 Move column says which gait (or which one-hex shift) each option allows. Most
 of the engine's movement is derived from a target: MOVE and CHARGE close on
-the chosen enemy, DODGE jogs toward the missile threat. A few moves are
-placed instead, at a hex the figure picks (tarmar-engine #20, from
+the chosen enemy, DODGE jogs toward the missile threat, all along
+:func:`approach_route`, which the AI also prices a charge's reach by. A few
+moves are placed instead, at a hex the figure picks (tarmar-engine #20, from
 tarmar-studio #819 and #866):
 
 * **Shift** — the engaged options whose Move column reads "Shift/still"
@@ -32,6 +33,7 @@ a game that lets a person pick the hex.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 
 from . import actions, combat_math, hexes
 from .state import BattleState, CombatantState
@@ -126,6 +128,17 @@ def in_hand_to_hand(state: BattleState, combatant: CombatantState) -> bool:
     return False
 
 
+def _engaging_fronts(
+    state: BattleState, combatant: CombatantState
+) -> list[tuple[frozenset[Hex], int]]:
+    """``(front hexes, size)`` of every enemy able to engage the figure."""
+    return [
+        (enemy.front_hexes, enemy.size_hexes)
+        for enemy in state.enemies_of(combatant)
+        if combat_math.engages(enemy)
+    ]
+
+
 def _paths(
     state: BattleState, combatant: CombatantState, allowance: int
 ) -> dict[Hex, list[Hex]]:
@@ -137,11 +150,7 @@ def _paths(
     reached but not passed through, and a figure engaged where it stands
     reaches nothing.
     """
-    engagers = [
-        (enemy.front_hexes, enemy.size_hexes)
-        for enemy in state.enemies_of(combatant)
-        if combat_math.engages(enemy)
-    ]
+    engagers = _engaging_fronts(state, combatant)
     occupied = state.occupied_hexes() - set(combatant.footprint)
 
     def fits(anchor: Hex, facing: int) -> tuple[Hex, ...] | None:
@@ -174,6 +183,149 @@ def _paths(
                 frontier.append(there)
     del paths[start]
     return paths
+
+
+@dataclass(frozen=True)
+class Approach:
+    """Where a figure closing on a target goes this move.
+
+    ``route`` is each anchor it steps onto with the facing it takes there,
+    in order; ``distance`` is the figure distance to the target at the end,
+    once the mover has turned to face it.
+    """
+
+    route: tuple[tuple[Hex, int], ...]
+    distance: int
+
+
+def _line_towards(
+    state: BattleState,
+    combatant: CombatantState,
+    target: CombatantState,
+    allowance: int,
+) -> tuple[Approach, bool]:
+    """The straight-line walk (:func:`hexes.step_towards`), cut at its closest.
+
+    One step at a time, facing the target, stopping when adjacent, when
+    engaged (movement.md) or when boxed in, and never stepping back onto a
+    hex stood on this move. Sidesteps that end the walk no nearer than it
+    already got are dropped: a figure that cannot gain ground stands rather
+    than shuffling a hex aside and back again on the next turn (#37).
+
+    Returns the walk and whether it was blocked: turned aside or boxed in
+    by the board rather than stopped by engagement, the rule (movement.md).
+    """
+    occupied = state.occupied_hexes() - set(combatant.footprint)
+    engagers = _engaging_fronts(state, combatant)
+    anchor = combatant.position
+    body = combatant.footprint
+    stood_on = {anchor}
+    route: list[tuple[Hex, int]] = []
+    distances: list[int] = []
+    blocked = False
+    for _step in range(allowance):
+        if hexes.figure_engaged(body, combatant.size_hexes, engagers):
+            return _closest_of(combatant, target, route, distances), False
+        if hexes.figures_adjacent(body, target.footprint):
+            break
+        stepped = hexes.step_towards(
+            anchor,
+            target.position,
+            occupied,
+            state.arena_radius,
+            combatant.size_hexes,
+            avoid=stood_on,
+        )
+        if hexes.distance(stepped, target.position) >= hexes.distance(
+            anchor, target.position
+        ):
+            blocked = True
+        if stepped == anchor:
+            break
+        anchor = stepped
+        facing = hexes.direction_towards(anchor, target.position)
+        body = hexes.footprint(anchor, facing, combatant.size_hexes)
+        stood_on.add(anchor)
+        route.append((anchor, facing))
+        distances.append(hexes.figure_distance(body, target.footprint))
+    return _closest_of(combatant, target, route, distances), blocked
+
+
+def _closest_of(
+    combatant: CombatantState,
+    target: CombatantState,
+    route: list[tuple[Hex, int]],
+    distances: list[int],
+) -> Approach:
+    """A walk cut at the first step of its closest approach, or no walk at
+    all when no step got nearer than the start."""
+    start_distance = combat_math.figure_distance(combatant, target)
+    closest = min(distances, default=start_distance)
+    if closest >= start_distance:
+        return Approach(route=(), distance=start_distance)
+    return Approach(
+        route=tuple(route[: distances.index(closest) + 1]), distance=closest
+    )
+
+
+def _arrival_distance(
+    state: BattleState,
+    combatant: CombatantState,
+    target: CombatantState,
+    anchor: Hex,
+    facing: int,
+) -> int:
+    """Figure distance to ``target`` from ``anchor`` once turned to face it.
+
+    The engine turns a mover to its target after the move, unless a
+    multi-hex body has no room to swing (``TurnRunner.face_towards``).
+    """
+    turned = hexes.direction_towards(anchor, target.position)
+    if footprint_clear(state, combatant, anchor, turned):
+        facing = turned
+    body = hexes.footprint(anchor, facing, combatant.size_hexes)
+    return hexes.figure_distance(body, target.footprint)
+
+
+def approach_route(
+    state: BattleState,
+    combatant: CombatantState,
+    target: CombatantState,
+    allowance: int,
+) -> Approach:
+    """How a MOVE, CHARGE or DODGE closes on ``target`` within ``allowance``.
+
+    The straight line toward the target first (:func:`_line_towards`), as the
+    engine has always walked it. When that is blocked short of the target, a
+    clear path round (:func:`_paths`, the search a placed move walks) is
+    taken instead if it ends strictly nearer, the shortest such path first.
+    A figure no path brings nearer stays where it is (tarmar-engine #37). An
+    unblocked line is never searched past, so a move in the open walks the
+    straight line it always has; and a line that stops because the figure is
+    engaged stays stopped: movement.md stops a figure the moment it is
+    engaged, and the search is for a way round what blocks the line, not
+    round an enemy that holds the figure.
+
+    The engine walks this route and the AI prices a charge's reach by it, so
+    the two read one rule.
+    """
+    line, blocked = _line_towards(state, combatant, target, allowance)
+    if not blocked or line.distance <= 1:
+        return line
+    best = line
+    # _paths is breadth first, so the first path to a distance is a shortest.
+    for anchor, path in _paths(state, combatant, allowance).items():
+        before = path[-2] if len(path) > 1 else combatant.position
+        arrival = _arrival_distance(
+            state, combatant, target, anchor, hexes.direction_towards(before, anchor)
+        )
+        if arrival < best.distance:
+            route = tuple(
+                (cell, hexes.direction_towards(previous, cell))
+                for previous, cell in zip([combatant.position, *path], path)
+            )
+            best = Approach(route=route, distance=arrival)
+    return best
 
 
 def path_to(

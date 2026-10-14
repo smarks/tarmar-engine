@@ -118,6 +118,18 @@ class ArenaAndSteppingTest(TestCase):
             2,
         )
 
+    def test_step_towards_never_steps_back_onto_a_hex_stood_on(self):
+        # tarmar-engine #37: sidesteps alone took a blocked figure back where
+        # it began. A hex already stood on this move is never stepped onto.
+        first = hexes.step_towards((0, 0), (2, 0), {(1, 0)}, 8)
+        other = hexes.step_towards((0, 0), (2, 0), {(1, 0)}, 8, avoid={first})
+        self.assertNotIn(other, ((0, 0), first))
+        self.assertEqual(hexes.distance(other, (2, 0)), 2)
+        self.assertEqual(
+            hexes.step_towards((0, 0), (2, 0), {(1, 0)}, 8, avoid={first, other}),
+            (0, 0),
+        )
+
     def test_step_towards_boxed_in_stays_put(self):
         occupied = set(hexes.neighbors((0, 0)))
         self.assertEqual(hexes.step_towards((0, 0), (4, 0), occupied, 8), (0, 0))
