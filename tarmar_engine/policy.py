@@ -666,27 +666,51 @@ def _hth_disengage_candidate(
     state: BattleState,
     actor: CombatantState,
     partners: list[CombatantState],
-    hurt: bool,
 ) -> Candidate:
     """v DISENGAGE from hand-to-hand: "Roll 4d6 ≤ DEX → stand, move to
-    adjacent", scored as a plain DISENGAGE times the chance the roll makes."""
+    adjacent", scored by what breaking away buys (tarmar-engine #38).
+
+    Over this turn and the next: this turn goes on the roll, and next turn
+    the figure fights its partner with the weapon in its hand if it got free
+    (P(escape)), and strikes in close as it could have this turn if not. The
+    two turns' expected damage, halved, is a per-turn figure the HTH strike's
+    own forecast (t) compares with directly. A figure whose weapon outclasses
+    what it strikes with in close breaks away when the chance of getting free
+    pays for the turn; one whose weapon is no better never does, since half
+    of two strikes' worth is never more than one.
+    """
+    partner = partners[0]
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
-    urgency = 4 if hurt else 1
-    score = product_of(DISENGAGE_BASE_SCORE, urgency, probability)
+    held = 1 - probability
+    strike, _strike_rationale = _hth_strike_forecast(state, actor, partner)
+    if actor.weapon.item_id:
+        free, _free_rationale = _attack_forecast(
+            actor, partner, ranged=actor.weapon.is_missile
+        )
+        once_free = f"the {actor.weapon.name} {score_text(free)}"
+    else:
+        free = 0.0
+        once_free = f"no weapon in hand, {score_text(free)}"
+    escaped = product_of(probability, free)
+    still_held = product_of(held, strike)
+    score = round_score((escaped + still_held) / 2)
     # The forecast names the step expected; the engine works it out when the
     # figure acts, so the candidate names no hex (#20).
-    step = movement.step_away_hex(state, actor, partners[0])
+    step = movement.step_away_hex(state, actor, partner)
     where = f" toward {step}" if step is not None else ""
     return Candidate(
         "v",
         actions.option_name("v"),
         score,
         f"Break away{where}: 4d6 ≤ DEX {effective_dex} — P(escape) "
-        f"{score_text(probability)} x {score_text(DISENGAGE_BASE_SCORE)} base "
-        f"x {urgency} ({'hurt' if hurt else 'unhurt'}) = {score_text(score)}",
+        f"{score_text(probability)}; next turn against {partner.name}, "
+        f"{once_free} if free, {score_text(strike)} striking in close if "
+        f"not; this turn spent, so ({score_text(probability)} x "
+        f"{score_text(free)} + {score_text(held)} x {score_text(strike)}) / 2 "
+        f"= {score_text(score)}",
     )
 
 
@@ -1478,7 +1502,7 @@ def _score_options(
                 )
             )
         elif letter == "v" and partners:
-            candidates.append(_hth_disengage_candidate(state, actor, partners, hurt))
+            candidates.append(_hth_disengage_candidate(state, actor, partners))
         elif letter == "o" and hth_targets:
             # Deterministic target pick (lowest id among the enemies an HTH
             # entry condition admits, #823) — score is always 0, so this
