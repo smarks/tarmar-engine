@@ -114,6 +114,11 @@ LIFTED_BOUNDS_KEY = "lifted_bounds"
 LIFTED_COUNTER_MINIMUM = 0
 
 
+def casting_mana(spell: Spell, push_mana: int) -> int:
+    """A casting's whole mana: the spell's cost and any pushed mana."""
+    return spell.level + push_mana
+
+
 def bound_lifted(combatant: CombatantState, bound: str) -> bool:
     """Has a Game Master lifted this bound for the combatant?
 
@@ -372,10 +377,12 @@ class PushRules:
         """The band an automatic Runaway uses: the first Runaway band."""
         return next((band for band in self.failure_bands if band.is_runaway), None)
 
-    def mana_invested(self, spell_level: int, pushed_mana: int) -> int:
-        """The mana the Control Roll's penalty counts."""
+    def mana_invested(self, spell: Spell, pushed_mana: int) -> int:
+        """The mana the Control Roll's penalty counts: the whole casting
+        (:func:`casting_mana`) when the spell's cost counts, else the pushed
+        mana alone."""
         if self.base_cost_counts_as_invested:
-            return spell_level + pushed_mana
+            return casting_mana(spell, pushed_mana)
         return pushed_mana
 
     def bonus_per_mana(self, spell: Spell) -> int | None:
@@ -863,6 +870,15 @@ class CounterspellRules:
         least, most = self.bounds(bounds_lifted=bounds_lifted)
         return range(least, (mana if most is None else min(mana, most)) + 1)
 
+    def lifted_bounds_passed(self, mana_committed: int) -> tuple[str, ...]:
+        """The bounds a commitment goes past that only a Game Master's
+        lifting allows: :data:`COUNTER_BOUNDS` when it lies outside the
+        injected least and most, else nothing. The one answer the engine's
+        ``counter_declared`` payload and the menu's counter options give
+        (:data:`LIFTED_BOUNDS_KEY`). It says nothing of whether the defender
+        may commit it (:meth:`allows`)."""
+        return () if self.allows(mana_committed) else (COUNTER_BOUNDS,)
+
     def caster_gets_through(self, caster_total: int, defender_total: int) -> bool:
         """Does the caster's total beat the defender's, by the tie rule?"""
         if caster_total == defender_total:
@@ -957,6 +973,31 @@ class MagicRules:
         ):
             return bound
         return caster.mana + self.channel.channel_for(caster, spell)
+
+    def lifted_bounds_passed(
+        self, caster: CombatantState, spell: Spell, push_mana: int = 0
+    ) -> tuple[str, ...]:
+        """The bounds a casting of the spell with ``push_mana`` pushed goes
+        past that only a Game Master's lifting allows, in order: Push's own
+        cap (:data:`PUSH_CAP`) when the push is past it, then the caster's
+        Channel (:data:`CHANNEL`) when the casting's whole mana is past it.
+
+        The one answer the engine's cast payload and the menu's cast options
+        give (:data:`LIFTED_BOUNDS_KEY`), so a caller reads it rather than
+        recomputing it. It says nothing of whether the casting is allowed:
+        the engine refuses one past a bound the caster does not have lifted.
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the Channel rules give no
+                kind.
+        """
+        passed: list[str] = []
+        if push_mana and self.push is not None and not self.push.within_cap(push_mana):
+            passed.append(PUSH_CAP)
+        channel = self.channel_for(caster, spell)
+        if channel is not None and casting_mana(spell, push_mana) > channel:
+            passed.append(CHANNEL)
+        return tuple(passed)
 
     def success_tier(self, natural_total: int) -> CastingSuccessTier | None:
         """The tier a successful casting roll's natural total lands in."""

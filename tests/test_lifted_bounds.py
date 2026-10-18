@@ -13,7 +13,7 @@ invented one of the test modules this one borrows from.
 from dataclasses import replace
 from unittest import TestCase
 
-from tarmar_engine import policy
+from tarmar_engine import engine, policy
 from tarmar_engine.magic import (
     CHANNEL,
     COUNTER_BOUNDS,
@@ -25,6 +25,7 @@ from tarmar_engine.magic import (
     bound_lifted,
 )
 from tarmar_engine.profile import TarmarProfile
+from tarmar_engine.spells import get_spell
 from tarmar_engine.state import BattleState, WeaponState
 
 from .test_borrowing import (
@@ -54,7 +55,7 @@ from .test_counterspell import (
     result_payload,
     runner,
 )
-from .test_engine import events_of_type
+from .test_engine import ScriptedRoller, events_of_type
 from .test_magic import cast, status_payloads
 
 
@@ -475,3 +476,94 @@ class LiftedSnapshotTest(TestCase):
         for entry in older["combatants"]:
             self.assertNotIn("lifted_magic_bounds", entry)
         self.assertEqual(BattleState.from_dict(older).by_id(1).lifted_magic_bounds, [])
+
+
+class CandidatesCarryTheEnginesAnswerTest(TestCase):
+    """Every option on a lifted figure's menu carries the bounds it goes
+    past, and running it gives the engine's payload the same answer, from
+    the one function (:meth:`MagicRules.lifted_bounds_passed`)."""
+
+    RULES = capped_channel_borrowing_rules()
+
+    def caster(self, *bounds: str) -> BattleState:
+        """Channel 9 for Fire Missile (so a push may pass the cap of 3 alone)
+        and 1 for the Bolt (so a cast may pass Channel alone), 8 mana."""
+        return lift(
+            channel_caster(
+                {"fire_missile": 5, "lightning_bolt": 1},
+                spells=["fire_missile", "lightning_bolt"],
+                mana=8,
+                intelligence=30,
+                wisdom=30,
+            ),
+            *bounds,
+        )
+
+    def ran(self, state: BattleState, candidate: policy.Candidate) -> list[str]:
+        """The cast's payload ``lifted_bounds`` when the option runs."""
+        trial = BattleState.from_dict(state.to_dict())
+        caster = trial.by_id(1)
+        caster.chosen_spell = candidate.spell_key
+        caster.chosen_target = candidate.target_id
+        caster.chosen_push_mana = candidate.push_mana
+        caster.chosen_borrow = candidate.borrow
+        events: list[dict] = []
+        engine.TurnRunner(
+            trial,
+            ScriptedRoller(),
+            events.append,
+            profile=TarmarProfile(magic=self.RULES),
+        ).cast_spell(caster)
+        return cast_payload(events).get(LIFTED_BOUNDS_KEY, [])
+
+    def test_each_cast_option_agrees_with_the_engine(self):
+        for bounds in ((), (CHANNEL,), (PUSH_CAP,), (CHANNEL, PUSH_CAP)):
+            state = self.caster(*bounds)
+            casts = [
+                candidate
+                for candidate in policy.choose_option(
+                    state, state.by_id(1), magic=self.RULES
+                ).candidates
+                if candidate.spell_key
+            ]
+            passed_somewhere: set[str] = set()
+            for candidate in casts:
+                with self.subTest(bounds=bounds, option=candidate.name):
+                    answer = self.RULES.lifted_bounds_passed(
+                        state.by_id(1),
+                        get_spell(candidate.spell_key),
+                        candidate.push_mana,
+                    )
+                    self.assertEqual(candidate.lifted_bounds, answer)
+                    self.assertEqual(self.ran(state, candidate), list(answer))
+                    payload = candidate.to_payload()
+                    if answer:
+                        self.assertEqual(payload[LIFTED_BOUNDS_KEY], list(answer))
+                    else:
+                        self.assertNotIn(LIFTED_BOUNDS_KEY, payload)
+                passed_somewhere.update(candidate.lifted_bounds)
+            # Not vacuous: each lifted bound is passed by some option, and
+            # no option passes a bound that is not lifted.
+            self.assertEqual(passed_somewhere, set(bounds))
+
+    def test_each_counter_option_agrees_with_the_engine(self):
+        for bounds in ((), (COUNTER_BOUNDS,)):
+            state = lift(counter_state(), *bounds, combatant_id=2)
+            offered = counters(decide(state, 2))
+            rules = example_counterspell_rules()
+            for candidate in offered:
+                mana = candidate.counter_mana
+                assert mana is not None
+                with self.subTest(bounds=bounds, mana=mana):
+                    trial = BattleState.from_dict(state.to_dict())
+                    choose_counter(trial, mana)
+                    turn_runner, events = runner(trial)
+                    turn_runner.declare_counter(trial.by_id(2))
+                    declared = status_payloads(events, "counter_declared")[0]
+                    answer = rules.lifted_bounds_passed(mana)
+                    self.assertEqual(candidate.lifted_bounds, answer)
+                    self.assertEqual(declared.get(LIFTED_BOUNDS_KEY, []), list(answer))
+            self.assertEqual(
+                {bound for option in offered for bound in option.lifted_bounds},
+                set(bounds),
+            )

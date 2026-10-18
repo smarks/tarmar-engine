@@ -55,10 +55,11 @@ from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
+    CHANNEL,
     COUNTER_BOUNDS,
+    LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
-    ChannelRules,
     ChannelUnclassifiedSpell,
     CounterspellRules,
     MagicRules,
@@ -67,6 +68,7 @@ from .magic import (
     RunawayRules,
     attribute_score,
     bound_lifted,
+    casting_mana,
 )
 from .reactions import TarmarReactions
 from .spells import Spell, get_spell
@@ -175,6 +177,13 @@ class Candidate:
     counter_mana: int | None = None
     #: Does the cast press a countered spell again (tarmar-engine #31)?
     escalate: bool = False
+    #: The bounds a Game Master lifted for the actor that this cast or
+    #: counter goes past (tarmar-studio #37), as
+    #: :meth:`.magic.MagicRules.lifted_bounds_passed` and
+    #: :meth:`.magic.CounterspellRules.lifted_bounds_passed` answer it: the
+    #: same answer the engine's event payload gives when it runs, so a caller
+    #: reads it here rather than recomputing it. Empty for every other option.
+    lifted_bounds: tuple[str, ...] = ()
 
     def to_payload(self) -> dict:
         payload = {
@@ -207,6 +216,9 @@ class Candidate:
             payload["counter_mana"] = self.counter_mana
         if self.escalate:
             payload["escalate"] = True
+        # And for the bounds passed by ruling, only where there are some.
+        if self.lifted_bounds:
+            payload[LIFTED_BOUNDS_KEY] = list(self.lifted_bounds)
         return payload
 
 
@@ -812,10 +824,10 @@ def choose_option(
     """
     decision = _score_options(state, actor)
     if magic is not None and magic.channel is not None:
-        decision = _within_channel(actor, decision, magic.channel)
+        decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
         decision.candidates.extend(
-            _push_candidates(actor, decision.candidates, magic.push, magic.channel)
+            _push_candidates(actor, decision.candidates, magic, magic.push)
         )
     if magic is not None and magic.borrowing is not None:
         decision.candidates.extend(
@@ -929,6 +941,7 @@ def _counter_candidates(
                     f"{score_text(PLAYER_ONLY_SCORE)}",
                     target_id=caster.combatant_id,
                     counter_mana=mana,
+                    lifted_bounds=counterspell.lifted_bounds_passed(mana),
                 )
             )
     return candidates
@@ -1016,15 +1029,16 @@ def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
 
 
 def _within_channel(
-    actor: CombatantState, decision: Decision, channel: ChannelRules
+    actor: CombatantState, decision: Decision, magic: MagicRules
 ) -> Decision:
     """The decision less every cast the actor's Channel does not allow.
 
     A cast is withheld when its spell costs more than the actor's Channel
     for it (unless a Game Master has lifted Channel for the actor:
-    :meth:`.magic.ChannelRules.bound_for`; the cast is then kept and its
-    rationale says it passes the Channel by ruling), or when the Channel rules give
-    the spell no kind of magic (the engine would refuse either), and
+    :meth:`.magic.ChannelRules.bound_for`; the cast is then kept, carries
+    :data:`~.magic.CHANNEL` in :attr:`Candidate.lifted_bounds` and its
+    rationale says it passes the Channel by ruling), or when the Channel
+    rules give the spell no kind of magic (the engine would refuse either), and
     :attr:`Decision.withheld` says why, once per spell. The withheld casts
     leave the player's menu and the AI's choice alike. When the AI had
     chosen one, it takes the best of what remains by the rule it chose with
@@ -1034,7 +1048,12 @@ def _within_channel(
     :func:`_score_options` builds holds an option that is not a cast (DODGE,
     the engaged options, standing up, Struggle Free), so ``choose_option``
     never empties one. It is probed directly.
+
+    With no Channel rules in ``magic`` the decision comes back unchanged.
     """
+    channel = magic.channel
+    if channel is None:
+        return decision
     kept: list[Candidate] = []
     withheld: dict[str, str] = {}
     for candidate in decision.candidates:
@@ -1055,10 +1074,11 @@ def _within_channel(
                 f"{actor.name}'s Channel {limit} for it",
             )
             continue
-        if spell.level > actor_channel:
+        candidate.lifted_bounds = magic.lifted_bounds_passed(actor, spell)
+        if CHANNEL in candidate.lifted_bounds:
             candidate.rationale = (
                 f"{candidate.rationale}; {spell.level} mana, "
-                f"{_channel_note(actor_channel, spell.level)}"
+                f"{_channel_note(actor_channel, candidate.lifted_bounds)}"
             )
         kept.append(candidate)
     reasons = list(withheld.values())
@@ -1076,8 +1096,8 @@ def _within_channel(
 def _push_candidates(
     actor: CombatantState,
     candidates: list[Candidate],
+    magic: MagicRules,
     push: PushRules,
-    channel_rules: ChannelRules | None = None,
 ) -> list[Candidate]:
     """The pushed variant of each cast on the menu, one per affordable amount.
 
@@ -1085,7 +1105,7 @@ def _push_candidates(
     actor's Channel for the spell, and each names that Channel; Push's own
     optional cap still applies beneath it. Either bound a Game Master has
     lifted for the actor does not apply, and a variant past it says so
-    (:func:`_push_note`).
+    (:func:`_push_note`) and carries it in :attr:`Candidate.lifted_bounds`.
 
     Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
     the AI's choice: pricing a push needs the spell-by-spell payoff, and the
@@ -1096,6 +1116,7 @@ def _push_candidates(
     """
     pushed: list[Candidate] = []
     cap_lifted = bound_lifted(actor, PUSH_CAP)
+    channel_rules = magic.channel
     for candidate in candidates:
         if not candidate.spell_key or candidate.push_mana:
             continue
@@ -1110,16 +1131,19 @@ def _push_candidates(
         )
         room = push.push_room(spell, actor.mana, bound, cap_lifted=cap_lifted)
         for extra_mana in range(1, room + 1):
+            passed = magic.lifted_bounds_passed(actor, spell, extra_mana)
+            note = _push_note(actor, spell, push, extra_mana, channel, passed)
             pushed.append(
                 Candidate(
                     candidate.letter,
                     f"{candidate.name} (PUSH {extra_mana} MANA)",
                     PLAYER_ONLY_SCORE,
-                    f"{_push_note(actor, spell, push, extra_mana, channel)}; "
-                    f"the AI does not push = {score_text(PLAYER_ONLY_SCORE)}",
+                    f"{note}; the AI does not push = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}",
                     target_id=candidate.target_id,
                     spell_key=candidate.spell_key,
                     push_mana=extra_mana,
+                    lifted_bounds=passed,
                 )
             )
     return pushed
@@ -1131,25 +1155,27 @@ def _push_note(
     push: PushRules,
     extra_mana: int,
     channel: int | None,
+    passed: tuple[str, ...],
 ) -> str:
     """A pushed cast's Control Roll as the menu prints it.
 
     The target is the one the engine will roll against: less the injury
     band and an owed off-balance penalty (:func:`_casting_penalties`).
     ``channel`` is the actor's Channel for the spell (``None`` with no
-    Channel rules), named whether or not it bounds the actor; a push past it
-    or past Push's own cap, which only a Game Master's lifting allows, says
-    so (:data:`PAST_BY_RULING`).
+    Channel rules), named whether or not it bounds the actor. ``passed`` is
+    the bounds the push goes past (:meth:`.magic.MagicRules.
+    lifted_bounds_passed`), which only a Game Master's lifting allows; each
+    says so (:data:`PAST_BY_RULING`).
     """
     injury, off_balance = _casting_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
-    invested = push.mana_invested(spell.level, extra_mana)
+    invested = push.mana_invested(spell, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
-    total = spell.level + extra_mana
+    total = casting_mana(spell, extra_mana)
     bound_notes: list[str] = []
     if channel is not None:
-        bound_notes.append(_channel_note(channel, total))
-    if not push.within_cap(extra_mana):
+        bound_notes.append(_channel_note(channel, passed))
+    if PUSH_CAP in passed:
         bound_notes.append(f"past the push cap {push.max_push_mana} {PAST_BY_RULING}")
     channel_note = "".join(f", {note}" for note in bound_notes)
     return (
@@ -1161,11 +1187,11 @@ def _push_note(
     )
 
 
-def _channel_note(channel: int, total: int) -> str:
-    """The actor's Channel as a menu line names it for a casting of
-    ``total`` mana: past it only on a Game Master's lifting
-    (:data:`PAST_BY_RULING`)."""
-    if total <= channel:
+def _channel_note(channel: int, passed: tuple[str, ...]) -> str:
+    """The actor's Channel as a menu line names it for a casting that goes
+    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`): past
+    it only on a Game Master's lifting (:data:`PAST_BY_RULING`)."""
+    if CHANNEL not in passed:
         return f"Channel {channel}"
     return f"past Channel {channel} {PAST_BY_RULING}"
 
@@ -1202,8 +1228,7 @@ def _borrow_candidates(
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
     menu = _score_options(state, actor, beyond_purse=True)
-    if magic.channel is not None:
-        menu = _within_channel(actor, menu, magic.channel)
+    menu = _within_channel(actor, menu, magic)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
     cap_lifted = bound_lifted(actor, PUSH_CAP)
     borrowed: list[Candidate] = []
@@ -1226,6 +1251,7 @@ def _borrow_candidates(
                     target_id=candidate.target_id,
                     spell_key=candidate.spell_key,
                     borrow=True,
+                    lifted_bounds=candidate.lifted_bounds,
                 )
             )
         if magic.push is None:
@@ -1233,21 +1259,23 @@ def _borrow_candidates(
         first_short = max(1, actor.mana - spell.level + 1)
         last = magic.push.push_room(spell, ceiling, bound, cap_lifted=cap_lifted)
         for extra_mana in range(first_short, last + 1):
-            cost = spell.level + extra_mana
+            cost = casting_mana(spell, extra_mana)
+            passed = magic.lifted_bounds_passed(actor, spell, extra_mana)
+            note = _push_note(actor, spell, magic.push, extra_mana, channel, passed)
             borrowed.append(
                 Candidate(
                     candidate.letter,
                     f"{candidate.name} (PUSH {extra_mana} MANA, "
                     f"BORROW {cost - actor.mana} MANA)",
                     PLAYER_ONLY_SCORE,
-                    f"{_push_note(actor, spell, magic.push, extra_mana, channel)}; "
-                    f"{_borrow_note(actor, borrowing, cost)}; "
+                    f"{note}; {_borrow_note(actor, borrowing, cost)}; "
                     f"the AI does not push or borrow = "
                     f"{score_text(PLAYER_ONLY_SCORE)}",
                     target_id=candidate.target_id,
                     spell_key=candidate.spell_key,
                     push_mana=extra_mana,
                     borrow=True,
+                    lifted_bounds=passed,
                 )
             )
     return borrowed

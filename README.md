@@ -592,6 +592,17 @@ empty.
   event. Within the bounds, lifted or not, no key is written (house reading
   `lifted_cast_names_its_channel`). The messages are unchanged: narrating the
   ruling is the consuming game's.
+- **One answer, on the menu too (v0.9.18).** Which lifted bounds a casting
+  or a counter goes past is computed in one place:
+  `MagicRules.lifted_bounds_passed(caster, spell, push_mana=0)` for a cast
+  (`push_cap` when the push is past Push's own cap, then `channel` when the
+  casting's whole mana, `magic.casting_mana(spell, push_mana)`, is past the
+  caster's Channel) and `CounterspellRules.lifted_bounds_passed(mana)` for a
+  counter. The engine writes its payload from them, and every menu option
+  carries the same answer as `Candidate.lifted_bounds` (a tuple, empty for
+  every other option; `"lifted_bounds"` in `Candidate.to_payload()` only
+  when non-empty), so a caller reads it instead of recomputing it. The
+  menu's "by a Game Master's ruling" wording is decided from it too.
 
 ## What it sits on
 
