@@ -55,6 +55,8 @@ from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
+    COUNTER_BOUNDS,
+    PUSH_CAP,
     BorrowingRules,
     ChannelRules,
     ChannelUnclassifiedSpell,
@@ -64,10 +66,15 @@ from .magic import (
     RollUnderRule,
     RunawayRules,
     attribute_score,
+    bound_lifted,
 )
 from .reactions import TarmarReactions
 from .spells import Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
+
+#: How a menu line says a bound was passed on a Game Master's lifting of it
+#: (tarmar-studio #37).
+PAST_BY_RULING = "by a Game Master's ruling"
 
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
@@ -794,7 +801,10 @@ def choose_option(
     countered spell again is flagged and left to a player
     (:func:`_mark_escalations`), and a counter against each enemy mage is
     offered, for a player (:func:`_counter_candidates`);
-    the AI neither counters nor escalates. A caller driving the engine with this
+    the AI neither counters nor escalates. A figure a Game Master has lifted
+    Channel, Push's own cap or the counter bounds for
+    (``CombatantState.lifted_magic_bounds``) is offered the wider amounts;
+    every other figure's menu is unchanged. A caller driving the engine with this
     policy passes the same rules the profile carries, e.g.
     ``functools.partial(choose_option, magic=rules)``: the engine refuses a
     cast past the Channel, so a menu built without them can offer one it
@@ -891,17 +901,19 @@ def _counter_candidates(
     appended last, for a player; the AI does not counter (house reading
     ``ai_neither_counters_nor_escalates``). The rationale names the bonus the
     commitment buys on the opposed roll, less the injury band the defender's
-    roll takes.
+    roll takes. A figure whose counter bounds a Game Master has lifted is
+    offered every commitment from nothing to its whole purse.
     """
     if not _is_mage(actor):
         return []
+    bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
     injury, _off_balance = _casting_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
     for caster in state.enemies_of(actor):
         if not _is_mage(caster):
             continue
-        for mana in counterspell.commitments(actor.mana):
+        for mana in counterspell.commitments(actor.mana, bounds_lifted=bounds_lifted):
             bonus = counterspell.bonus_for(mana)
             candidates.append(
                 Candidate(
@@ -1009,12 +1021,14 @@ def _within_channel(
     """The decision less every cast the actor's Channel does not allow.
 
     A cast is withheld when its spell costs more than the actor's Channel
-    for it, or when the Channel rules give the spell no kind of magic (the
-    engine would refuse either), and :attr:`Decision.withheld` says why,
-    once per spell. The withheld casts leave the player's menu and the AI's
-    choice alike. When the AI had chosen one, it takes the best of what
-    remains by the rule it chose with (the highest score, the first listed
-    on a tie).
+    for it (unless a Game Master has lifted Channel for the actor:
+    :meth:`.magic.ChannelRules.bound_for`; the cast is then kept and its
+    rationale says it passes the Channel by ruling), or when the Channel rules give
+    the spell no kind of magic (the engine would refuse either), and
+    :attr:`Decision.withheld` says why, once per spell. The withheld casts
+    leave the player's menu and the AI's choice alike. When the AI had
+    chosen one, it takes the best of what remains by the rule it chose with
+    (the highest score, the first listed on a tie).
 
     The MOVE fallback for a menu left empty is defensive: every menu
     :func:`_score_options` builds holds an option that is not a cast (DODGE,
@@ -1029,17 +1043,23 @@ def _within_channel(
             continue
         spell = get_spell(candidate.spell_key)
         try:
-            limit = channel.channel_for(actor, spell)
+            actor_channel = channel.channel_for(actor, spell)
+            limit = channel.bound_for(actor, spell)
         except ChannelUnclassifiedSpell as unclassified:
             withheld.setdefault(spell.key, f"{spell.name} withheld: {unclassified}")
             continue
-        if spell.level > limit:
+        if limit is not None and spell.level > limit:
             withheld.setdefault(
                 spell.key,
                 f"{spell.name} withheld: it costs {spell.level} mana, past "
                 f"{actor.name}'s Channel {limit} for it",
             )
             continue
+        if spell.level > actor_channel:
+            candidate.rationale = (
+                f"{candidate.rationale}; {spell.level} mana, "
+                f"{_channel_note(actor_channel, spell.level)}"
+            )
         kept.append(candidate)
     reasons = list(withheld.values())
     if any(candidate is decision.chosen for candidate in kept):
@@ -1063,7 +1083,9 @@ def _push_candidates(
 
     With Channel rules, no variant takes the casting's whole mana past the
     actor's Channel for the spell, and each names that Channel; Push's own
-    optional cap still applies beneath it.
+    optional cap still applies beneath it. Either bound a Game Master has
+    lifted for the actor does not apply, and a variant past it says so
+    (:func:`_push_note`).
 
     Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
     the AI's choice: pricing a push needs the spell-by-spell payoff, and the
@@ -1073,14 +1095,21 @@ def _push_candidates(
     the rules give no push effect gets no pushed variant.
     """
     pushed: list[Candidate] = []
+    cap_lifted = bound_lifted(actor, PUSH_CAP)
     for candidate in candidates:
         if not candidate.spell_key or candidate.push_mana:
             continue
         spell = get_spell(candidate.spell_key)
-        channel = (
-            None if channel_rules is None else channel_rules.channel_for(actor, spell)
+        channel, bound = (
+            (None, None)
+            if channel_rules is None
+            else (
+                channel_rules.channel_for(actor, spell),
+                channel_rules.bound_for(actor, spell),
+            )
         )
-        for extra_mana in range(1, push.push_room(spell, actor.mana, channel) + 1):
+        room = push.push_room(spell, actor.mana, bound, cap_lifted=cap_lifted)
+        for extra_mana in range(1, room + 1):
             pushed.append(
                 Candidate(
                     candidate.letter,
@@ -1107,19 +1136,38 @@ def _push_note(
 
     The target is the one the engine will roll against: less the injury
     band and an owed off-balance penalty (:func:`_casting_penalties`).
+    ``channel`` is the actor's Channel for the spell (``None`` with no
+    Channel rules), named whether or not it bounds the actor; a push past it
+    or past Push's own cap, which only a Game Master's lifting allows, says
+    so (:data:`PAST_BY_RULING`).
     """
     injury, off_balance = _casting_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
     invested = push.mana_invested(spell.level, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
-    channel_note = "" if channel is None else f", Channel {channel}"
+    total = spell.level + extra_mana
+    bound_notes: list[str] = []
+    if channel is not None:
+        bound_notes.append(_channel_note(channel, total))
+    if not push.within_cap(extra_mana):
+        bound_notes.append(f"past the push cap {push.max_push_mana} {PAST_BY_RULING}")
+    channel_note = "".join(f", {note}" for note in bound_notes)
     return (
-        f"Push {extra_mana} extra mana ({spell.level + extra_mana} "
+        f"Push {extra_mana} extra mana ({total} "
         f"in all{channel_note}): Control Roll {push.control_dice} ≤ "
         f"{push.control_attribute} {attribute} less "
         f"{push.penalty_per_mana} x {invested} invested, "
         f"{injury} injury and {off_balance} off-balance = {target}"
     )
+
+
+def _channel_note(channel: int, total: int) -> str:
+    """The actor's Channel as a menu line names it for a casting of
+    ``total`` mana: past it only on a Game Master's lifting
+    (:data:`PAST_BY_RULING`)."""
+    if total <= channel:
+        return f"Channel {channel}"
+    return f"past Channel {channel} {PAST_BY_RULING}"
 
 
 def _borrow_candidates(
@@ -1138,7 +1186,10 @@ def _borrow_candidates(
     is offered when the casting, cost and pushed mana together, lies within
     :meth:`.magic.BorrowingRules.borrowing_ceiling`: past the purse, within
     the debt the cap still allows and within the actor's Channel for the
-    spell.
+    spell (:meth:`.magic.MagicRules.channel_bound`: with Channel lifted for
+    the actor, the debt cap bounds it, or with no cap the actor's mana plus
+    its Channel).
+    Push's own cap holds unless lifted for the actor too.
 
     Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace
     the AI's choice: only a player's choice borrows (house reading
@@ -1154,13 +1205,15 @@ def _borrow_candidates(
     if magic.channel is not None:
         menu = _within_channel(actor, menu, magic.channel)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
+    cap_lifted = bound_lifted(actor, PUSH_CAP)
     borrowed: list[Candidate] = []
     for candidate in menu.candidates:
         if not candidate.spell_key:
             continue
         spell = get_spell(candidate.spell_key)
         channel = magic.channel_for(actor, spell)
-        ceiling = borrowing.borrowing_ceiling(actor.mana, actor.debt, channel)
+        bound = magic.channel_bound(actor, spell, borrowing=True)
+        ceiling = borrowing.borrowing_ceiling(actor.mana, actor.debt, bound)
         if actor.mana < spell.level <= ceiling:
             shortfall = spell.level - actor.mana
             borrowed.append(
@@ -1178,7 +1231,7 @@ def _borrow_candidates(
         if magic.push is None:
             continue
         first_short = max(1, actor.mana - spell.level + 1)
-        last = magic.push.push_room(spell, ceiling, channel)
+        last = magic.push.push_room(spell, ceiling, bound, cap_lifted=cap_lifted)
         for extra_mana in range(first_short, last + 1):
             cost = spell.level + extra_mana
             borrowed.append(

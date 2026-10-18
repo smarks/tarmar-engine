@@ -60,6 +60,10 @@ from . import actions, combat_math, hexes, movement, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
+    CHANNEL,
+    COUNTER_BOUNDS,
+    LIFTED_BOUNDS_KEY,
+    PUSH_CAP,
     BorrowingRules,
     CastingFailureRules,
     CastingSuccessTier,
@@ -68,6 +72,7 @@ from .magic import (
     PushRules,
     RunawayRules,
     attribute_score,
+    bound_lifted,
     spell_effect_kind,
 )
 from .profile import TARMAR, RulesProfile
@@ -2289,7 +2294,11 @@ class TurnRunner:
         Borrowing rules a cast the caster chose to borrow for, and cannot
         afford, empties the pool and adds the shortfall to its debt when the
         cast pays; after the spell has resolved, whatever became of it, the
-        caster makes the debt roll (:meth:`_debt_roll`). With injected
+        caster makes the debt roll (:meth:`_debt_roll`). A Game Master may
+        have lifted Channel or Push's own cap for the caster
+        (``CombatantState.lifted_magic_bounds``): the cast may then go past
+        it, still names the Channel, and lists each lifted bound it went past
+        under :data:`~.magic.LIFTED_BOUNDS_KEY`. With injected
         Counterspell rules, a cast the caster can pay for first meets every
         counter declared against it (:meth:`_oppose_cast`), before the
         casting roll: countered, the spell makes no casting roll, its whole
@@ -2299,7 +2308,8 @@ class TurnRunner:
 
         Raises:
             ValueError: for a push or a borrowing the profile's rules do not
-                allow, a casting past the caster's Channel for the spell, or
+                allow, a casting past the caster's Channel for the spell or a
+                push past the cap where neither is lifted for the caster, or
                 a borrowing past the injected debt cap.
         """
         spell = get_spell(combatant.chosen_spell)
@@ -2316,18 +2326,23 @@ class TurnRunner:
                 f"{combatant.name} pushes {push_mana} mana into {spell.name} "
                 f"but the {self.profile.name!r} profile has no Push rules"
             )
+        # The bounds a Game Master lifted that this cast goes past
+        # (tarmar-studio #37), for the payload.
+        lifted_past: list[str] = []
         if push_mana and magic is not None and magic.push is not None:
             if not magic.push.can_push(spell):
                 raise ValueError(
                     f"{combatant.name} pushes {spell.name}, which the injected "
                     f"rules give no push effect"
                 )
-            cap = magic.push.max_push_mana
-            if cap is not None and push_mana > cap:
+            cap_lifted = bound_lifted(combatant, PUSH_CAP)
+            if not magic.push.within_cap(push_mana, cap_lifted=cap_lifted):
                 raise ValueError(
                     f"{combatant.name} pushes {push_mana} mana into "
-                    f"{spell.name}; the cap is {cap}"
+                    f"{spell.name}; the cap is {magic.push.max_push_mana}"
                 )
+            if not magic.push.within_cap(push_mana):
+                lifted_past.append(PUSH_CAP)
         cost = self._casting_cost(spell, push_mana)
         # The Channel used and its kind, with Channel rules injected.
         channel_used: tuple[int, str] | None = None
@@ -2337,11 +2352,27 @@ class TurnRunner:
                 magic.channel.kind_for(spell),
             )
         channel = None if channel_used is None else channel_used[0]
-        if channel is not None and cost > channel:
+        # What the cast would borrow: the shortfall, when the caster chose to.
+        shortfall = (
+            max(0, cost - combatant.mana)
+            if borrowing is not None and combatant.chosen_borrow
+            else 0
+        )
+        bound = (
+            None
+            if magic is None
+            else magic.channel_bound(combatant, spell, borrowing=shortfall > 0)
+        )
+        if bound is not None and cost > bound:
+            borrowing_note = (
+                "" if bound == channel else f", which lets them borrow to {bound}"
+            )
             raise ValueError(
                 f"{combatant.name} casts {spell.name} with {cost} mana; "
-                f"their Channel for it is {channel}"
+                f"their Channel for it is {channel}{borrowing_note}"
             )
+        if channel is not None and cost > channel:
+            lifted_past.append(CHANNEL)
         if (
             self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
@@ -2377,18 +2408,15 @@ class TurnRunner:
                 payload={"hth_cast_refused": True, "spell": spell.key},
             )
             return
-        # What the cast would borrow: the shortfall, when the caster chose to.
-        shortfall = 0
-        if combatant.mana < cost:
-            if borrowing is None or not combatant.chosen_borrow:
-                pushed_note = f" pushed with {push_mana} more" if push_mana else ""
-                self.emit(
-                    "info",
-                    f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
-                    actor=combatant.name,
-                )
-                return
-            shortfall = cost - combatant.mana
+        if combatant.mana < cost and not shortfall:
+            pushed_note = f" pushed with {push_mana} more" if push_mana else ""
+            self.emit(
+                "info",
+                f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
+                actor=combatant.name,
+            )
+            return
+        if shortfall and borrowing is not None:
             cap = borrowing.max_debt
             if cap is not None and combatant.debt + shortfall > cap:
                 raise ValueError(
@@ -2416,7 +2444,7 @@ class TurnRunner:
                     "contest_turns": contest.turns,
                     "mana_left": combatant.mana,
                     **self._cast_cost_keys(
-                        combatant, push_mana, channel_used, shortfall
+                        combatant, push_mana, channel_used, shortfall, lifted_past
                     ),
                 },
             )
@@ -2465,12 +2493,14 @@ class TurnRunner:
             cost_note = self._pay_cast(combatant, spell, push_mana, borrowed)
         else:
             cost_note = f"no mana spent, {combatant.mana} left"
-        payload: dict[str, str | int | bool] = {
+        payload: dict[str, str | int | bool | list[str]] = {
             "spell": spell.key,
             "success": succeeded,
             "mana_left": combatant.mana,
             "casting_roll": cast_sequence,
-            **self._cast_cost_keys(combatant, push_mana, channel_used, borrowed),
+            **self._cast_cost_keys(
+                combatant, push_mana, channel_used, borrowed, lifted_past
+            ),
         }
         self.emit(
             "action",
@@ -2559,13 +2589,16 @@ class TurnRunner:
         push_mana: int,
         channel_used: tuple[int, str] | None,
         borrowed: int,
-    ) -> dict[str, str | int]:
+        lifted_past: list[str],
+    ) -> dict[str, str | int | list[str]]:
         """The payload keys a cast's mana adds, each only with the rules that
         bring it injected, so a profile without them logs the payload it
         always has: ``push_mana`` with Push, ``channel`` and ``channel_kind``
-        with Channel, ``borrowed`` and ``debt`` with Borrowing."""
+        with Channel, ``borrowed`` and ``debt`` with Borrowing, and
+        :data:`~.magic.LIFTED_BOUNDS_KEY` only when the cast went past a
+        bound a Game Master lifted for the caster (``lifted_past``)."""
         magic = self.profile.magic
-        keys: dict[str, str | int] = {}
+        keys: dict[str, str | int | list[str]] = {}
         if magic is not None and magic.push is not None:
             keys["push_mana"] = push_mana
         if channel_used is not None:
@@ -2573,6 +2606,8 @@ class TurnRunner:
         if magic is not None and magic.borrowing is not None:
             keys["borrowed"] = borrowed
             keys["debt"] = caster.debt
+        if lifted_past:
+            keys[LIFTED_BOUNDS_KEY] = list(lifted_past)
         return keys
 
     def _resolve_cast(
@@ -3276,9 +3311,16 @@ class TurnRunner:
         or lapses at the end of the Actions phase with its mana spent
         (:meth:`_lapse_counters`).
 
+        A Game Master may have lifted the commitment bounds for the defender
+        (:data:`~.magic.COUNTER_BOUNDS`): any commitment from
+        :data:`~.magic.LIFTED_COUNTER_MINIMUM` up is then allowed, and one
+        outside the injected bounds is flagged in the payload under
+        :data:`~.magic.LIFTED_BOUNDS_KEY`.
+
         Raises:
             ValueError: with no Counterspell rules injected, no counter
-                chosen, or a commitment outside the injected bounds.
+                chosen, or a commitment outside the injected bounds (with
+                them lifted, below the lifted minimum).
         """
         rules = self._counterspell_rules(defender)
         if defender.chosen_counter is None:
@@ -3294,12 +3336,12 @@ class TurnRunner:
             )
             return
         self._counters_taken.add(defender.combatant_id)
-        most = rules.defender_max_mana
-        if mana < rules.defender_min_mana or (most is not None and mana > most):
+        lifted = bound_lifted(defender, COUNTER_BOUNDS)
+        if not rules.allows(mana, bounds_lifted=lifted):
+            least, most = rules.bounds(bounds_lifted=lifted)
             raise ValueError(
                 f"{defender.name} commits {mana} mana to a counter; the rules "
-                f"allow {rules.defender_min_mana} to "
-                f"{'the purse' if most is None else most}"
+                f"allow {least} to {'the purse' if most is None else most}"
             )
         if defender.mana < mana:
             self.emit(
@@ -3313,17 +3355,20 @@ class TurnRunner:
         defender.counter = CounterState(
             caster_id=caster_id, mana_committed=mana, declared_turn=self.state.turn
         )
+        payload: dict[str, bool | int | list[str]] = {
+            "counter_declared": True,
+            "caster": caster_id,
+            "mana": mana,
+            "mana_left": defender.mana,
+        }
+        if not rules.allows(mana):
+            payload[LIFTED_BOUNDS_KEY] = [COUNTER_BOUNDS]
         self.emit(
             "status",
             f"{defender.name} commits {mana} mana to counter {caster.name}'s "
             f"spell ({defender.mana} left)",
             actor=defender.name,
-            payload={
-                "counter_declared": True,
-                "caster": caster_id,
-                "mana": mana,
-                "mana_left": defender.mana,
-            },
+            payload=payload,
         )
 
     def _oppose_cast(
