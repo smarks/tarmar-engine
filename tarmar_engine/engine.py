@@ -60,7 +60,6 @@ from . import actions, combat_math, hexes, movement, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
-    CHANNEL,
     COUNTER_BOUNDS,
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
@@ -73,6 +72,7 @@ from .magic import (
     RunawayRules,
     attribute_score,
     bound_lifted,
+    casting_mana,
     spell_effect_kind,
 )
 from .profile import TARMAR, RulesProfile
@@ -2326,9 +2326,6 @@ class TurnRunner:
                 f"{combatant.name} pushes {push_mana} mana into {spell.name} "
                 f"but the {self.profile.name!r} profile has no Push rules"
             )
-        # The bounds a Game Master lifted that this cast goes past
-        # (tarmar-studio #37), for the payload.
-        lifted_past: list[str] = []
         if push_mana and magic is not None and magic.push is not None:
             if not magic.push.can_push(spell):
                 raise ValueError(
@@ -2341,9 +2338,7 @@ class TurnRunner:
                     f"{combatant.name} pushes {push_mana} mana into "
                     f"{spell.name}; the cap is {magic.push.max_push_mana}"
                 )
-            if not magic.push.within_cap(push_mana):
-                lifted_past.append(PUSH_CAP)
-        cost = self._casting_cost(spell, push_mana)
+        cost = casting_mana(spell, push_mana)
         # The Channel used and its kind, with Channel rules injected.
         channel_used: tuple[int, str] | None = None
         if magic is not None and magic.channel is not None:
@@ -2371,8 +2366,13 @@ class TurnRunner:
                 f"{combatant.name} casts {spell.name} with {cost} mana; "
                 f"their Channel for it is {channel}{borrowing_note}"
             )
-        if channel is not None and cost > channel:
-            lifted_past.append(CHANNEL)
+        # The bounds a Game Master lifted that this cast goes past
+        # (tarmar-studio #37), for the payload.
+        lifted_past = (
+            ()
+            if magic is None
+            else magic.lifted_bounds_passed(combatant, spell, push_mana)
+        )
         if (
             self.profile.grapple.locks_movement(
                 combatant.grappled_by, combatant.grappling
@@ -2564,17 +2564,12 @@ class TurnRunner:
             return False
         return casting_failure is None or natural_total < casting_failure.fumble_floor
 
-    @staticmethod
-    def _casting_cost(spell: Spell, push_mana: int) -> int:
-        """A casting's whole mana: the spell's cost and any pushed mana."""
-        return spell.level + push_mana
-
     def _pay_cast(
         self, caster: CombatantState, spell: Spell, push_mana: int, borrowed: int
     ) -> str:
         """Pay a casting's whole mana, ``borrowed`` of it added to the debt
         (tarmar-engine #28); the payment as the log prints it."""
-        cost = self._casting_cost(spell, push_mana)
+        cost = casting_mana(spell, push_mana)
         caster.mana -= cost - borrowed
         caster.debt += borrowed
         paid_text = f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
@@ -2589,7 +2584,7 @@ class TurnRunner:
         push_mana: int,
         channel_used: tuple[int, str] | None,
         borrowed: int,
-        lifted_past: list[str],
+        lifted_past: tuple[str, ...],
     ) -> dict[str, str | int | list[str]]:
         """The payload keys a cast's mana adds, each only with the rules that
         bring it injected, so a profile without them logs the payload it
@@ -2848,7 +2843,7 @@ class TurnRunner:
         Returns:
             Whether the spell takes effect, and the push's effect bonus.
         """
-        invested = push.mana_invested(spell.level, push_mana)
+        invested = push.mana_invested(spell, push_mana)
         target = (
             attribute_score(combatant, push.control_attribute)
             - push.penalty_per_mana * invested
@@ -2905,7 +2900,7 @@ class TurnRunner:
             },
         )
         if runaway:
-            self._begin_runaway(combatant, spell, self._casting_cost(spell, push_mana))
+            self._begin_runaway(combatant, spell, casting_mana(spell, push_mana))
         return takes_effect, push_bonus
 
     def _debt_roll(
@@ -2979,7 +2974,7 @@ class TurnRunner:
             self._begin_runaway(
                 combatant,
                 spell,
-                self._casting_cost(spell, combatant.chosen_push_mana),
+                casting_mana(spell, combatant.chosen_push_mana),
             )
 
     # ----------------------------------------------------------------- runaway
@@ -3361,8 +3356,9 @@ class TurnRunner:
             "mana": mana,
             "mana_left": defender.mana,
         }
-        if not rules.allows(mana):
-            payload[LIFTED_BOUNDS_KEY] = [COUNTER_BOUNDS]
+        passed = rules.lifted_bounds_passed(mana)
+        if passed:
+            payload[LIFTED_BOUNDS_KEY] = list(passed)
         self.emit(
             "status",
             f"{defender.name} commits {mana} mana to counter {caster.name}'s "

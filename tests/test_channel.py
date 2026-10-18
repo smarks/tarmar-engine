@@ -294,7 +294,7 @@ class ChannelMenuTest(TestCase):
         bounded = policy._within_channel(
             state.by_id(1),
             policy.Decision(chosen=only_cast, candidates=[only_cast]),
-            example_channel_rules(),
+            channel_magic_rules(),
         )
         self.assertEqual((bounded.chosen.letter, bounded.chosen.name), ("a", "MOVE"))
         self.assertEqual(bounded.candidates, [bounded.chosen])
