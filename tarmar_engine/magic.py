@@ -64,6 +64,17 @@ Seven mechanics are modelled so far:
   defender who wins cancels the spell, its mana spent, and the caster may
   press it again on a later turn, paying again for another opposed roll.
 
+A Game Master may lift three of these bounds for one figure, each separately,
+as a recorded ruling on the battle (Spencer's ruling of 2026-10-14 on
+tarmar-studio #37, under the standing rule that a Game Master may override
+what players are held to): Channel (:data:`CHANNEL`), Push's own cap
+(:data:`PUSH_CAP`) and a counter's commitment bounds (:data:`COUNTER_BOUNDS`).
+The consuming game lists the lifted bounds in
+``CombatantState.lifted_magic_bounds`` from its own record of the ruling; the
+menu then offers that figure the wider amounts, the engine runs them, and a
+cast or counter that went past a lifted bound says so in its payload
+(:data:`LIFTED_BOUNDS_KEY`). Every other figure is held to the bounds as ever.
+
 The outcome names, tier names and labels are injected too: the engine's own
 vocabulary is only "borrows", "debt", "held", "failed" and whether an
 outcome is a Runaway.
@@ -84,6 +95,45 @@ if TYPE_CHECKING:
 
 #: The attributes a roll in this module may be made against.
 MAGIC_ATTRIBUTES: frozenset[str] = frozenset({"INT", "WIS"})
+
+#: The bounds a Game Master may lift for one figure (tarmar-studio #37), as
+#: ``CombatantState.lifted_magic_bounds`` lists them: the caster's Channel...
+CHANNEL = "channel"
+#: ...Push's own cap on the extra mana one cast may take...
+PUSH_CAP = "push_cap"
+#: ...and the least and most a defender may commit to a counter.
+COUNTER_BOUNDS = "counter_bounds"
+#: Every bound a Game Master may lift.
+LIFTABLE_BOUNDS: tuple[str, ...] = (CHANNEL, PUSH_CAP, COUNTER_BOUNDS)
+#: The payload key naming the lifted bounds a cast or a counter went past,
+#: written only when it went past one.
+LIFTED_BOUNDS_KEY = "lifted_bounds"
+#: The least a defender whose counter bounds are lifted may commit: nothing.
+#: An engine reading, recorded in :mod:`.house_rulings` as
+#: ``lifted_counter_minimum_is_zero``.
+LIFTED_COUNTER_MINIMUM = 0
+
+
+def bound_lifted(combatant: CombatantState, bound: str) -> bool:
+    """Has a Game Master lifted this bound for the combatant?
+
+    Args:
+        combatant: The figure, whose ``lifted_magic_bounds`` the consuming
+            game filled from its record of the ruling.
+        bound: One of :data:`LIFTABLE_BOUNDS`.
+
+    Raises:
+        ValueError: for a bound, asked or listed, outside
+            :data:`LIFTABLE_BOUNDS`: a misspelt key would otherwise lift
+            nothing, or hold a figure the ruling freed, without a word.
+    """
+    unknown = sorted({bound, *combatant.lifted_magic_bounds} - set(LIFTABLE_BOUNDS))
+    if unknown:
+        raise ValueError(
+            f"{combatant.name}: no magic bound is called {unknown}; the bounds "
+            f"a Game Master may lift are {list(LIFTABLE_BOUNDS)}"
+        )
+    return bound in combatant.lifted_magic_bounds
 
 
 def attribute_score(caster: CombatantState, attribute: str) -> int:
@@ -342,22 +392,45 @@ class PushRules:
         """May this spell be pushed at all?"""
         return self.bonus_per_mana(spell) is not None
 
-    def push_room(self, spell: Spell, mana: int, channel: int | None = None) -> int:
+    def push_room(
+        self,
+        spell: Spell,
+        mana: int,
+        channel: int | None = None,
+        *,
+        cap_lifted: bool = False,
+    ) -> int:
         """How much more than its cost a purse of ``mana`` may push into it.
 
         Args:
             spell: The spell pushed.
             mana: The caster's mana.
-            channel: The caster's Channel for the spell (cost and pushed mana
-                together), or ``None`` when no Channel rules are injected.
+            channel: The Channel bounding the casting (cost and pushed mana
+                together), or ``None`` when nothing does: no Channel rules
+                injected, or Channel lifted for the caster
+                (:meth:`MagicRules.channel_bound`).
+            cap_lifted: Has a Game Master lifted :attr:`max_push_mana` for
+                the caster (:data:`PUSH_CAP`)?
         """
         if not self.can_push(spell):
             return 0
         spendable = mana if channel is None else min(mana, channel)
         room = spendable - spell.level
-        if self.max_push_mana is not None:
-            room = min(room, self.max_push_mana)
+        cap = self.cap(cap_lifted=cap_lifted)
+        if cap is not None:
+            room = min(room, cap)
         return max(0, room)
+
+    def cap(self, *, cap_lifted: bool = False) -> int | None:
+        """The most extra mana one cast may take under Push's own cap, or
+        ``None`` for no cap: none injected, or lifted for the caster by a Game
+        Master (:data:`PUSH_CAP`)."""
+        return None if cap_lifted else self.max_push_mana
+
+    def within_cap(self, push_mana: int, *, cap_lifted: bool = False) -> bool:
+        """Is this much pushed mana within Push's own cap (:meth:`cap`)?"""
+        cap = self.cap(cap_lifted=cap_lifted)
+        return cap is None or push_mana <= cap
 
     def effect_bonus(self, spell: Spell, pushed_mana: int) -> int:
         """The bonus a push adds to this spell's rolled effect.
@@ -490,6 +563,18 @@ class ChannelRules:
         """
         derivation = self.derivations[self.kind_for(spell)]
         return derivation.channel_at(derivation.recorded_level(caster, spell))
+
+    def bound_for(self, caster: CombatantState, spell: Spell) -> int | None:
+        """The caster's Channel for this spell as the bound on a casting from
+        its own mana: ``None`` when a Game Master has lifted Channel for the
+        caster (:data:`CHANNEL`).
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the rules give no kind,
+                lifted or not: the cast still names the Channel it went past.
+        """
+        channel = self.channel_for(caster, spell)
+        return None if bound_lifted(caster, CHANNEL) else channel
 
 
 @dataclass(frozen=True)
@@ -754,15 +839,29 @@ class CounterspellRules:
         """The opposed roll's bonus for this much mana invested."""
         return mana_invested // self.mana_per_bonus
 
-    def commitments(self, mana: int) -> range:
-        """Every commitment a defender with ``mana`` may make, least first;
-        empty when it cannot afford the least."""
-        most = (
-            mana
-            if self.defender_max_mana is None
-            else min(mana, self.defender_max_mana)
-        )
-        return range(self.defender_min_mana, most + 1)
+    def bounds(self, *, bounds_lifted: bool = False) -> tuple[int, int | None]:
+        """The least and most a defender may commit, the most ``None`` when
+        the purse alone bounds it.
+
+        Args:
+            bounds_lifted: Has a Game Master lifted the commitment bounds for
+                the defender (:data:`COUNTER_BOUNDS`)? Then from
+                :data:`LIFTED_COUNTER_MINIMUM` to the whole purse.
+        """
+        if bounds_lifted:
+            return LIFTED_COUNTER_MINIMUM, None
+        return self.defender_min_mana, self.defender_max_mana
+
+    def allows(self, mana_committed: int, *, bounds_lifted: bool = False) -> bool:
+        """May a defender commit this much, its purse aside (:meth:`bounds`)?"""
+        least, most = self.bounds(bounds_lifted=bounds_lifted)
+        return least <= mana_committed and (most is None or mana_committed <= most)
+
+    def commitments(self, mana: int, *, bounds_lifted: bool = False) -> range:
+        """Every commitment a defender with ``mana`` may make within
+        :meth:`bounds`, least first; empty when it cannot afford the least."""
+        least, most = self.bounds(bounds_lifted=bounds_lifted)
+        return range(least, (mana if most is None else min(mana, most)) + 1)
 
     def caster_gets_through(self, caster_total: int, defender_total: int) -> bool:
         """Does the caster's total beat the defender's, by the tie rule?"""
@@ -824,6 +923,40 @@ class MagicRules:
         if self.channel is None:
             return None
         return self.channel.channel_for(caster, spell)
+
+    def channel_bound(
+        self, caster: CombatantState, spell: Spell, *, borrowing: bool = False
+    ) -> int | None:
+        """The most mana Channel lets this caster's casting of the spell take,
+        or ``None`` when Channel bounds nothing but the purse (and Push's own
+        cap) does.
+
+        ``None`` with no Channel rules injected, or with Channel lifted for
+        the caster by a Game Master (:meth:`ChannelRules.bound_for`). A
+        borrowing casting with Channel lifted is bounded by the injected debt
+        cap where there is one; where Borrowing has none, Channel bounds only
+        the shortfall, so the casting may take the caster's mana plus its
+        Channel (house reading ``lifted_channel_bounds_the_shortfall``).
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            borrowing: Does the casting borrow (cost past the purse)?
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+        """
+        if self.channel is None:
+            return None
+        bound = self.channel.bound_for(caster, spell)
+        if (
+            bound is not None
+            or not borrowing
+            or self.borrowing is None
+            or self.borrowing.max_debt is not None
+        ):
+            return bound
+        return caster.mana + self.channel.channel_for(caster, spell)
 
     def success_tier(self, natural_total: int) -> CastingSuccessTier | None:
         """The tier a successful casting roll's natural total lands in."""

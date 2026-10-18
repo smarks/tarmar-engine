@@ -713,6 +713,51 @@ HOUSE_RULINGS += (
         RULING,
         "#825 (tarmar-engine #31)",
     ),
+    HouseRuling(
+        "lifted_counter_minimum_is_zero",
+        "Spencer's ruling of 2026-10-14 lets a Game Master lift a counter's "
+        "commitment bounds for one figure without saying what then bounds it. "
+        "The lifted least is 0 and the lifted most is the defender's whole "
+        "purse; a negative commitment is refused for everyone. A commitment "
+        "of 0 buys no bonus but still gets a full opposed roll on the "
+        "defender's attribute, so a mage with the bounds lifted is offered a "
+        "counter every turn, even with an empty purse. Awaiting Spencer's "
+        "word: the Game Master lifts the bounds knowingly.",
+        0,
+        "tarmar_engine/magic.py LIFTED_COUNTER_MINIMUM, CounterspellRules.bounds",
+        RULING,
+        "#37",
+    ),
+    HouseRuling(
+        "lifted_cast_names_its_channel",
+        "A cast that goes past a bound a Game Master lifted for its caster "
+        "still names the caster's Channel for the spell (channel, "
+        "channel_kind and 'Channel N' in the message), and lists each lifted "
+        "bound it actually went past under lifted_bounds, push_cap before "
+        "channel; a counter past its lifted bounds lists counter_bounds on "
+        "its counter_declared event. A cast or counter within the bounds "
+        "carries no such key, lifted or not.",
+        "lifted_bounds",
+        "tarmar_engine/engine.py cast_spell, _cast_cost_keys, declare_counter",
+        RULING,
+        "#37",
+    ),
+    HouseRuling(
+        "lifted_channel_bounds_the_shortfall",
+        "With Channel lifted for a caster, a casting from its own mana is "
+        "bounded by the purse alone, and a borrowing casting by the injected "
+        "debt cap where there is one. Where Borrowing has no debt cap, "
+        "Channel bounds only the shortfall: a borrowing casting may take the "
+        "caster's mana plus its Channel. The bound is finite, so the menu can "
+        "list the amounts; more mana never refuses a cast that less mana "
+        "allowed; and the lifted caster borrows more than it could unlifted. "
+        "Awaiting Spencer's word: the ruling lifts Channel without saying "
+        "what then bounds a borrowing.",
+        "mana + Channel, when Borrowing has no debt cap",
+        "tarmar_engine/magic.py MagicRules.channel_bound",
+        RULING,
+        "#37",
+    ),
 )
 
 

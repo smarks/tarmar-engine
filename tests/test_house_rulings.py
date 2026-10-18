@@ -772,3 +772,66 @@ class CounterspellRulingsTest(TestCase):
                     counter_rolls(events)[1]["payload"]["modifier"], 11 + 1
                 )
                 self.assertFalse(state.by_id(2).off_balance)
+
+
+class LiftedBoundsRulingsTest(TestCase):
+    """The readings on a Game Master's lifted magic bounds (tarmar-studio
+    #37), each pinned to the code that makes it."""
+
+    def test_lifted_counter_minimum_is_zero(self):
+        from tarmar_engine.magic import COUNTER_BOUNDS, LIFTED_COUNTER_MINIMUM
+
+        from .test_counterspell import counter_state, counters, decide
+
+        self.assertEqual(
+            ruling("lifted_counter_minimum_is_zero").value, LIFTED_COUNTER_MINIMUM
+        )
+        state = counter_state()
+        state.by_id(2).lifted_magic_bounds = [COUNTER_BOUNDS]
+        offered = [candidate.counter_mana for candidate in counters(decide(state, 2))]
+        self.assertEqual(offered, list(range(LIFTED_COUNTER_MINIMUM, 6 + 1)))
+
+    def test_lifted_cast_names_its_channel(self):
+        from tarmar_engine.magic import CHANNEL, LIFTED_BOUNDS_KEY
+
+        from .test_channel import CHANNEL_PROFILE, cast_payload, channel_caster
+        from .test_magic import cast
+
+        self.assertEqual(
+            ruling("lifted_cast_names_its_channel").value, LIFTED_BOUNDS_KEY
+        )
+        state = channel_caster(
+            {"lightning_bolt": 1}, spells=["lightning_bolt"], intelligence=18
+        )
+        state.by_id(1).lifted_magic_bounds = [CHANNEL]
+        payload = cast_payload(
+            cast(
+                state,
+                [[3, 3, 3], [2, 2, 2], [3, 3, 3]],
+                profile=CHANNEL_PROFILE,
+                spell="lightning_bolt",
+            )
+        )
+        self.assertEqual(payload["channel"], 1)
+        self.assertEqual(payload[LIFTED_BOUNDS_KEY], [CHANNEL])
+
+    def test_lifted_channel_bounds_the_shortfall(self):
+        from tarmar_engine.magic import CHANNEL
+
+        from .test_borrowing import channel_borrowing_rules, example_borrowing_rules
+        from .test_channel import channel_caster
+
+        self.assertEqual(
+            ruling("lifted_channel_bounds_the_shortfall").value,
+            "mana + Channel, when Borrowing has no debt cap",
+        )
+        rules = channel_borrowing_rules()
+        # Channel 1 for the Bolt, 2 mana.
+        caster = channel_caster({"lightning_bolt": 1}, mana=2).by_id(1)
+        bolt = spells.get_spell("lightning_bolt")
+        self.assertEqual(rules.channel_bound(caster, bolt, borrowing=True), 1)
+        caster.lifted_magic_bounds = [CHANNEL]
+        self.assertIsNone(rules.channel_bound(caster, bolt))
+        self.assertEqual(rules.channel_bound(caster, bolt, borrowing=True), 2 + 1)
+        capped = replace(rules, borrowing=example_borrowing_rules(max_debt=4))
+        self.assertIsNone(capped.channel_bound(caster, bolt, borrowing=True))

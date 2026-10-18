@@ -543,6 +543,56 @@ ones.
 The `mana_on_failure` house ruling now states the structure without the
 totals (`tarmar_engine.house_rulings`, marked for Spencer).
 
+## A Game Master's lifted magic bounds (v0.9.17)
+
+Spencer's ruling of 2026-10-14 on tarmar-studio #37: a Game Master may lift
+Channel, Push's own cap and a counter's commitment bounds for one figure,
+each separately, as a recorded ruling on the battle. The consuming game
+keeps the record (who, when) and fills `CombatantState.lifted_magic_bounds`
+from it, as it fills `hth_agreed_with`; the engine reads it through
+`magic.bound_lifted(combatant, bound)`, which raises on a key outside
+`magic.LIFTABLE_BOUNDS`. The keys are `magic.CHANNEL` (`"channel"`),
+`magic.PUSH_CAP` (`"push_cap"`) and `magic.COUNTER_BOUNDS`
+(`"counter_bounds"`). Empty, nothing changes, and `BattleState.to_dict`
+writes it only when it lifts something; an older snapshot loads with it
+empty.
+
+- **Channel.** The lifted caster's menu keeps a cast past its Channel and
+  offers pushes past it, and the AI may choose such a cast;
+  `cast_spell` runs it. `ChannelRules.bound_for` is the Channel as the bound
+  (`None` when lifted) and `MagicRules.channel_bound(caster, spell,
+  borrowing=...)` the bound a casting is held to. A spell the Channel rules
+  give no kind is still withheld and refused, lifted or not. A borrowing
+  casting stays within the debt cap; where Borrowing has no cap, Channel
+  bounds only the shortfall, so the casting may take the caster's mana plus
+  its Channel (house reading `lifted_channel_bounds_the_shortfall`, marked
+  for Spencer). The menu's push lines name the Channel and say "past
+  Channel N by a Game Master's ruling" (`policy.PAST_BY_RULING`) where a
+  push passes it, and likewise for Push's cap.
+- **Push's cap.** `PushRules.cap(cap_lifted=...)` is the cap a caster is
+  held to (`None` when lifted), and `PushRules.within_cap(push_mana,
+  cap_lifted=...)` the check `cast_spell` makes;
+  `PushRules.push_room(..., cap_lifted=True)` ignores `max_push_mana`; the menu offers pushes up to the Channel (or the purse,
+  with Channel lifted too) and `cast_spell` runs them.
+- **Counter bounds.** `CounterspellRules.bounds(bounds_lifted=...)` is the
+  least and most a defender is held to: lifted, `magic.LIFTED_COUNTER_MINIMUM`
+  (0) to the whole purse. `CounterspellRules.commitments(mana,
+  bounds_lifted=...)` offers every commitment within them and
+  `CounterspellRules.allows(mana, bounds_lifted=...)` is the check
+  `declare_counter` makes. A commitment of 0 buys no bonus but still gets a
+  full opposed roll, so a lifted mage is offered a counter every turn, even
+  with an empty purse (house reading `lifted_counter_minimum_is_zero`,
+  marked for Spencer).
+- **The flag.** A cast that went past a lifted bound carries
+  `"lifted_bounds"` (`magic.LIFTED_BOUNDS_KEY`) in its payload, on the cast
+  event and on a countered cast's `spell_countered` event, listing the bounds
+  it actually exceeded (`push_cap` before `channel`); it still names its
+  Channel (`channel`, `channel_kind`). A counter past its lifted bounds
+  carries `"lifted_bounds": ["counter_bounds"]` on its `counter_declared`
+  event. Within the bounds, lifted or not, no key is written (house reading
+  `lifted_cast_names_its_channel`). The messages are unchanged: narrating the
+  ruling is the consuming game's.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

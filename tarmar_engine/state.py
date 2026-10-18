@@ -291,6 +291,12 @@ class CombatantState:
     # condition, holding for the pair when either figure lists the other.
     # Written to a snapshot only when it names someone.
     hth_agreed_with: list[int] = field(default_factory=list)
+    # The magic bounds a Game Master has lifted for this figure, each one of
+    # ``magic.LIFTABLE_BOUNDS`` (Channel, Push's own cap, a counter's
+    # commitment bounds). The consuming game fills it from its own record of
+    # the ruling (tarmar-studio #37); the menu and the engine read it through
+    # ``magic.bound_lifted``. Written to a snapshot only when it lifts one.
+    lifted_magic_bounds: list[str] = field(default_factory=list)
     defending: bool = False  # Defend chosen this turn (+4 TN vs melee)
     dodging: bool = False  # Dodge chosen this turn (+4 TN vs missiles)
     yielded: bool = False  # yielded initial movement, moves in phase 4
@@ -425,6 +431,7 @@ class CombatantState:
 #: restores a missing one to its default.
 SNAPSHOT_FIELDS_WRITTEN_WHEN_SET: tuple[str, ...] = (
     "hth_agreed_with",
+    "lifted_magic_bounds",
     "debt",
     "chosen_borrow",
     "runaway",
@@ -501,7 +508,8 @@ class BattleState:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        # A Game Master's agreement (tarmar-studio #867), Borrowing's debt
+        # A Game Master's agreement (tarmar-studio #867) and lifted magic
+        # bounds (tarmar-studio #37), Borrowing's debt
         # and choice (tarmar-engine #28), a Runaway and its anchor choice
         # (#30) and a counter, a contest and a counter choice (#31) are
         # written only when set, so a battle that uses none of them
