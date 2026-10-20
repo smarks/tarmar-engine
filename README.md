@@ -604,6 +604,43 @@ empty.
   when non-empty), so a caller reads it instead of recomputing it. The
   menu's "by a Game Master's ruling" wording is decided from it too.
 
+## A classic attack forecast (v0.9.19)
+
+A classic turn menu can say what a blow faces without reading the engine's
+private terms (tarmar-engine #23). `GameState.attack_forecast(attacker,
+target, option)` returns an `AttackForecast` (`classic.combat`) for a weapon
+attack from where both figures stand:
+
+- **To hit.** `needed`, the adjDX `queue_attack` would declare the blow at
+  (the same derivation, `_attack_terms`, now serves both: situational
+  modifiers, the missile or thrown range penalty, the facing bonus, which a
+  missile never takes), with its `to_hit_breakdown`; `dice_count`, 4 against
+  a target dodging a missile or thrown weapon or defending against a melee
+  blow; `hit_chance`, through `Ruleset.classify_roll` over every total
+  (`Ruleset.hit_odds`), so a 3, 4 or 5 always hits and a 16 to 18 always
+  misses; and `hit_multipliers`, the chance of a triple, double or plain hit.
+- **A hit.** `expected_damage`, the average hits a hit takes off the target's
+  ST (`Ruleset.expected_hit_damage`): the weapon's dice, the special totals'
+  multipliers, a pole weapon's `extra_dice` in or against a charge (after the
+  multiplier), a practice bout's halving, then `armour_stops` (armor, a
+  frontal shield, protection, a ready main-gauche's parry), floored at 0 per
+  roll.
+- **The option.** `option` stands in for the attacker's `current_option`
+  where the declaration reads it (a pole's charge terms, a parting shot's
+  single arrow), so a menu can forecast an option not yet chosen. Everything
+  else is the board's; a charge is forecast from where it ends by asking a
+  rehearsed copy of the game (`to_dict`/`from_dict`).
+- **Not covered.** Legality (`queue_attack` checks it), the off-hand
+  main-gauche jab, a shot's random member of a hand-to-hand pile, and a
+  blow that fails to land because its target moved away. A figure with no
+  ready weapon, or off the field, raises `IllegalAction`.
+
+The forecast draws no dice and changes nothing. Its tests compare it, for
+every attack the existing classic boards declare, with the declared
+`PendingAttack` and with `Ruleset.resolve_attack` rolled on every die face.
+`classic.data.DIE_FACES` (6) and `tarmar_engine.dice.sum_distribution` are
+public alongside it.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

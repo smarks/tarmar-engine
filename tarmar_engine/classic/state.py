@@ -38,6 +38,7 @@ from .arena import BODY_COST, CLEAR_COST, Arena
 from .combat import (
     SPELL_LANE_HIT,
     SPELL_MISSED_PAST,
+    AttackForecast,
     AttackResult,
     DamageEvent,
     SpellResult,
@@ -47,10 +48,12 @@ from .combat import (
 )
 from .data import (
     DAGGER,
+    DIE_FACES,
     MAIN_GAUCHE,
     NO_SHIELD,
     THREE_DICE,
     DamageDice,
+    Weapon,
     WeaponKind,
     max_missile_shots,
     missile_reload_turns,
@@ -152,6 +155,29 @@ class PendingAttack:
     second_target: Figure | None = None
     # this "attack" is a shield-rush, resolved in adjDX order (p.13, #151)
     shield_rush: bool = False
+
+
+@dataclass(frozen=True)
+class _AttackTerms:
+    """Everything a weapon attack is declared with, before a die is thrown.
+
+    The one derivation :meth:`_CombatMixin.queue_attack` declares a blow from
+    and :meth:`_CombatMixin.attack_forecast` forecasts it from, so the two
+    cannot drift apart. The fields mean what :class:`PendingAttack`'s do;
+    ``is_missile`` and ``ranged`` record which kind of attack it is.
+    """
+
+    weapon: Weapon
+    is_missile: bool
+    thrown: bool
+    ranged: bool
+    zone: str | None
+    range_penalty: int
+    shots: int
+    situational: int
+    situational_note: str
+    damage_dice_bonus: int
+    charge_resolve_first: bool
 
 
 @dataclass
@@ -743,7 +769,8 @@ class _MovementMixin:
             megahexes = megahex_distance(layout, attacker.position, target.position)
             range_penalty = self.rules.missile_range_penalty(megahexes)
             situational, situational_note = self._situational_mods(
-                attacker, target, attacker.ready_weapon, True)
+                attacker, target, attacker.ready_weapon, True,
+                option=attacker.current_option)
         held = self.occupied(exclude=attacker)
         adjdx = attacker.base_adj_dx
         # Three sequential phases, each able to end the flight: a blocker in the
@@ -1253,9 +1280,9 @@ class _HthMixin:
         # a fresh grapple: defender rolls
         if not defender.in_hth:
             from_rear = attack_zone(self.arena.layout, attacker, defender) == REAR
-            roll = self.dice.dn(6)
+            roll = self.dice.dn(DIE_FACES)
             while from_rear and roll == 6:              # a 6 is ignored from behind
-                roll = self.dice.dn(6)
+                roll = self.dice.dn(DIE_FACES)
             if roll == 5:                               # shrugged off, no grapple
                 self.log.append(narrate_hth(attacker, defender, "shrug"))
                 return "shrugged"
@@ -1296,7 +1323,7 @@ class _HthMixin:
         foes = [f for f in foes if f is not None]
         superior = len(foes) == 1 and figure.base_adj_dx > foes[0].base_adj_dx
         needed = 3 if superior else 1
-        if self.dice.dn(6) > needed:
+        if self.dice.dn(DIE_FACES) > needed:
             self.log.append(narrate_hth_disengage(figure, False))
             return False
         self._clear_hth(figure)
@@ -1415,24 +1442,24 @@ class _ShieldRushMixin:
             self.log.append(narrate_shield_rush(attacker, target, "stand"))
 
     def _pole_charge_dice(self, attacker: Figure, target: Figure,
-                          weapon, adjacent: bool) -> int:
+                          weapon, adjacent: bool, option: Option | None) -> int:
         """Extra damage dice for a pole weapon in/against a charge (p.12).
 
         A pole used against a charging foe always does one extra die. Used *in* a
         charge it earns the die only when the attacker moved three-plus hexes in a
         STRAIGHT line (p.12), not merely three hexes. A jab (non-adjacent strike)
-        never earns it.
+        never earns it. ``option`` is the attacker's option for this attack.
         """
         if weapon is None or weapon.kind != WeaponKind.POLE or not adjacent:
             return 0
         against_charge = target.current_option == Option.CHARGE_ATTACK
-        in_charge = (attacker.current_option == Option.CHARGE_ATTACK
+        in_charge = (option == Option.CHARGE_ATTACK
                      and attacker.moved_this_turn >= 3
                      and attacker.moved_straight)
         return 1 if (against_charge or in_charge) else 0
 
-    def _pole_charge_resolve_first(self, attacker: Figure, target: Figure,
-                                   weapon, adjacent: bool) -> bool:
+    def _pole_charge_resolve_first(self, target: Figure, weapon, adjacent: bool,
+                                   option: Option | None) -> bool:
         """Whether a pole weapon used in or against a charge resolves before all
         other attacks (p.12).
 
@@ -1440,18 +1467,22 @@ class _ShieldRushMixin:
         independent of how far the charger moved and of whether the strike earns
         the +1 damage die — so even a one-hex pole charge strikes first. A jab
         (non-adjacent strike) is a regular attack and never resolves first.
+        ``option`` is the attacker's option for this attack.
         """
         if weapon is None or weapon.kind != WeaponKind.POLE or not adjacent:
             return False
-        return (attacker.current_option == Option.CHARGE_ATTACK
+        return (option == Option.CHARGE_ATTACK
                 or target.current_option == Option.CHARGE_ATTACK)
 
     def _situational_mods(self, attacker: Figure, target: Figure,
                           weapon, is_missile: bool,
-                          is_throw: bool = False) -> tuple[int, str]:
+                          is_throw: bool = False, *,
+                          option: Option | None) -> tuple[int, str]:
         """Circumstantial to-hit modifiers (Section: DX Adjustments, p.16).
 
-        Positive = easier to hit, matching the facing convention.
+        Positive = easier to hit, matching the facing convention. ``option`` is
+        the attacker's option for this attack (a pole's +2 against a charge is
+        lost to a figure that charges itself).
         """
         mods, notes = 0, []
         layout = self.arena.layout
@@ -1495,7 +1526,7 @@ class _ShieldRushMixin:
                     and layout.distance(attacker.position, target.position) == 1)
         if (weapon is not None and weapon.kind == WeaponKind.POLE and adjacent
                 and target.current_option == Option.CHARGE_ATTACK
-                and attacker.current_option != Option.CHARGE_ATTACK
+                and option != Option.CHARGE_ATTACK
                 and attacker.moved_this_turn == 0):
             mods += 2
             notes.append("+2 vs charge")
@@ -1929,25 +1960,142 @@ class _CombatMixin:
         """
         option = attacker.current_option
         weapon = self._validate_attack(attacker, target, option)
+        terms = self._attack_terms(attacker, target, weapon, option)
+        if terms.ranged:
+            self._queue_ranged_attack(attacker, target, terms, second_target)
+        else:
+            self._queue_melee_attack(attacker, target, terms, second_target)
+        if with_main_gauche:
+            self._queue_main_gauche_jab(attacker, target)
+
+    def _attack_terms(self, attacker: Figure, target: Figure, weapon: Weapon,
+                      option: Option | None) -> _AttackTerms:
+        """The terms ``attacker`` declares a blow at ``target`` with, under
+        ``option``, from where both stand now: the one derivation behind
+        :meth:`queue_attack` and :meth:`attack_forecast`.
+
+        Pure: it reads the board and checks nothing (legality is
+        :meth:`_validate_attack`'s, the front arc and reach the queueing
+        helpers').
+        """
         is_missile = weapon.kind == WeaponKind.MISSILE
         distance = self.arena.distance(attacker.position, target.position)
         # A throwable melee weapon aimed at a non-adjacent foe is hurled (p.15);
         # adjacent, it's a normal melee blow.
         is_throw = not is_missile and weapon.throwable and distance > 1
         ranged = is_missile or is_throw
-        zone = attack_zone(self.arena.layout, attacker, target)
         situational, situational_note = self._situational_mods(
-            attacker, target, weapon, ranged, is_throw=is_throw)
-        if ranged:
-            self._queue_ranged_attack(
-                attacker, target, option, weapon, is_missile, is_throw, distance,
-                zone, situational, situational_note, second_target)
+            attacker, target, weapon, ranged, is_throw=is_throw, option=option)
+        if is_throw:
+            range_penalty = -distance     # -1 DX per hex of distance (p.15)
+            shots = 1
+        elif is_missile:
+            # Missile range is penalised by megahex (MH) distance, not raw hex
+            # count (p.16): the map's 7-hex flowers are the yardstick.
+            range_penalty = self.rules.missile_range_penalty(megahex_distance(
+                self.arena.layout, attacker.position, target.position))
+            shots = max_missile_shots(weapon, attacker.base_adj_dx)
+            if option == Option.ONE_LAST_SHOT:
+                shots = 1     # the parting shot looses a single arrow (p.7 option
+                              # l); two-shot fire belongs to option f
         else:
-            self._queue_melee_attack(
-                attacker, target, weapon, zone, situational, situational_note,
-                second_target)
-        if with_main_gauche:
-            self._queue_main_gauche_jab(attacker, target)
+            range_penalty = 0
+            shots = 1
+        adjacent = distance == 1
+        return _AttackTerms(
+            weapon=weapon, is_missile=is_missile, thrown=is_throw, ranged=ranged,
+            zone=attack_zone(self.arena.layout, attacker, target),
+            range_penalty=range_penalty, shots=shots, situational=situational,
+            situational_note=situational_note,
+            damage_dice_bonus=self._pole_charge_dice(
+                attacker, target, weapon, adjacent, option),
+            charge_resolve_first=self._pole_charge_resolve_first(
+                target, weapon, adjacent, option),
+        )
+
+    def attack_forecast(self, attacker: Figure, target: Figure,
+                        option: Option | None) -> AttackForecast:
+        """What a weapon attack by ``attacker`` on ``target`` under ``option``
+        faces, before a die is thrown.
+
+        The to-hit number is the one :meth:`queue_attack` would declare the
+        blow at now (the same :meth:`_attack_terms`: situational modifiers,
+        range, the facing bonus) through ``Ruleset.to_hit_number``; the dice
+        are the four-dice rule's (``Ruleset.attack_dice_count``); the chance
+        to hit goes through ``Ruleset.classify_roll`` (``Ruleset.hit_odds``);
+        and the average damage of a hit counts the special totals (3 triple,
+        4 double), a pole weapon's extra die in or against a charge and the
+        target's armor (``Ruleset.expected_hit_damage``).
+
+        The board is read as it stands. ``option`` stands in for the
+        attacker's ``current_option`` wherever the declaration reads it (a
+        pole's charge terms, a parting shot's single arrow), so a menu can
+        forecast an option not yet chosen; everything else (where each figure
+        stands and faces, what the attacker moved this turn, the target's
+        dodging or defending) is the board's. An option that moves before it
+        strikes, a charge, is forecast from where the move ends: rehearse the
+        move on a copy of the game (``to_dict``/``from_dict``) and ask the
+        copy. The forecast checks no legality (an option, reach, the front
+        arc, one attack a turn: :meth:`queue_attack` does), and covers the
+        main blow alone: not a main-gauche's off-hand jab, a shot's random
+        member of a hand-to-hand pile, or a blow that fails to land because
+        its target has moved away.
+
+        Args:
+            attacker: The figure striking.
+            target: The figure struck.
+            option: The attacker's option for this attack.
+
+        Returns:
+            The forecast.
+
+        Raises:
+            IllegalAction: if the attacker holds no ready weapon (a bare-handed
+                figure grapples, which has no to-hit roll) or either figure is
+                off the field.
+        """
+        weapon = self._require_ready_weapon(attacker)
+        if attacker.position is None or target.position is None:
+            raise IllegalAction(
+                f"{attacker.name} and {target.name} must both be on the field")
+        terms = self._attack_terms(attacker, target, weapon, option)
+        needed = self.rules.to_hit_number(
+            attacker, zone=terms.zone, ignore_facing=terms.is_missile,
+            range_penalty=terms.range_penalty, situational=terms.situational)
+        dice_count = self.rules.attack_dice_count(target, ranged=terms.ranged)
+        hit_multipliers = self.rules.hit_odds(dice_count, needed)
+        return AttackForecast(
+            needed=needed,
+            to_hit_breakdown=self.rules.to_hit_breakdown(
+                attacker, zone=terms.zone, ignore_facing=terms.is_missile,
+                range_penalty=terms.range_penalty,
+                situational_note=terms.situational_note),
+            dice_count=dice_count,
+            hit_chance=sum(hit_multipliers.values()),
+            hit_multipliers=hit_multipliers,
+            weapon=weapon,
+            extra_dice=terms.damage_dice_bonus,
+            armour_stops=self.rules.blow_stops(target, weapon, zone=terms.zone),
+            expected_damage=self.rules.expected_hit_damage(
+                target, weapon, zone=terms.zone, hit_multipliers=hit_multipliers,
+                extra_dice=terms.damage_dice_bonus, blunted=self.practice),
+            zone=terms.zone,
+            ignore_facing=terms.is_missile,
+            range_penalty=terms.range_penalty,
+            situational=terms.situational,
+            situational_note=terms.situational_note,
+            ranged=terms.ranged,
+            thrown=terms.thrown,
+            shots=terms.shots,
+        )
+
+    @staticmethod
+    def _require_ready_weapon(attacker: Figure) -> Weapon:
+        """``attacker``'s ready weapon; raises :class:`IllegalAction` without one."""
+        weapon = attacker.ready_weapon
+        if weapon is None:
+            raise IllegalAction(f"{attacker.name} has no ready weapon")
+        return weapon
 
     def _validate_attack(self, attacker: Figure, target: Figure, option):
         """Shared guards for declaring any attack (Section VII), returning the
@@ -1999,9 +2147,7 @@ class _CombatMixin:
         if attacker.dodging or attacker.defending:
             raise IllegalAction(
                 f"{attacker.name} is dodging/defending this turn and cannot attack")
-        weapon = attacker.ready_weapon
-        if weapon is None:
-            raise IllegalAction(f"{attacker.name} has no ready weapon")
+        weapon = self._require_ready_weapon(attacker)
         is_missile = weapon.kind == WeaponKind.MISSILE
         if spec(option).is_missile != is_missile:
             raise IllegalAction(
@@ -2012,9 +2158,8 @@ class _CombatMixin:
         return weapon
 
     def _queue_ranged_attack(
-        self, attacker: Figure, target: Figure, option, weapon,
-        is_missile: bool, is_throw: bool, distance: int, zone,
-        situational: int, situational_note: str, second_target: Figure | None,
+        self, attacker: Figure, target: Figure, terms: _AttackTerms,
+        second_target: Figure | None,
     ) -> None:
         """Queue a missile or thrown attack (p.15-16).
 
@@ -2030,30 +2175,17 @@ class _CombatMixin:
             raise IllegalAction(
                 f"{target.name} is not in {attacker.name}'s front arc"
             )
-        if is_throw:
-            range_penalty = -distance     # -1 DX per hex of distance (p.15)
-            shots = 1
-        else:
-            # Missile range is penalised by megahex (MH) distance, not raw hex
-            # count (p.16): the map's 7-hex flowers are the yardstick.
-            megahexes = megahex_distance(
-                self.arena.layout, attacker.position, target.position)
-            range_penalty = self.rules.missile_range_penalty(megahexes)
-            shots = max_missile_shots(weapon, attacker.base_adj_dx)
-            if option == Option.ONE_LAST_SHOT:
-                shots = 1     # the parting shot looses a single arrow (p.7 option
-                              # l); two-shot fire belongs to option f
         if second_target is not None:
             if second_target.side == attacker.side:
                 raise IllegalAction(
                     f"{attacker.name} cannot aim a shot at "
                     f"{second_target.name} — same side"
                 )
-            if not is_missile:
+            if not terms.is_missile:
                 raise IllegalAction(
                     "only a missile weapon may split its two shots between targets"
                 )
-            if shots < 2:
+            if terms.shots < 2:
                 raise IllegalAction(
                     f"{attacker.name} gets only one shot this turn — no second target"
                 )
@@ -2062,33 +2194,33 @@ class _CombatMixin:
                     f"{second_target.name} is not in {attacker.name}'s front arc"
                 )
         self._pending.append(
-            PendingAttack(attacker, target, zone=zone,
-                          ignore_facing=is_missile, range_penalty=range_penalty,
-                          shots=shots, thrown=is_throw,
-                          situational=situational, situational_note=situational_note,
+            PendingAttack(attacker, target, zone=terms.zone,
+                          ignore_facing=terms.is_missile,
+                          range_penalty=terms.range_penalty,
+                          shots=terms.shots, thrown=terms.thrown,
+                          situational=terms.situational,
+                          situational_note=terms.situational_note,
                           second_target=second_target)
         )
 
     def _queue_melee_attack(
-        self, attacker: Figure, target: Figure, weapon, zone,
-        situational: int, situational_note: str, second_target: Figure | None,
+        self, attacker: Figure, target: Figure, terms: _AttackTerms,
+        second_target: Figure | None,
     ) -> None:
         """Queue a single melee blow against a foe within reach (Section VII)."""
         if second_target is not None:
             raise IllegalAction("a melee attack strikes a single target")
-        if target not in self.melee_targets(attacker, weapon):
+        if target not in self.melee_targets(attacker, terms.weapon):
             raise IllegalAction(
                 f"{target.name} is not within {attacker.name}'s reach"
             )
-        adjacent = self.arena.distance(attacker.position, target.position) == 1
         self._pending.append(
-            PendingAttack(attacker, target, zone=zone,
-                          ignore_facing=False, range_penalty=0,
-                          situational=situational, situational_note=situational_note,
-                          damage_dice_bonus=self._pole_charge_dice(
-                              attacker, target, weapon, adjacent),
-                          charge_resolve_first=self._pole_charge_resolve_first(
-                              attacker, target, weapon, adjacent))
+            PendingAttack(attacker, target, zone=terms.zone,
+                          ignore_facing=False, range_penalty=terms.range_penalty,
+                          situational=terms.situational,
+                          situational_note=terms.situational_note,
+                          damage_dice_bonus=terms.damage_dice_bonus,
+                          charge_resolve_first=terms.charge_resolve_first)
         )
 
     def _queue_main_gauche_jab(self, attacker: Figure, target: Figure) -> None:
