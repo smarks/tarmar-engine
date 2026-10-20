@@ -73,6 +73,7 @@ from .magic import (
     attribute_score,
     bound_lifted,
     casting_mana,
+    casting_success_ceiling,
     spell_effect_kind,
 )
 from .profile import TARMAR, RulesProfile
@@ -2548,9 +2549,7 @@ class TurnRunner:
             casting_failure: The injected casting failure rules, or ``None``:
                 the attribute alone judges the roll.
         """
-        if natural_total > attribute:
-            return False
-        return casting_failure is None or natural_total < casting_failure.fumble_floor
+        return natural_total <= casting_success_ceiling(attribute, casting_failure)
 
     def _pay_cast(
         self, caster: CombatantState, spell: Spell, push_mana: int, borrowed: int

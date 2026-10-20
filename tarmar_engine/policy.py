@@ -60,6 +60,7 @@ from .magic import (
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
+    CastingFailureRules,
     ChannelUnclassifiedSpell,
     CounterspellRules,
     MagicRules,
@@ -69,6 +70,7 @@ from .magic import (
     attribute_score,
     bound_lifted,
     casting_mana,
+    casting_success_ceiling,
 )
 from .reactions import TarmarReactions
 from .spells import Spell, get_spell
@@ -245,6 +247,29 @@ def three_d6_at_most(target: int) -> float:
     return outcomes / 216
 
 
+def cast_success_chance(
+    attribute: int, casting_failure: CastingFailureRules | None
+) -> float:
+    """Exact chance a casting roll succeeds, as the engine judges it.
+
+    3d6 at or under the attribute and, with casting failure rules injected,
+    under their fumble floor (:func:`.magic.casting_success_ceiling`). The
+    AI's spell choice is scored by it, and a caller showing a spell's odds
+    calls it with the same rules to show the same number (tarmar-engine #47).
+
+    Args:
+        attribute: The effective attribute the roll is made under: the
+            engine rolls under the attribute less the injury band and any
+            owed off-balance penalty. The policy's own menu still passes the
+            raw attribute (tarmar-engine #56), so its estimate matches the
+            engine's verdict only for an unhurt caster with no off-balance
+            owed.
+        casting_failure: The injected casting failure rules
+            (``MagicRules.casting_failure``), or ``None``: the attribute alone.
+    """
+    return three_d6_at_most(casting_success_ceiling(attribute, casting_failure))
+
+
 def four_d6_at_most(target: int) -> float:
     """Exact P(4d6 <= target): the HTH DISENGAGE and Struggle Free roll."""
     outcomes = 0
@@ -401,11 +426,14 @@ def _cast_candidates(
     actor: CombatantState,
     letter: str,
     beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
     ``beyond_purse`` lists the spells the actor cannot afford too, for the
     borrowing variants to be built from (:func:`_borrow_candidates`).
+    ``casting_failure`` is the injected casting failure rules, whose fumble
+    floor bounds the chance of a cast (:func:`cast_success_chance`).
     """
     candidates = []
     enemy = nearest_enemy(state, actor)
@@ -416,10 +444,16 @@ def _cast_candidates(
         if spell.continuing and key in actor.active_spells:
             continue  # already up; renewal happens in phase 2
         attribute = actor.intelligence if spell.attribute == "INT" else actor.wisdom
-        cast_probability = three_d6_at_most(attribute)
+        cast_probability = cast_success_chance(attribute, casting_failure)
         attribute_name = spell.attribute
+        floor_note = ""
+        if (
+            casting_failure is not None
+            and casting_success_ceiling(attribute, casting_failure) < attribute
+        ):
+            floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
         cast_note = (
-            f"3d6 ≤ {attribute_name} {attribute} — P(cast) "
+            f"3d6 ≤ {attribute_name} {attribute}{floor_note} — P(cast) "
             f"{score_text(cast_probability)}"
         )
         if spell.heals:
@@ -483,7 +517,10 @@ def _cast_candidates(
 
 
 def _grappled_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
@@ -540,12 +577,15 @@ def _grappled_decision(
                 target_id=grappler_id,
             )
         )
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, casting_failure)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
 def _mastery_three_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
     return [
@@ -558,13 +598,18 @@ def _mastery_three_casts(
             target_id=candidate.target_id,
             spell_key=candidate.spell_key,
         )
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure
+        )
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
 
 
 def _grappler_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
@@ -600,7 +645,7 @@ def _grappler_decision(
     ]
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, casting_failure)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
@@ -690,7 +735,10 @@ def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantSt
 
 
 def _hth_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """Casts the HTH table allows: "If hands free or no-gesture spell".
 
@@ -701,7 +749,9 @@ def _hth_casts(
     hands_free = actor.weapon.item_id == ""
     return [
         candidate
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure
+        )
         if hands_free
         or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
     ]
@@ -821,7 +871,11 @@ def choose_option(
     cast past the Channel, so a menu built without them can offer one it
     will not run.
     """
-    decision = _score_options(state, actor)
+    decision = _score_options(
+        state,
+        actor,
+        casting_failure=None if magic is None else magic.casting_failure,
+    )
     if magic is not None and magic.channel is not None:
         decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
@@ -1226,7 +1280,9 @@ def _borrow_candidates(
         return []
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
-    menu = _score_options(state, actor, beyond_purse=True)
+    menu = _score_options(
+        state, actor, beyond_purse=True, casting_failure=magic.casting_failure
+    )
     menu = _within_channel(actor, menu, magic)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
     cap_lifted = bound_lifted(actor, PUSH_CAP)
@@ -1314,7 +1370,10 @@ def _action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
 
 
 def _score_options(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -1328,12 +1387,13 @@ def _score_options(
 
     ``beyond_purse`` lists every cast the situation allows, affordable or
     not: the menu :func:`_borrow_candidates` builds its variants from. The
-    AI's own menu never sets it.
+    AI's own menu never sets it. ``casting_failure`` is the injected casting
+    failure rules every cast's chance is estimated under.
     """
     if actor.grappled_by is not None:
-        return _grappled_decision(state, actor, beyond_purse)
+        return _grappled_decision(state, actor, beyond_purse, casting_failure)
     if actor.grappling is not None:
-        return _grappler_decision(state, actor, beyond_purse)
+        return _grappler_decision(state, actor, beyond_purse, casting_failure)
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
     adjacent_enemies = [
@@ -1644,9 +1704,11 @@ def _score_options(
                 )
             )
         elif letter == "r" and in_hth:
-            candidates.extend(_hth_casts(state, actor, beyond_purse))
+            candidates.extend(_hth_casts(state, actor, beyond_purse, casting_failure))
         elif letter in ("h", "r"):
-            candidates.extend(_cast_candidates(state, actor, letter, beyond_purse))
+            candidates.extend(
+                _cast_candidates(state, actor, letter, beyond_purse, casting_failure)
+            )
         elif letter == "u" and in_hth:
             candidates.append(
                 Candidate(

@@ -532,6 +532,18 @@ ones.
 - **The Runaway.** A failing cast whose natural total is `runaway_total`
   begins a Runaway, run on later turns when `MagicRules.runaway` is
   injected too.
+- **The estimate (since v0.9.19).** The policy prices a cast by the same
+  ceiling the engine judges the roll by (tarmar-engine #47):
+  `choose_option(..., magic=rules)` estimates each cast's chance as 3d6 at
+  most `magic.casting_success_ceiling(attribute, rules.casting_failure)`,
+  the highest natural total that succeeds, and the rationale names the
+  fumble floor where it lowers that ceiling.
+  `policy.cast_success_chance(attribute, rules.casting_failure)` is that
+  chance, for a caller showing a spell's odds to show the same number. The
+  engine applies the ceiling to the effective attribute, less the injury
+  band and any owed off-balance penalty; the menu still passes the raw
+  attribute, so the two agree only for an unhurt caster until
+  tarmar-engine #56 lands.
 - **Without it.** With `casting_failure=None`, or no `MagicRules` at all,
   the attribute alone judges the roll, no failure costs mana, and no cast
   starts a Runaway. **This changes the default profile:** before v0.9.15

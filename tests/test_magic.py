@@ -24,6 +24,7 @@ from tarmar_engine.magic import (
     MagicRules,
     PushRules,
     SpellEffectKind,
+    casting_success_ceiling,
 )
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState
@@ -522,6 +523,106 @@ class PushTest(TestCase):
         events = cast(wizard_state(), [[2, 2, 2], [3, 3], [2, 2, 2], [5]], push=1)
         self.assertEqual(status_payloads(events, "effect_bonus")[-1]["effect_bonus"], 9)
         self.assertEqual(events_of_type(events, "damage")[0]["payload"]["raw"], 14)
+
+
+class CastEstimateTest(TestCase):
+    """#47: the AI's chance of a cast reads the injected fumble floor, as the
+    engine's casting roll does (example floor 12: totals of 12 and up fail)."""
+
+    def test_the_ceiling_is_the_attribute_or_under_the_floor(self):
+        rules = example_casting_failure_rules()
+        cases = ((18, rules, 11), (12, rules, 11), (11, rules, 11), (10, rules, 10))
+        for attribute, casting_failure, ceiling in cases + ((18, None, 18),):
+            with self.subTest(attribute=attribute, rules=casting_failure):
+                self.assertEqual(
+                    casting_success_ceiling(attribute, casting_failure), ceiling
+                )
+
+    def test_the_chance_is_bounded_by_the_floor(self):
+        rules = example_casting_failure_rules()
+        # 3d6 at most 11 is 135 of 216.
+        self.assertEqual(policy.cast_success_chance(18, rules), 135 / 216)
+        self.assertEqual(policy.cast_success_chance(18, None), 1.0)
+        # Under the floor the attribute alone bounds it, floor or none.
+        self.assertEqual(
+            policy.cast_success_chance(10, rules), policy.three_d6_at_most(10)
+        )
+        self.assertEqual(
+            policy.cast_success_chance(10, None), policy.three_d6_at_most(10)
+        )
+
+    def test_the_chance_matches_the_engine_s_judgement_of_every_total(self):
+        rules = example_casting_failure_rules()
+        for attribute in (8, 11, 12, 14, 18):
+            for casting_failure in (None, rules):
+                with self.subTest(attribute=attribute, rules=casting_failure):
+                    successes = sum(
+                        engine.TurnRunner._casting_roll_succeeds(
+                            first + second + third, attribute, casting_failure
+                        )
+                        for first in range(1, 7)
+                        for second in range(1, 7)
+                        for third in range(1, 7)
+                    )
+                    self.assertEqual(
+                        policy.cast_success_chance(attribute, casting_failure),
+                        successes / 216,
+                    )
+
+    def fire_missile(self, state, magic):
+        decision = policy.choose_option(state, state.by_id(1), magic=magic)
+        return next(
+            candidate
+            for candidate in decision.candidates
+            if candidate.spell_key == "fire_missile" and not candidate.push_mana
+        )
+
+    def test_every_menu_that_offers_a_cast_prices_it_under_the_floor(self):
+        open_field = wizard_state(intelligence=18)
+        in_hand_to_hand = wizard_state(
+            q=2, intelligence=18, spell_mastery={"fire_missile": 2}
+        )
+        in_hand_to_hand.by_id(1).hth_with.append(2)
+        in_hand_to_hand.by_id(2).hth_with.append(1)
+        grappled = wizard_state(q=2, intelligence=18, spell_mastery={"fire_missile": 3})
+        grappled.by_id(1).grappled_by = 2
+        grappled.by_id(2).grappling = 1
+        grappling = wizard_state(
+            q=2, intelligence=18, spell_mastery={"fire_missile": 3}
+        )
+        grappling.by_id(1).grappling = 2
+        grappling.by_id(2).grappled_by = 1
+        floored = with_casting_failure(example_magic_rules())
+        for name, state in (
+            ("open field", open_field),
+            ("hand-to-hand", in_hand_to_hand),
+            ("grappled", grappled),
+            ("grappling", grappling),
+        ):
+            with self.subTest(situation=name):
+                cast = self.fire_missile(state, floored)
+                self.assertIn(
+                    "3d6 ≤ INT 18, under the fumble floor 12 — P(cast) 0.625",
+                    cast.rationale,
+                )
+                plain = self.fire_missile(state, example_magic_rules())
+                self.assertIn("3d6 ≤ INT 18 — P(cast) 1.000", plain.rationale)
+
+    def test_the_floor_lowers_the_ai_s_score_for_the_cast(self):
+        state = wizard_state(intelligence=18)
+        floored = self.fire_missile(state, with_casting_failure(example_magic_rules()))
+        plain = self.fire_missile(state, example_magic_rules())
+        self.assertLess(floored.score, plain.score)
+
+    def test_a_floor_above_the_attribute_is_not_named(self):
+        cast = self.fire_missile(
+            wizard_state(intelligence=10), with_casting_failure(example_magic_rules())
+        )
+        self.assertNotIn("fumble floor", cast.rationale)
+        self.assertIn(
+            f"P(cast) {policy.score_text(policy.three_d6_at_most(10))}",
+            cast.rationale,
+        )
 
 
 class PushMenuTest(TestCase):

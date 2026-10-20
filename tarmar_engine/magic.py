@@ -263,6 +263,27 @@ class CastingFailureRules:
             )
 
 
+def casting_success_ceiling(
+    attribute: int, casting_failure: CastingFailureRules | None
+) -> int:
+    """The highest natural total on which a casting roll succeeds.
+
+    A casting roll succeeds at or under the effective attribute and, where
+    casting failure rules are injected, under their fumble floor
+    (tarmar-engine #46). The engine judges each roll by this and the policy
+    estimates the chance of success from it (tarmar-engine #47), so the two
+    cannot drift.
+
+    Args:
+        attribute: The effective attribute the roll is made under.
+        casting_failure: The injected casting failure rules, or ``None``: the
+            attribute alone bounds the roll.
+    """
+    if casting_failure is None:
+        return attribute
+    return min(attribute, casting_failure.fumble_floor - 1)
+
+
 @dataclass(frozen=True)
 class ControlBand:
     """A band of failure margins on the Control Roll, and what it does.
