@@ -69,7 +69,7 @@ from .facing import (
     zone_of_direction,
     zone_toward,
 )
-from .figure import PER_TURN_FLAGS, Figure, Posture, Race, footprint_for
+from .figure import PER_TURN_FLAGS, Figure, Posture, Race, SideLabel, footprint_for
 from .megahex import megahex_distance
 from .movement import reachable_moves
 from .narrative import (
@@ -248,6 +248,24 @@ class _RosterMixin:
                 seen.append(figure.side)
         return seen
 
+    def side_label(self, side: str) -> SideLabel | None:
+        """What a reader calls ``side``: the one ``SideLabel`` its figures carry
+        (tarmar-engine #25), or ``None`` when none of them carries one.
+
+        Raises:
+            ValueError: if the side's figures disagree, a label on some and not
+                others or two different labels, since the narrative would then
+                print the side key for some of them and a reader's name for
+                the rest.
+        """
+        labels = {figure.side_label for figure in self.figures
+                  if figure.side == side}
+        if len(labels) > 1:
+            raise ValueError(
+                f"the figures of side {side!r} carry different side labels: "
+                f"{sorted(map(repr, labels))}")
+        return next(iter(labels), None)
+
     def living(self) -> list[Figure]:
         return [f for f in self.figures if not f.is_dead]
 
@@ -300,7 +318,14 @@ class _TurnMixin:
         return [figure.uid for figure in ordered]
 
     def begin_selection(self) -> None:
-        """Freeze the initiative order for a fresh selection pass (turn start)."""
+        """Freeze the initiative order for a fresh selection pass (turn start).
+
+        Every side's label is checked first (:meth:`side_label`), so a side
+        whose figures disagree is refused on the turn it would first print,
+        not at the victory.
+        """
+        for side in self.sides:
+            self.side_label(side)
         self.initiative_order = self.initiative()
         self.active_index = 0
         self.passed = []
@@ -2533,7 +2558,7 @@ class _CombatMixin:
         winner = self.victor()
         if winner is not None:
             self._victory_announced = True
-            self.log.append(narrate_victory(winner))
+            self.log.append(narrate_victory(winner, self.side_label(winner)))
 
     def _cascade_into_pile(
         self, attacker: Figure, intended: Figure, weapon,

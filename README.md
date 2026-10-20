@@ -641,6 +641,33 @@ every attack the existing classic boards declare, with the declared
 `classic.data.DIE_FACES` (6) and `tarmar_engine.dice.sum_distribution` are
 public alongside it.
 
+## Side labels in the classic narrative (v0.9.19)
+
+A side key is an identifier, not a reader's word: a consumer may key a
+teamless figure's side by its own uid, and the narrative printed that key as
+if it were a team's name ("Yaria Hawkridge (743) advances", "The 743 hold the
+field"; tarmar-engine #25). A figure now carries an optional
+`Figure.side_label`, a `classic.figure.SideLabel(name, team)` the consuming
+game supplies; give every figure on a side the same one.
+
+- **A team** (`team=True`): a member reads "Ada (Red)" and the win "🏆 The
+  Red hold the field — victory!".
+- **A side of one** (`team=False`): the label stands for the figure, so it
+  is the figure's own name, or whatever the game calls a nameless one ("Side
+  3"): "Yaria Hawkridge swings…", "🏆 Yaria Hawkridge holds the field —
+  victory!".
+- **No label** (the default): every line reads exactly as before, the side
+  key in the parens and in the win. The tests pin a duel's lines as v0.9.18
+  wrote them.
+
+`narrate_victory(side, label=None)` takes the label directly; the engine's
+own victory line passes the winning side's, `GameState.side_label(side)`,
+which raises `ValueError` when the side's figures disagree (a label on some
+and not others, or two different labels). The label round-trips through
+`to_dict`/`from_dict` (`"side_label"`, absent from an older snapshot, which
+loads unlabelled). A label name that is blank or has spaces at an end raises
+`ValueError`.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

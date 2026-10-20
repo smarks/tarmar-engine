@@ -104,6 +104,40 @@ RACE_SPREADS: dict[Race, RaceSpread] = {
 }
 
 
+@dataclass(frozen=True)
+class SideLabel:
+    """What a reader calls a figure's side, supplied by the consuming game.
+
+    A side key is an identifier, not a reader's word: a consumer may key a
+    teamless figure's side by its own uid (tarmar-studio keys it by a row id),
+    and the narrative would print that number as if it were a team's name
+    (tarmar-engine #25). A figure carrying a label is named by it instead.
+    Give every figure on one side the same label.
+
+    Attributes:
+        name: The team's name; for a side of one figure, the figure's own
+            name, or whatever the consumer calls a nameless one ("Side 3").
+        team: True for a team: the narrative names a member "Ada (Red)" and
+            its win "The Red hold the field". False for a side of one: the
+            label stands for the figure itself, "Yaria Hawkridge", and its
+            win reads "Yaria Hawkridge holds the field".
+
+    Raises:
+        ValueError: if ``name`` is blank, which would print nothing, or has
+            spaces at either end, which would print inside the parens.
+    """
+
+    name: str
+    team: bool
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("a side label needs a name a reader can read")
+        if self.name != self.name.strip():
+            raise ValueError(
+                f"a side label's name has spaces at an end: {self.name!r}")
+
+
 @dataclass
 class Figure:
     """One counter in the arena.
@@ -133,6 +167,9 @@ class Figure:
     # at creation and then survives as a secondary label; the fun ``name`` is the
     # identity. Empty for a figure with no archetype (e.g. a monster).
     char_class: str = ""
+    # What a reader calls this figure's side (tarmar-engine #25); None prints
+    # the side key, as before. Supplied by the consuming game.
+    side_label: SideLabel | None = None
     # ---- wizard identity (Classic magic; TFT: Wizard) ----
     # A fighter is IQ 8 (the Melee baseline, p.23) with no spells; a wizard is the
     # SAME Figure class with a raised IQ, a non-empty spell list, and optionally a
