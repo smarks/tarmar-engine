@@ -283,3 +283,31 @@ class StateImportSmokeTest(TestCase):
     def test_battle_state_is_importable_from_combat_math_module(self):
         # Guards the module wiring the engine relies on.
         self.assertIsInstance(BattleState(), BattleState)
+
+
+class HexSpanTextTest(TestCase):
+    """A span of hexes takes the article its spoken number does
+    (tarmar-engine #51)."""
+
+    def test_the_article_follows_the_spoken_number(self):
+        cases = {
+            1: "a 1-hex",
+            2: "a 2-hex",
+            7: "a 7-hex",
+            8: "an 8-hex",
+            9: "a 9-hex",
+            11: "an 11-hex",
+            12: "a 12-hex",
+            18: "an 18-hex",
+            80: "an 80-hex",
+            88: "an 88-hex",
+            100: "a 100-hex",
+            180: "a 180-hex",
+            800: "an 800-hex",
+            11000: "an 11000-hex",
+            18000: "an 18000-hex",
+            21000: "a 21000-hex",
+        }
+        for count, text in cases.items():
+            with self.subTest(count=count):
+                self.assertEqual(combat_math.hex_span_text(count), text)

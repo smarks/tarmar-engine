@@ -49,6 +49,22 @@ def hexes_text(distance: int) -> str:
     return f"{distance} hex" if distance == 1 else f"{distance} hexes"
 
 
+def hex_span_text(count: int) -> str:
+    """``"a 9-hex"`` / ``"an 8-hex"`` / ``"an 18-hex"``: a span of hexes with
+    the article its spoken number takes, for "within a 9-hex run".
+
+    The number is read aloud for the article: "an" before eight, eleven,
+    eighteen and the eighties, and before a leading thousands group that
+    reads so (eleven thousand, eight hundred); "a" before every other.
+    """
+    leading = count
+    while leading >= 1000:
+        leading //= 1000
+    vowel_sound = str(leading).startswith("8") or leading in (11, 18)
+    article = "an" if vowel_sound else "a"
+    return f"{article} {count}-hex"
+
+
 def figure_distance(a: CombatantState, b: CombatantState) -> int:
     """Hex distance between two combatants' footprints (closest edge)."""
     return hexes.figure_distance(a.footprint, b.footprint)

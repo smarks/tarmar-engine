@@ -372,6 +372,37 @@ def _approaches(
         )
 
 
+def _nearable_enemy(
+    state: BattleState, actor: CombatantState, gait: str
+) -> tuple[CombatantState, int] | None:
+    """The nearest enemy a clear path at ``gait`` gets the actor nearer to,
+    with its distance now, or ``None`` when no path gets nearer to any.
+
+    MOVE and SPRINT close on this enemy rather than on a nearer one the
+    engine's own approach could not near, where the figure would stand
+    (tarmar-engine #37, #51).
+    """
+    return next(
+        (
+            (other, now)
+            for other, now, approach in _approaches(state, actor, gait)
+            if approach.distance < now
+        ),
+        None,
+    )
+
+
+def _passed_over_note(
+    nearest: CombatantState, distance: int, target: CombatantState
+) -> str:
+    """How a MOVE or SPRINT names the nearer enemy it reads past for
+    ``target`` (:func:`_nearable_enemy`), or nothing when it goes for the
+    nearest."""
+    if target is nearest:
+        return ""
+    return f" ({nearest.name}, {distance} hexes off, cannot be neared)"
+
+
 def _attack_forecast(
     actor: CombatantState, defender: CombatantState, *, ranged: bool
 ) -> tuple[float, str]:
@@ -1480,22 +1511,9 @@ def _score_options(
                 # nearer to, not a nearer one it cannot (#37).
                 nearable = None
                 if distance > 1:
-                    nearable = next(
-                        (
-                            (other, now)
-                            for other, now, approach in _approaches(
-                                state, actor, run_gait
-                            )
-                            if approach.distance < now
-                        ),
-                        None,
-                    )
+                    nearable = _nearable_enemy(state, actor, run_gait)
                 target, target_distance = nearable or (enemy, distance)
-                passed_over = (
-                    f" ({enemy.name}, {distance} hexes off, cannot be neared)"
-                    if target is not enemy
-                    else ""
-                )
+                passed_over = _passed_over_note(enemy, distance, target)
                 distance = target_distance
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
@@ -1507,19 +1525,19 @@ def _score_options(
                     # make gets no nearer, so it would stand still (#37).
                     score = 0.0
                     band = (
-                        f"no clear path within a {run}-hex run gets nearer "
-                        "to any enemy, so moving gains nothing"
+                        f"no clear path within {combat_math.hex_span_text(run)} run "
+                        "gets nearer to any enemy, so moving gains nothing"
                     )
                 elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
-                        f"within a {jog}-hex jog, so half of "
+                        f"within {combat_math.hex_span_text(jog)} jog, so half of "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 else:
                     score = round_score(MOVE_BASE_SCORE)
                     band = (
-                        f"beyond a {jog}-hex jog, so the full "
+                        f"beyond {combat_math.hex_span_text(jog)} jog, so the full "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 candidates.append(
@@ -1556,7 +1574,7 @@ def _score_options(
                 score = 0.0
                 rationale = (
                     f"{enemy.name} is {combat_math.hexes_text(distance)} away and "
-                    f"a {jog}-hex jog along a clear path ends "
+                    f"{combat_math.hex_span_text(jog)} jog along a clear path ends "
                     f"{combat_math.hexes_text(arrival)} from it, out of charge "
                     f"reach, as is every other enemy = {score_text(score)}"
                 )
@@ -1738,15 +1756,45 @@ def _score_options(
             )
 
         elif letter == "sprint" and enemy is not None:
+            # The sprint it says it makes is the one the engine will make: at
+            # the enemy MOVE would pick, the nearest a clear path gets nearer
+            # to, and standing (no Fatigue paid) when none is (#51).
+            distance = combat_math.figure_distance(actor, enemy)
+            nearable = None
+            if distance > 1:
+                nearable = _nearable_enemy(
+                    state, actor, movement.MOVEMENT_GAITS[letter]
+                )
+            keeps_to_the_run = (
+                f"the AI keeps to the run = {score_text(PLAYER_ONLY_SCORE)}"
+            )
+            if nearable is None:
+                target = enemy
+                why = (
+                    f"already adjacent to {enemy.name}"
+                    if distance <= 1
+                    else "no clear path within "
+                    f"{combat_math.hex_span_text(actor.move_sprint)} sprint gets "
+                    "nearer to any enemy"
+                )
+                rationale = (
+                    f"Stand where you are, {why}, so no Fatigue is paid; "
+                    f"{keeps_to_the_run}"
+                )
+            else:
+                target = nearable[0]
+                passed_over = _passed_over_note(enemy, distance, target)
+                rationale = (
+                    f"Sprint up to {actor.move_sprint} hexes toward "
+                    f"{target.name}{passed_over} for 6 Fatigue; {keeps_to_the_run}"
+                )
             candidates.append(
                 Candidate(
                     letter,
                     actions.option_name(letter),
                     PLAYER_ONLY_SCORE,
-                    f"Sprint up to {actor.move_sprint} hexes toward {enemy.name} "
-                    f"for 6 Fatigue; the AI keeps to the run = "
-                    f"{score_text(PLAYER_ONLY_SCORE)}",
-                    target_id=enemy.combatant_id,
+                    rationale,
+                    target_id=target.combatant_id,
                 )
             )
         elif letter == "d":
