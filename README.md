@@ -604,6 +604,25 @@ empty.
   when non-empty), so a caller reads it instead of recomputing it. The
   menu's "by a Game Master's ruling" wording is decided from it too.
 
+## Public answers, so callers need not restate the engine (v0.9.19)
+
+A consuming game that must explain a menu (why a cast is withheld, where a
+move ends, whom a charge strikes) asks the engine's own rule, not a copy of
+it. Each helper below is what the engine and its policy call themselves.
+
+- **Channel (tarmar-engine #41).** `MagicRules.cast_within_channel(caster,
+  spell, push_mana=0, *, borrowing=False)` says whether Channel lets the
+  casting's whole mana (`magic.casting_mana`) through: within
+  `MagicRules.channel_bound`, so `True` with no Channel rules and for a
+  caster a Game Master has lifted Channel for, except a borrowing casting
+  where Borrowing has no debt cap, which is held to the caster's mana plus
+  its Channel. The debt cap is the caller's own check
+  (`BorrowingRules.borrowing_ceiling`; `cast_spell` refuses past it).
+  It raises `ChannelUnclassifiedSpell` for a spell the rules give no kind,
+  lifted or not, as `channel_for` does. `cast_spell` refuses by it and the
+  menu withholds by it; it says nothing of the purse, Push's cap or the
+  debt cap.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

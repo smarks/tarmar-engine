@@ -974,6 +974,41 @@ class MagicRules:
             return bound
         return caster.mana + self.channel.channel_for(caster, spell)
 
+    def cast_within_channel(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        push_mana: int = 0,
+        *,
+        borrowing: bool = False,
+    ) -> bool:
+        """Does Channel let this caster cast the spell with ``push_mana``
+        pushed: the casting's whole mana (:func:`casting_mana`) within
+        :meth:`channel_bound`?
+
+        The one Channel test the casting phase refuses by and the menu
+        withholds by, public so a caller asks it rather than restating it.
+        ``True`` with no Channel rules injected, and for a caster a Game
+        Master has lifted Channel for, except a borrowing casting where
+        Borrowing has no debt cap: that one is held to the caster's mana plus
+        its Channel. It says nothing of the purse, Push's own cap or the debt
+        cap, which are the caller's checks (the debt cap through
+        :meth:`BorrowingRules.borrowing_ceiling`; ``cast_spell`` refuses a
+        borrowing past it).
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            push_mana: The mana pushed past the spell's cost.
+            borrowing: Does the casting borrow (cost past the purse)?
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the Channel rules give no
+                kind, lifted or not, as :meth:`channel_for` does.
+        """
+        bound = self.channel_bound(caster, spell, borrowing=borrowing)
+        return bound is None or casting_mana(spell, push_mana) <= bound
+
     def lifted_bounds_passed(
         self, caster: CombatantState, spell: Spell, push_mana: int = 0
     ) -> tuple[str, ...]:

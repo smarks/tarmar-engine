@@ -2289,12 +2289,12 @@ class TurnRunner:
         cast's Control Roll (:meth:`_push_control_roll`). Their bonuses add
         to the spell's rolled effect. With injected Channel rules the whole
         mana of the casting, cost and pushed mana together, must lie within
-        the caster's Channel for the spell (:meth:`.magic.ChannelRules.
-        channel_for`), and the cast names the Channel it used. With injected
-        Borrowing rules a cast the caster chose to borrow for, and cannot
-        afford, empties the pool and adds the shortfall to its debt when the
-        cast pays; after the spell has resolved, whatever became of it, the
-        caster makes the debt roll (:meth:`_debt_roll`). A Game Master may
+        the caster's Channel for the spell (:meth:`.magic.MagicRules.
+        cast_within_channel`), and the cast names the Channel it used. With
+        injected Borrowing rules a cast the caster chose to borrow for, and
+        cannot afford, empties the pool and adds the shortfall to its debt
+        when the cast pays; after the spell has resolved, whatever became of
+        it, the caster makes the debt roll (:meth:`_debt_roll`). A Game Master may
         have lifted Channel or Push's own cap for the caster
         (``CombatantState.lifted_magic_bounds``): the cast may then go past
         it, still names the Channel, and lists each lifted bound it went past
@@ -2353,12 +2353,11 @@ class TurnRunner:
             if borrowing is not None and combatant.chosen_borrow
             else 0
         )
-        bound = (
-            None
-            if magic is None
-            else magic.channel_bound(combatant, spell, borrowing=shortfall > 0)
-        )
-        if bound is not None and cost > bound:
+        borrows = shortfall > 0
+        if magic is not None and not magic.cast_within_channel(
+            combatant, spell, push_mana, borrowing=borrows
+        ):
+            bound = magic.channel_bound(combatant, spell, borrowing=borrows)
             borrowing_note = (
                 "" if bound == channel else f", which lets them borrow to {bound}"
             )

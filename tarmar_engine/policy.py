@@ -1034,12 +1034,13 @@ def _within_channel(
     """The decision less every cast the actor's Channel does not allow.
 
     A cast is withheld when its spell costs more than the actor's Channel
-    for it (unless a Game Master has lifted Channel for the actor:
-    :meth:`.magic.ChannelRules.bound_for`; the cast is then kept, carries
-    :data:`~.magic.CHANNEL` in :attr:`Candidate.lifted_bounds` and its
-    rationale says it passes the Channel by ruling), or when the Channel
-    rules give the spell no kind of magic (the engine would refuse either), and
-    :attr:`Decision.withheld` says why, once per spell. The withheld casts
+    for it (:meth:`.magic.MagicRules.cast_within_channel`, the engine's own
+    test; unless a Game Master has lifted Channel for the actor: the cast is
+    then kept, carries :data:`~.magic.CHANNEL` in
+    :attr:`Candidate.lifted_bounds` and its rationale says it passes the
+    Channel by ruling), or when the Channel rules give the spell no kind of
+    magic (the engine would refuse either), and :attr:`Decision.withheld`
+    says why, once per spell. The withheld casts
     leave the player's menu and the AI's choice alike. When the AI had
     chosen one, it takes the best of what remains by the rule it chose with
     (the highest score, the first listed on a tie).
@@ -1063,15 +1064,15 @@ def _within_channel(
         spell = get_spell(candidate.spell_key)
         try:
             actor_channel = channel.channel_for(actor, spell)
-            limit = channel.bound_for(actor, spell)
+            within = magic.cast_within_channel(actor, spell)
         except ChannelUnclassifiedSpell as unclassified:
             withheld.setdefault(spell.key, f"{spell.name} withheld: {unclassified}")
             continue
-        if limit is not None and spell.level > limit:
+        if not within:
             withheld.setdefault(
                 spell.key,
                 f"{spell.name} withheld: it costs {spell.level} mana, past "
-                f"{actor.name}'s Channel {limit} for it",
+                f"{actor.name}'s Channel {actor_channel} for it",
             )
             continue
         candidate.lifted_bounds = magic.lifted_bounds_passed(actor, spell)
