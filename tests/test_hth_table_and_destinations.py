@@ -312,8 +312,8 @@ def break_away_score(state, figure, partner) -> float:
     damage, halved — this turn spent on the roll, next turn the weapon in
     hand if free and the strike in close if not."""
     escape = policy.four_d6_at_most(figure.dexterity)
-    weapon, _rationale = policy._attack_forecast(figure, partner, ranged=False)
-    strike, _rationale = policy._hth_strike_forecast(state, figure, partner)
+    weapon = policy._attack_forecast(figure, partner, ranged=False)[0].score
+    strike = policy._hth_strike_forecast(state, figure, partner)[0].score
     return policy.round_score(
         (policy.product_of(escape, weapon) + policy.product_of(1 - escape, strike)) / 2
     )

@@ -604,6 +604,36 @@ empty.
   when non-empty), so a caller reads it instead of recomputing it. The
   menu's "by a Game Master's ruling" wording is decided from it too.
 
+## A menu a person can read (v0.9.19)
+
+- **Forecasts as fields** (#22). A menu option that forecasts damage
+  carries the figures as `Candidate.forecast`, a frozen
+  `policy.Forecast`: `hit_chance` (P(hit) for a d20 attack, P(land) for a
+  cast), `damage_expression` (the dice, e.g. `2d6-1`), `armour_stops`,
+  `expected_damage` per landed hit, and for a d20 attack `target_number`,
+  `bonus` and `winning_faces` (of `resolution.DIE_FACES`; `None` for a cast,
+  whose chance comes from 3d6 roll-unders). ATTACK, a CHARGE that reaches,
+  MISSILE (a throw of the only hand weapon carried included, though the AI
+  scores it 0), ONE LAST SHOT, an HTH strike and a damaging cast carry one,
+  and so do the copies made of them (a yielded CHARGE, a borrowing cast, a
+  cast in a grapple or in hand-to-hand); every other option carries `None`,
+  a pushed cast too. `to_payload()` carries it under `"forecast"`
+  (`policy.FORECAST_KEY`) only when present. Each figure is held at the
+  precision the rationale prints, the rationale's working is
+  `Forecast.working()`, and `Forecast.score` is the product of the printed
+  factors, so the prose and the fields cannot disagree. An option's own
+  score may be adjusted after its forecast, as its rationale says: a wounded
+  beast's caution scales it, and the thrown last hand weapon, a borrowing
+  cast and an escalated cast score 0 with their forecasts kept. The HTH
+  strike's line now names its winning faces, as every other d20 forecast's
+  does.
+- **Breaking for callers of the private helpers.** `policy._melee_score`
+  and `policy._missile_score` are gone, and `policy._attack_forecast` and
+  `policy._hth_strike_forecast` now return `(Forecast, rationale)` rather
+  than `(score, rationale)` (the score is `Forecast.score`). tarmar-studio's
+  `battle/turn_menu.py` imported them to widen the menu itself; it moves to
+  the public every-target menu below in the same bump.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

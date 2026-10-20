@@ -49,7 +49,7 @@ the step it expects. A player may give any option
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
@@ -77,6 +77,9 @@ from .state import BattleState, CombatantState, WeaponState
 #: How a menu line says a bound was passed on a Game Master's lifting of it
 #: (tarmar-studio #37).
 PAST_BY_RULING = "by a Game Master's ruling"
+#: The key a candidate's forecast is carried under in its payload
+#: (:class:`Forecast`, tarmar-engine #22).
+FORECAST_KEY = "forecast"
 
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
@@ -145,6 +148,107 @@ def score_text(value: float) -> str:
     return f"{value:.{SCORE_PRECISION}f}"
 
 
+@dataclass(frozen=True)
+class Forecast:
+    """What an option expects to do to its target, as the figures its score
+    and rationale are built from (tarmar-engine #22).
+
+    Filled for an attack (ATTACK, a CHARGE that reaches, MISSILE, ONE LAST
+    SHOT, a hand-to-hand strike) and for a damaging cast; ``None`` on every
+    other option. Each figure is held at :data:`SCORE_PRECISION`, as the
+    rationale prints it: the rationale's working is :meth:`working`, and the
+    forecast's own score, :attr:`score`, is the product of the two factors it
+    prints. A caller reads the figures here rather than out of the prose.
+
+    The forecast is what one attempt would do. The option's score may be
+    adjusted after it, as its rationale then says: a wounded beast's caution
+    scales it, and a throw of the only hand weapon carried, a borrowing cast
+    and a cast pressing a countered spell again (:func:`_mark_escalations`)
+    are scored :data:`PLAYER_ONLY_SCORE` with their forecasts kept.
+    """
+
+    #: The chance the option lands: P(hit) for a d20 attack; P(land) for a
+    #: cast, its casting roll times, for a targeted spell, its aim roll.
+    hit_chance: float
+    #: The dice one landed hit rolls, e.g. ``"2d6-1"``.
+    damage_expression: str
+    #: The armour stops that come off a landed hit's damage.
+    armour_stops: int
+    #: The expected damage of one landed hit, after the armour stops.
+    expected_damage: float
+    #: A d20 attack's Target Number, the bonus its d20 gets, and how many of
+    #: the die's faces (``resolution.DIE_FACES``) hit. ``None`` for a cast,
+    #: whose chance comes from 3d6 roll-unders the rationale names.
+    target_number: int | None = None
+    bonus: int | None = None
+    winning_faces: int | None = None
+
+    @property
+    def score(self) -> float:
+        """P(land) times the expected damage, as :func:`product_of` takes it."""
+        return product_of(self.hit_chance, self.expected_damage)
+
+    def working(self, aimed_at: str = "") -> str:
+        """The forecast as the rationale prints it, ending in its score.
+
+        A d20 attack: "d20 +3 vs TN 15 — P(hit) 0.450 (9 of 20 faces) x
+        6.350 expected damage (2d6-1 less 0 armour stops) = 2.857". A cast:
+        "P(land) 0.375 x 3.500 expected damage on Foe (1d6 less 0 armour
+        stops) = 1.312", ``aimed_at`` naming whom (" on Foe").
+        """
+        damage = (
+            f"x {score_text(self.expected_damage)} expected damage{aimed_at} "
+            f"({self.damage_expression} less {self.armour_stops} armour stops) "
+            f"= {score_text(self.score)}"
+        )
+        if (
+            self.target_number is None
+            or self.bonus is None
+            or self.winning_faces is None
+        ):
+            return f"P(land) {score_text(self.hit_chance)} {damage}"
+        return (
+            f"d20 {self.bonus:+d} vs TN {self.target_number} "
+            f"— P(hit) {score_text(self.hit_chance)} "
+            f"({self.winning_faces} of {combat.DIE_FACES} faces) {damage}"
+        )
+
+    def to_payload(self) -> dict:
+        """The forecast's figures by field name, ``None`` where they do not
+        apply (a cast's d20 figures)."""
+        return asdict(self)
+
+
+def _d20_forecast(
+    numbers: combat_math.AttackNumbers,
+    damage_expression: str,
+    armour_stops: int,
+    expected_damage: float,
+) -> Forecast:
+    """The forecast of a d20 attack made with ``numbers``.
+
+    Args:
+        numbers: The attack's Target Number and bonus, as
+            :func:`.combat_math.attack_numbers` gives them.
+        damage_expression: The dice a hit rolls.
+        armour_stops: The stops a hit's damage loses.
+        expected_damage: The expected damage of one hit after them.
+
+    Returns:
+        The forecast, the winning faces counted from the exact P(hit).
+    """
+    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
+    return Forecast(
+        hit_chance=round_score(probability),
+        damage_expression=damage_expression,
+        armour_stops=armour_stops,
+        expected_damage=round_score(expected_damage),
+        target_number=numbers.target_number,
+        bonus=numbers.bonus,
+        winning_faces=round(probability * combat.DIE_FACES),
+    )
+
+
 @dataclass
 class Candidate:
     """One scored action option."""
@@ -184,6 +288,11 @@ class Candidate:
     #: same answer the engine's event payload gives when it runs, so a caller
     #: reads it here rather than recomputing it. Empty for every other option.
     lifted_bounds: tuple[str, ...] = ()
+    #: What the option expects to do to its target (tarmar-engine #22), the
+    #: figures its rationale prints, or ``None`` for an option with no
+    #: forecast (DEFEND, DODGE, a move, a grapple, a buff or a heal, a pushed
+    #: cast).
+    forecast: Forecast | None = None
 
     def to_payload(self) -> dict:
         payload = {
@@ -219,6 +328,9 @@ class Candidate:
         # And for the bounds passed by ruling, only where there are some.
         if self.lifted_bounds:
             payload[LIFTED_BOUNDS_KEY] = list(self.lifted_bounds)
+        # And for a forecast, only on an option that has one.
+        if self.forecast is not None:
+            payload[FORECAST_KEY] = self.forecast.to_payload()
         return payload
 
 
@@ -349,8 +461,8 @@ def _approaches(
 
 def _attack_forecast(
     actor: CombatantState, defender: CombatantState, *, ranged: bool
-) -> tuple[float, str]:
-    """Score one prospective swing or shot, showing every input it used.
+) -> tuple[Forecast, str]:
+    """Forecast one prospective swing or shot, showing every input it used.
 
     The rationale names the four numbers a reader would need to check the
     forecast by hand and could not previously see (tarmar-studio #301): the
@@ -362,38 +474,22 @@ def _attack_forecast(
 
     Melee and missile share this one function: they differed only in which
     numbers they printed, which is exactly how melee came to hide the
-    distance that missile showed.
+    distance that missile showed. The figures are the :class:`Forecast`
+    returned beside the rationale, which prints them (tarmar-engine #22).
     """
     numbers = combat_math.attack_numbers(actor, defender, ranged=ranged)
-    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
-    damage = combat_math.expected_attack_damage(actor, defender)
-    score = product_of(probability, damage)
     stops = combat.applied_armour_stops(
         defender.stops, actor.weapon.weapon_class, defender.armour_tier
     )
-    winning_faces = round(probability * combat.DIE_FACES)
+    forecast = _d20_forecast(
+        numbers,
+        actor.weapon.damage,
+        stops,
+        combat_math.expected_attack_damage(actor, defender),
+    )
     range_note = f" (range {numbers.range_penalty:+d})" if ranged else ""
     reach = combat_math.hexes_text(numbers.distance)
-    rationale = (
-        f"{actor.weapon.name} at {reach}{range_note}, "
-        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
-        f"— P(hit) {score_text(probability)} "
-        f"({winning_faces} of {combat.DIE_FACES} faces) "
-        f"x {score_text(damage)} expected damage "
-        f"({actor.weapon.damage} less {stops} armour stops) "
-        f"= {score_text(score)}"
-    )
-    return score, rationale
-
-
-def _melee_score(actor: CombatantState, defender: CombatantState) -> tuple[float, str]:
-    return _attack_forecast(actor, defender, ranged=False)
-
-
-def _missile_score(
-    actor: CombatantState, defender: CombatantState
-) -> tuple[float, str]:
-    return _attack_forecast(actor, defender, ranged=True)
+    return forecast, f"{actor.weapon.name} at {reach}{range_note}, {forecast.working()}"
 
 
 def _cast_candidates(
@@ -453,30 +549,32 @@ def _cast_candidates(
         if enemy is None:
             continue
         stops = 0 if spell.ignores_armour else enemy.stops
-        damage = combat_math.expected_damage(spell.damage, stops)
         aim_note = ""
         probability = cast_probability
         if spell.targeted:
             aim_probability = three_d6_at_most(actor.dexterity)
-            probability = round_score(probability * aim_probability)
+            probability = probability * aim_probability
             aim_note = (
                 f" x P(aim) {score_text(aim_probability)} "
                 f"(3d6 ≤ DEX {actor.dexterity})"
             )
-        value = product_of(probability, damage)
-        rationale = (
-            f"{cast_note}{aim_note} — P(land) {score_text(probability)} "
-            f"x {score_text(damage)} expected damage on {enemy.name} "
-            f"({spell.damage} less {stops} armour stops) = {score_text(value)}"
+        forecast = Forecast(
+            hit_chance=round_score(probability),
+            damage_expression=spell.damage,
+            armour_stops=stops,
+            expected_damage=round_score(
+                combat_math.expected_damage(spell.damage, stops)
+            ),
         )
         candidates.append(
             Candidate(
                 letter,
                 f"CAST SPELL {spell.name}",
-                value,
-                rationale,
+                forecast.score,
+                f"{cast_note}{aim_note} — {forecast.working(f' on {enemy.name}')}",
                 target_id=enemy.combatant_id,
                 spell_key=key,
+                forecast=forecast,
             )
         )
     return candidates
@@ -557,6 +655,7 @@ def _mastery_three_casts(
             f"({GRAPPLE_TACTICS_RATIONALE}; {candidate.rationale})",
             target_id=candidate.target_id,
             spell_key=candidate.spell_key,
+            forecast=candidate.forecast,
         )
         for candidate in _cast_candidates(state, actor, "r", beyond_purse)
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
@@ -730,11 +829,12 @@ def _hth_disengage_candidate(
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
     held = 1 - probability
-    strike, _strike_rationale = _hth_strike_forecast(state, actor, partner)
+    strike = _hth_strike_forecast(state, actor, partner)[0].score
     if actor.weapon.item_id:
-        free, _free_rationale = _attack_forecast(
+        weapon_forecast, _rationale = _attack_forecast(
             actor, partner, ranged=actor.weapon.is_missile
         )
+        free = weapon_forecast.score
         once_free = f"the {actor.weapon.name} {score_text(free)}"
     else:
         free = 0.0
@@ -761,8 +861,8 @@ def _hth_disengage_candidate(
 
 def _hth_strike_forecast(
     state: BattleState, actor: CombatantState, defender: CombatantState
-) -> tuple[float, str]:
-    """Score a standalone HTH strike (t): bare hands or a dagger, +4."""
+) -> tuple[Forecast, str]:
+    """Forecast a standalone HTH strike (t): bare hands or a dagger, +4."""
     dagger = actor.weapon.hth_usable
     numbers = combat_math.attack_numbers(
         actor,
@@ -772,7 +872,6 @@ def _hth_strike_forecast(
         extra_situational=hexes.HTH_TO_HIT_BONUS,
         ignore_attacker_skill=not dagger,
     )
-    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
     damage_expression = (
         actor.weapon.damage if dagger else combat_math.bare_handed_expression(actor)
     )
@@ -781,18 +880,15 @@ def _hth_strike_forecast(
         actor.weapon.weapon_class if dagger else "Striking",
         defender.armour_tier,
     )
-    damage = combat_math.expected_damage(damage_expression, stops)
-    score = product_of(probability, damage)
+    forecast = _d20_forecast(
+        numbers,
+        damage_expression,
+        stops,
+        combat_math.expected_damage(damage_expression, stops),
+    )
     reason = combat_math.hth_entry_reason(state, actor, defender)
     held = f"the {actor.weapon.name}" if dagger else "bare hands"
-    rationale = (
-        f"in close ({reason}) with {held}, "
-        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
-        f"— P(hit) {score_text(probability)} x {score_text(damage)} expected "
-        f"damage ({damage_expression} less {stops} armour stops) "
-        f"= {score_text(score)}"
-    )
-    return score, rationale
+    return forecast, f"in close ({reason}) with {held}, {forecast.working()}"
 
 
 def choose_option(
@@ -1252,6 +1348,7 @@ def _borrow_candidates(
                     spell_key=candidate.spell_key,
                     borrow=True,
                     lifted_bounds=candidate.lifted_bounds,
+                    forecast=candidate.forecast,
                 )
             )
         if magic.push is None:
@@ -1479,6 +1576,7 @@ def _score_options(
             # (#37).
             target = enemy if distance <= 1 else None
             arrival = distance
+            forecast = None
             if target is None:
                 for index, (other, _now, approach) in enumerate(
                     _approaches(state, actor, jog_gait)
@@ -1498,7 +1596,8 @@ def _score_options(
                     f"reach, as is every other enemy = {score_text(score)}"
                 )
             else:
-                score, rationale = _melee_score(actor, target)
+                forecast, rationale = _attack_forecast(actor, target, ranged=False)
+                score = forecast.score
                 if target is not enemy:
                     rationale = (
                         f"{enemy.name} is nearer but out of charge reach; {rationale}"
@@ -1511,6 +1610,7 @@ def _score_options(
                     score,
                     f"Charge {target.name}: {rationale}",
                     target_id=target.combatant_id,
+                    forecast=forecast,
                 )
             )
         elif letter == "c":
@@ -1554,7 +1654,8 @@ def _score_options(
                 )
             )
         elif letter == "f" and enemy is not None:
-            score, rationale = _missile_score(actor, enemy)
+            forecast, rationale = _attack_forecast(actor, enemy, ranged=True)
+            score = forecast.score
             if (
                 actor.weapon.is_thrown
                 and not actor.weapon.is_missile
@@ -1575,19 +1676,23 @@ def _score_options(
                     score,
                     f"Shoot {enemy.name}: {rationale}",
                     target_id=enemy.combatant_id,
+                    forecast=forecast,
                 )
             )
         elif letter == "j" and adjacent_enemies:
             best = None
             for defender in adjacent_enemies:
-                score, rationale = _melee_score(actor, defender)
-                score, rationale = _beast_caution(actor, hurt, score, rationale)
+                forecast, rationale = _attack_forecast(actor, defender, ranged=False)
+                score, rationale = _beast_caution(
+                    actor, hurt, forecast.score, rationale
+                )
                 candidate = Candidate(
                     letter,
                     name,
                     score,
                     f"Strike {defender.name}: {rationale}",
                     target_id=defender.combatant_id,
+                    forecast=forecast,
                 )
                 if best is None or candidate.score > best.score:
                     best = candidate
@@ -1699,27 +1804,29 @@ def _score_options(
                 adjacent_enemies or [enemy],
                 key=lambda other: other.combatant_id,
             )
-            score, rationale = _missile_score(actor, shot_target)
+            forecast, rationale = _attack_forecast(actor, shot_target, ranged=True)
             candidates.append(
                 Candidate(
                     letter,
                     name,
-                    score,
+                    forecast.score,
                     f"One last shot at {shot_target.name}, the bow ready before "
                     f"the engagement: {rationale}",
                     target_id=shot_target.combatant_id,
+                    forecast=forecast,
                 )
             )
         elif letter == "t" and hth_targets:
             best = None
             for defender in hth_targets:
-                score, rationale = _hth_strike_forecast(state, actor, defender)
+                forecast, rationale = _hth_strike_forecast(state, actor, defender)
                 candidate = Candidate(
                     letter,
                     name,
-                    score,
+                    forecast.score,
                     f"Strike {defender.name} {rationale}",
                     target_id=defender.combatant_id,
+                    forecast=forecast,
                 )
                 if best is None or candidate.score > best.score:
                     best = candidate
@@ -1768,6 +1875,7 @@ def _score_options(
                         target_id=base.target_id,
                         spell_key=base.spell_key,
                         destination=base.destination,
+                        forecast=base.forecast,
                     )
                 )
 
