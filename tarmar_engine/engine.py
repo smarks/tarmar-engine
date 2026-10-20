@@ -588,7 +588,7 @@ class TurnRunner:
                 # "Shift 1 hex or stand still during movement".
                 self.shift_to(combatant)
             elif option in MOVEMENT_GAITS:
-                self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+                self.move_towards_target(combatant)
             else:
                 # Everyone else yields: a yielded mover (#819) takes its
                 # movement in phase 4, the missile/cast options their
@@ -606,7 +606,7 @@ class TurnRunner:
                 if self._placed_destination(combatant) is not None:
                     self.move_to_destination(combatant)
                 elif option in MOVEMENT_GAITS:
-                    self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+                    self.move_towards_target(combatant)
             elif option in ("f", "h"):
                 # MISSILE ATTACK and CAST SPELL move at "Walk (slow)". The
                 # engaged cast (r) is "Shift/still" (action-options.md), so it
@@ -898,25 +898,28 @@ class TurnRunner:
             payload={"from": list(start), "to": list(destination), "gait": "shift"},
         )
 
-    def move_towards_target(self, combatant: CombatantState, gait: str = "") -> None:
+    def move_towards_target(self, combatant: CombatantState) -> None:
         """Movement toward the chosen target at the option's gait.
 
-        Walks :func:`movement.approach_route` toward the chosen target, the
-        straight line or, when that is blocked, a clear path round, stopping
-        the moment the mover becomes engaged (movement.md: figures stop
-        immediately when engaged). Running costs 1 Fatigue and sprinting 6
-        (movement.md); jogging is free in combat. ``gait`` defaults to the
-        chosen option's (MOVE runs, CHARGE ATTACK jogs).
+        Walks the chosen option's :func:`movement.default_approach` toward the
+        chosen target, the straight line or, when that is blocked, a clear
+        path round, stopping the moment the mover becomes engaged
+        (movement.md: figures stop immediately when engaged). Running costs 1
+        Fatigue and sprinting 6 (movement.md); jogging is free in combat. The
+        gait is the chosen option's (:func:`movement.option_gait`: MOVE runs,
+        CHARGE ATTACK jogs).
+
+        Raises:
+            ValueError: for a chosen option that makes no move toward a
+                target.
         """
         if combatant.chosen_target is None:
             return
         target = self.state.by_id(combatant.chosen_target)
-        if not gait:
-            gait = MOVEMENT_GAITS.get(
-                actions.base_option(combatant.chosen_letter), "jog"
-            )
-        allowance = movement.gait_allowance(combatant, gait)
-        approach = movement.approach_route(self.state, combatant, target, allowance)
+        gait = movement.option_gait(combatant.chosen_letter)
+        approach = movement.default_approach(
+            self.state, combatant, combatant.chosen_letter, target
+        )
         start = combatant.position
         steps = 0
         for cell, facing in approach.route:

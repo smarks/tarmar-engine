@@ -180,7 +180,7 @@ class RunBarsTest(TestCase):
         mover.chosen_letter = "b"
         mover.chosen_target = 2
         events = []
-        runner_for(state, events=events).move_towards_target(mover, gait="jog")
+        runner_for(state, events=events).move_towards_target(mover)
         self.assertEqual(mover.position, (-5, 0))
         self.assertEqual(mover.fatigue, mover.max_fatigue)
 
@@ -200,7 +200,7 @@ class SprintTest(TestCase):
         mover.chosen_letter = "sprint"
         mover.chosen_target = 2
         events = []
-        runner_for(state, events=events).move_towards_target(mover, gait="sprint")
+        runner_for(state, events=events).move_towards_target(mover)
         self.assertEqual(mover.position, (8, 0))  # 18 hexes, stopped adjacent
         self.assertEqual(mover.fatigue, mover.max_fatigue - engine.SPRINT_FATIGUE_COST)
         self.assertIn("sprints", events_of_type(events, "movement")[0]["message"])

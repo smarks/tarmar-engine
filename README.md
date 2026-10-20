@@ -622,6 +622,26 @@ it. Each helper below is what the engine and its policy call themselves.
   lifted or not, as `channel_for` does. `cast_spell` refuses by it and the
   menu withholds by it; it says nothing of the purse, Push's cap or the
   debt cap.
+- **Where a move ends (tarmar-engine #50).**
+  `movement.default_approach(state, combatant, option_key, target)` is the
+  `Approach` (its `route`, empty for a move that stands, and its end
+  `distance`) of the option's default move toward the target: the option
+  key to its gait (`movement.option_gait`; MOVE runs, SPRINT sprints,
+  CHARGE ATTACK and DODGE jog, a yielded key at its own option's gait), to
+  the gait's allowance (`movement.option_allowance`), to
+  `movement.approach_route`. `TurnRunner.move_towards_target` walks it and
+  the policy prices MOVE, CHARGE ATTACK and DODGE by it. Each raises
+  `ValueError` for an option that makes no move toward a target.
+  `movement.charge_reaches(approach)` says whether a charge's approach ends
+  within `movement.CHARGE_REACH` (1: beside its target), the reach the menu
+  prices a charge by; an approach that ends there leaves the charger
+  adjacent, which is what `TurnRunner.melee_attack` strikes.
+- **Two changes to `TurnRunner.move_towards_target(combatant)` come with
+  it.** It no longer takes a `gait` argument (it was only ever passed the
+  chosen option's own gait); the gait is always the chosen option's. And it
+  raises `ValueError` when the chosen option makes no move toward a target,
+  where it used to jog the figure. The turn loop calls it only for a moving
+  option, so no battle's events change.
 
 ## What it sits on
 

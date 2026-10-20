@@ -328,22 +328,21 @@ def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState |
 
 
 def _approaches(
-    state: BattleState, actor: CombatantState, gait: str
+    state: BattleState, actor: CombatantState, option_key: str
 ) -> Iterator[tuple[CombatantState, int, movement.Approach]]:
     """Each enemy, closest first, with its distance now and where the
-    engine's own approach at ``gait`` would leave the actor
-    (:func:`movement.approach_route`), worked out only as far as asked.
+    engine's own move for ``option_key`` would leave the actor
+    (:func:`movement.default_approach`), worked out only as far as asked.
 
     MOVE and CHARGE read past a nearest enemy no clear path gets nearer to,
     so a blocked figure goes for one it can reach rather than standing
     (tarmar-engine #37).
     """
-    allowance = movement.gait_allowance(actor, gait)
     for enemy in enemies_by_distance(state, actor):
         yield (
             enemy,
             combat_math.figure_distance(actor, enemy),
-            movement.approach_route(state, actor, enemy, allowance),
+            movement.default_approach(state, actor, option_key, enemy),
         )
 
 
@@ -1411,9 +1410,8 @@ def _score_options(
                 distance = combat_math.figure_distance(actor, enemy)
                 # The jog the engine would charge at: a figure barred from
                 # jogging charges at its walk (tarmar-engine #17).
-                jog = movement.gait_allowance(actor, "jog")
-                run_gait = movement.MOVEMENT_GAITS["a"]
-                run = movement.gait_allowance(actor, run_gait)
+                jog = movement.option_allowance(actor, "b")
+                run = movement.option_allowance(actor, letter)
                 # The enemy to close on: the nearest one a clear path gets
                 # nearer to, not a nearer one it cannot (#37).
                 nearable = None
@@ -1422,7 +1420,7 @@ def _score_options(
                         (
                             (other, now)
                             for other, now, approach in _approaches(
-                                state, actor, run_gait
+                                state, actor, letter
                             )
                             if approach.distance < now
                         ),
@@ -1472,21 +1470,20 @@ def _score_options(
                 )
         elif letter == "b" and enemy is not None:
             distance = combat_math.figure_distance(actor, enemy)
-            jog_gait = movement.MOVEMENT_GAITS["b"]
-            jog = movement.gait_allowance(actor, jog_gait)
+            jog = movement.option_allowance(actor, letter)
             # The charge's reach is where the engine's own approach ends, so a
             # figure blocked short of its target is not sent at it turn after
             # turn to fall short; it charges the nearest enemy it can reach
             # (#37).
-            target = enemy if distance <= 1 else None
+            target = enemy if distance <= movement.CHARGE_REACH else None
             arrival = distance
             if target is None:
                 for index, (other, _now, approach) in enumerate(
-                    _approaches(state, actor, jog_gait)
+                    _approaches(state, actor, letter)
                 ):
                     if index == 0:
                         arrival = approach.distance
-                    if approach.distance <= 1:
+                    if movement.charge_reaches(approach):
                         target = other
                         break
             if target is None:
@@ -1533,9 +1530,8 @@ def _score_options(
             # threat no clear jog gets nearer to is dodged standing (#37).
             movement_note = ""
             if closing_on is not None:
-                jog = movement.gait_allowance(actor, movement.MOVEMENT_GAITS["c"])
-                nearer = movement.approach_route(
-                    state, actor, closing_on, jog
+                nearer = movement.default_approach(
+                    state, actor, letter, closing_on
                 ).distance < combat_math.figure_distance(actor, closing_on)
                 movement_note = (
                     f", jogging toward {closing_on.name}"
