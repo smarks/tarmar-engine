@@ -725,8 +725,7 @@ def _hth_disengage_candidate(
     of two strikes' worth is never more than one.
     """
     partner = partners[0]
-    injury = TarmarReactions().injury_penalty(actor)
-    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    injury, off_balance = _action_roll_penalties(actor)
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
     held = 1 - probability
@@ -920,7 +919,7 @@ def _counter_candidates(
         return []
     bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
-    injury, _off_balance = _casting_penalties(actor)
+    injury, _off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
     for caster in state.enemies_of(actor):
         if not _is_mage(caster):
@@ -1018,8 +1017,8 @@ def _anchor_candidates(
 def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
     """An anchor roll as the menu prints it: less the injury band and an
     owed off-balance penalty, as the engine takes them
-    (:func:`_casting_penalties`)."""
-    injury, off_balance = _casting_penalties(actor)
+    (:func:`_action_roll_penalties`)."""
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, rule.attribute)
     target = attribute - injury - off_balance
     return (
@@ -1160,14 +1159,14 @@ def _push_note(
     """A pushed cast's Control Roll as the menu prints it.
 
     The target is the one the engine will roll against: less the injury
-    band and an owed off-balance penalty (:func:`_casting_penalties`).
+    band and an owed off-balance penalty (:func:`_action_roll_penalties`).
     ``channel`` is the actor's Channel for the spell (``None`` with no
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
     lifted_bounds_passed`), which only a Game Master's lifting allows; each
     says so (:data:`PAST_BY_RULING`).
     """
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
     invested = push.mana_invested(spell, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
@@ -1286,11 +1285,11 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
 
     The target is the one the engine will roll against, before any refund
     pays some of the debt back: less the injury band and an owed off-balance
-    penalty (:func:`_casting_penalties`).
+    penalty (:func:`_action_roll_penalties`).
     """
     shortfall = cost - actor.mana
     owed = actor.debt + shortfall
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     target = borrowing.debt_target(actor, owed) - injury - off_balance
     return (
         f"Borrow {shortfall} mana ({cost} in all, {actor.mana} in the pool, "
@@ -1301,10 +1300,14 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
     )
 
 
-def _casting_penalties(actor: CombatantState) -> tuple[int, int]:
-    """The injury band and owed off-balance penalty the magic rolls take, as
-    the engine takes them: the Tarmar profile's band, the only one the
-    injected magic rules run under."""
+def _action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
+    """The injury band and owed off-balance penalty a roll the figure makes as
+    its action takes, as the engine's ``_action_roll_penalty`` takes them:
+    the Tarmar profile's band, the only one this policy and the injected
+    magic rules run under. Read by the hand-to-hand disengage forecast, the
+    anchor, Control Roll and debt notes, and (the injury half only, as the
+    engine's defender side of a counter takes it) the counter candidates
+    (tarmar-engine #43)."""
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     return injury, off_balance

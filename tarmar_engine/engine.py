@@ -1034,10 +1034,19 @@ class TurnRunner:
             self._acting = False
             self._off_balance_actor = None
 
-    def _casting_penalties(self, combatant: CombatantState) -> int:
-        """The injury band and owed off-balance penalty a casting roll takes,
-        and with it the Control Roll and the debt roll (one roll-under
-        reading for the magic rolls)."""
+    def _action_roll_penalty(self, combatant: CombatantState) -> int:
+        """The situational penalty a roll the figure makes as its action owes.
+
+        Two penalties, both properties of the figure rather than of the roll:
+        injury-thresholds-death.md's -1/-2 band for a badly hurt figure (#296)
+        and the off-balance -2 owed by the action being taken (#811). One
+        reading for every such roll so none can drift (#12, tarmar-engine
+        #43): the attack roll (both shots of a double shot) and its critical
+        confirm roll, the grapple attempt, the hand-to-hand disengage and
+        Struggle Free, drawing a dagger, a targeted spell's aim, the casting
+        roll, the Control Roll, the debt roll, the anchor roll and the
+        caster's side of a counter contest.
+        """
         return self.profile.reactions.injury_penalty(
             combatant
         ) + self._off_balance_penalty(combatant)
@@ -1330,19 +1339,6 @@ class TurnRunner:
             and not combatant.last_shot_spent
         )
 
-    def _attack_roll_penalty(self, attacker: CombatantState) -> int:
-        """The situational penalty any attack roll owes.
-
-        Two bands, both of them properties of the attacker rather than of
-        the blow: the off-balance -2 owed by the action being taken (#811 —
-        it lands on the whole action, both shots of a double shot included),
-        and injury-thresholds-death.md's -1/-2 for a badly hurt figure
-        (#296). One helper for every attack path so none can drift (#12).
-        """
-        return self._off_balance_penalty(
-            attacker
-        ) + self.profile.reactions.injury_penalty(attacker)
-
     def resolve_attack(
         self,
         attacker: CombatantState,
@@ -1372,7 +1368,7 @@ class TurnRunner:
             ignore_attacker_skill=weapon_override is not None,
             ignore_defender_bonuses=ignore_defender_bonuses,
         )
-        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
+        bonus = numbers.bonus - self._action_roll_penalty(attacker)
         # The three dice are thrown first and logged after, so each one can
         # carry the verdict the resolver reaches — the d20 line says "hit",
         # not just a number a reader has to adjudicate themselves (#301).
@@ -1847,7 +1843,7 @@ class TurnRunner:
             extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_attacker_skill=True,
         )
-        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
+        bonus = numbers.bonus - self._action_roll_penalty(attacker)
         record, attack_sequence = self.roll(
             "1d20",
             purpose="grapple attempt",
@@ -2024,11 +2020,7 @@ class TurnRunner:
         is effective: injury-thresholds-death.md's -1/-2 band (#296) and an
         off-balance figure's −2 on this action (#811) come off it.
         """
-        effective_dex = (
-            combatant.dexterity
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
-        )
+        effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
         record, _sequence = self.roll(
             "4d6",
             purpose="escape",
@@ -2217,11 +2209,7 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        effective_dex = (
-            combatant.dexterity
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
-        )
+        effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
         record, _sequence = self.roll(
             "3d6",
             purpose="draw dagger",
@@ -2458,7 +2446,7 @@ class TurnRunner:
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
         # off-balance figure's −2 on this action (#811).
-        attribute = base_attribute - self._casting_penalties(combatant)
+        attribute = base_attribute - self._action_roll_penalty(combatant)
         # How a casting roll fails on its natural total is injected
         # (tarmar-engine #46); with none, the attribute alone judges it.
         casting_failure = None if magic is None else magic.casting_failure
@@ -2696,9 +2684,7 @@ class TurnRunner:
             # additional DEX roll — 3d6 ≤ DEX. A dodging target's +4-TN is
             # re-mapped onto the caster's effective DEX for this check, and
             # so is the injury-thresholds-death.md -1/-2 band (#296).
-            effective_dex = combatant.dexterity
-            effective_dex -= self.profile.reactions.injury_penalty(combatant)
-            effective_dex -= self._off_balance_penalty(combatant)
+            effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
             if target.dodging:
                 effective_dex -= DODGE_DEX_CHECK_PENALTY
             aim_record, _sequence = self.roll(
@@ -2847,7 +2833,7 @@ class TurnRunner:
         target = (
             attribute_score(combatant, push.control_attribute)
             - push.penalty_per_mana * invested
-            - self._casting_penalties(combatant)
+            - self._action_roll_penalty(combatant)
         )
         control = self._roll_under(
             push.control_dice,
@@ -2924,7 +2910,7 @@ class TurnRunner:
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
-        ) - self._casting_penalties(combatant)
+        ) - self._action_roll_penalty(combatant)
         debt = self._roll_under(
             borrowing.debt_dice,
             purpose="debt",
@@ -3173,7 +3159,7 @@ class TurnRunner:
             )
             return
         anchorer.mana -= cost
-        target = attribute_score(anchorer, rule.attribute) - self._casting_penalties(
+        target = attribute_score(anchorer, rule.attribute) - self._action_roll_penalty(
             anchorer
         )
         anchor = self._roll_under(
@@ -3416,7 +3402,7 @@ class TurnRunner:
             purpose="counter",
             modifier=attribute_score(caster, attribute)
             + caster_bonus
-            - self._casting_penalties(caster),
+            - self._action_roll_penalty(caster),
         )
         defender_records = [
             (
