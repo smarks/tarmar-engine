@@ -54,6 +54,7 @@ rests on.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from .data import WeaponKind
 from .facing import facing_toward as _facing_toward
@@ -595,12 +596,137 @@ def queue_attacks(state: GameState, side: str) -> None:
         queue_attack_for(state, figure)
 
 
+class BlowKind(Enum):
+    """How a figure attacks the foe :func:`attack_blow` names. The values are
+    the :class:`~.state.AttackCandidates` field each kind is drawn from."""
+
+    MELEE = "melee"  # a weapon blow: front hexes, a pole's jab
+    RANGED = "ranged"  # a missile shot
+    HAND_TO_HAND = "hth"  # a grapple begun, or a strike inside one
+
+
+@dataclass(frozen=True)
+class Blow:
+    """The attack a figure would declare in the combat phase: at whom, and
+    how (tarmar-engine #54).
+
+    Compared by value; not hashable, since a :class:`~.figure.Figure` is not.
+    """
+
+    target: Figure
+    kind: BlowKind
+
+
+def attack_blow(state: GameState, figure: Figure) -> Blow | None:
+    """The attack :func:`queue_attack_for` would declare for ``figure`` from
+    where it stands, without declaring it: no game state changes.
+
+    ``None`` when it would declare none: it has attacked this turn, it
+    disengages, it casts outside a grapple (a cast is
+    :func:`declared_cast`'s), its weapon's option is not an attack, a bow is
+    reloading, or no foe is in reach. Otherwise the foe and the kind, by the
+    engine's own rule: a figure in a grapple strikes its weakest foe in it,
+    whatever it chose; bare hands (a fumble took the weapon) grapple the
+    weakest foe a grapple may be begun on, under any option but a dodge or a
+    defence (melee #275); a missile shoots the weakest foe on the field,
+    nearest as a tie-break, never one in a pile with a friend; a weapon
+    strikes the weakest foe its front hexes or a pole's jab reach, nearest as
+    a tie-break (:func:`_best_target`). An attack already queued is not
+    looked at.
+    """
+    if figure.attacked_this_turn or figure.current_option == Option.DISENGAGE:
+        return None
+    if figure.in_hth:                    # locked in a grapple: keep wrestling
+        foes = [f for f in state.figures
+                if f.uid in figure.hth_opponents and f.can_act()]
+        if not foes:
+            return None
+        return Blow(min(foes, key=lambda e: e.current_st), BlowKind.HAND_TO_HAND)
+    option = figure.current_option
+    if option == Option.CAST:
+        return None
+    by_kind = state.attack_candidates(figure)   # the one engine source (melee #362)
+    weapon = figure.ready_weapon
+    if weapon is None:
+        # Bare hands (a fumble took the weapon): the one attack left is a
+        # grapple — take it when the rules allow one (melee #275). A figure that
+        # chose to defend or disengage keeps that choice: the candidates hold
+        # no foe for it.
+        foes = by_kind.hth
+        if not foes:
+            return None
+        return Blow(min(foes, key=lambda e: e.current_st), BlowKind.HAND_TO_HAND)
+    if option is None or not spec(option).is_attack:
+        return None
+    if weapon.kind == WeaponKind.MISSILE:
+        # A reloading bow has no ranged candidates. Drive off the engine's
+        # candidate list so a computer archer sees the same foes a human does
+        # (melee #362): any foe may be targeted, the shooter turns to aim.
+        # Keep the AI's own self-preservation filter --
+        # never fire into an HTH pile grappling one of our own, since a shot
+        # there strikes a RANDOM member (p.18) and could hit the friend
+        # (melee #275).
+        candidates = [
+            e for e in by_kind.ranged
+            if not (e.in_hth and any(
+                friend.side == figure.side and friend.position == e.position
+                for friend in state.figures))]
+        if not candidates:
+            return None
+        return Blow(_best_target(state, figure, candidates), BlowKind.RANGED)
+    candidates = by_kind.melee              # front hexes + pole jab
+    if not candidates:
+        return None
+    return Blow(_best_target(state, figure, candidates), BlowKind.MELEE)
+
+
+def planned_blow(game: GameState, figure: Figure, plan: Plan) -> Blow | None:
+    """The attack ``figure`` would declare after carrying out ``plan``: a
+    CHARGE ATTACK's blow, say, which may land on a foe other than the one it
+    closed on, or on nobody, and is a grapple with bare hands.
+
+    The plan is played on a copy of the game (the snapshot contract,
+    ``to_dict``/``from_dict``) through :func:`apply`, and the copy asked
+    :func:`attack_blow`; the live game is untouched and the blow's target is
+    its own figure. Only this figure's plan is played: figures moving later
+    in the turn are where they stand now.
+
+    Raises:
+        LookupError: if the copy of the game has lost the figure, which the
+            snapshot contract rules out.
+        IllegalAction: whatever :func:`apply` raises for an illegal plan.
+    """
+    rehearsal = GameState.from_dict(game.to_dict())
+    rehearsed = _figure_by_uid(rehearsal, figure.uid)
+    if rehearsed is None:
+        raise LookupError(f"{figure.name} is missing from a copy of the game")
+    apply(rehearsal, rehearsed, plan)
+    blow = attack_blow(rehearsal, rehearsed)
+    if blow is None:
+        return None
+    target = _figure_by_uid(game, blow.target.uid)
+    if target is None:
+        raise LookupError(f"{blow.target.name} is missing from the game")
+    return Blow(target, blow.kind)
+
+
+def _figure_by_uid(game: GameState, uid) -> Figure | None:
+    """The figure with this uid, or ``None`` — including for ``None`` itself.
+
+    The classic decision layer's one lookup (:mod:`.policy` reads it too).
+    """
+    if not uid:
+        return None
+    return next((figure for figure in game.figures if figure.uid == uid), None)
+
+
 def queue_attack_for(state: GameState, figure: Figure) -> None:
     """The per-figure half of :func:`queue_attacks` — melee's loop body.
 
     Split out so the classic turn runner can declare one figure's attack
     without owning the side loop, and so a figure whose option a *human* chose
-    still gets its attack queued the same way.
+    still gets its attack queued the same way. Whom it attacks, and how, is
+    :func:`attack_blow`'s answer.
     """
     if any(pending.attacker is figure for pending in state._pending):
         # A driver that sets options through the game's verbs directly (melee's
@@ -621,14 +747,7 @@ def queue_attack_for(state: GameState, figure: Figure) -> None:
         # (melee #278).
         _disengage_step(state, figure)
         return
-    if figure.in_hth:                    # locked in a grapple: keep wrestling
-        foes = [f for f in state.figures
-                if f.uid in figure.hth_opponents and f.can_act()]
-        if foes:
-            figure.current_option = Option.HTH_ATTACK
-            state.hth_attack(figure, min(foes, key=lambda e: e.current_st))
-        return
-    if figure.current_option == Option.CAST:
+    if figure.current_option == Option.CAST and not figure.in_hth:
         # The wizard declared CAST in the select phase; pick the spell now,
         # re-derived from the same _cast_plan (the board may have shifted — a
         # target felled, ST lost to a blow). Nothing castable any more -> stand
@@ -647,43 +766,13 @@ def queue_attack_for(state: GameState, figure: Figure) -> None:
             spell, target, st_used = cast
             state.queue_spell(figure, spell, target, st_used=st_used)
         return
-    option = figure.current_option
-    weapon = figure.ready_weapon
-    if weapon is None:
-        # Bare hands (a fumble took the weapon): the one attack left is a
-        # grapple — take it when the rules allow one (melee #275). A figure that
-        # chose to defend or disengage keeps that choice.
-        if option is not None and (spec(option).sets_dodge
-                                   or spec(option).sets_defend
-                                   or option == Option.DISENGAGE):
-            return
-        foes = state.hth_targets(figure)
-        if foes:
-            figure.current_option = Option.HTH_ATTACK
-            state.hth_attack(figure, min(foes, key=lambda e: e.current_st))
+    blow = attack_blow(state, figure)
+    if blow is None:
         return
-    if option is None or not spec(option).is_attack:
+    if blow.kind is BlowKind.HAND_TO_HAND:
+        figure.current_option = Option.HTH_ATTACK
+        state.hth_attack(figure, blow.target)
         return
-    by_kind = state.attack_candidates(figure)   # the one engine source (melee #362)
-    if weapon.kind == WeaponKind.MISSILE:
-        if figure.missile_cooldown > 0:
-            return                        # still reloading
-        # Drive off the engine's candidate list so a computer archer sees the
-        # same foes a human does (melee #362): any foe may be targeted, the
-        # shooter turns to aim. Keep the AI's own self-preservation filter --
-        # never fire into an HTH pile grappling one of our own, since a shot
-        # there strikes a RANDOM member (p.18) and could hit the friend
-        # (melee #275).
-        candidates = [
-            e for e in by_kind.ranged
-            if not (e.in_hth and any(
-                friend.side == figure.side and friend.position == e.position
-                for friend in state.figures))]
-        if candidates:
-            target = _best_target(state, figure, candidates)
-            state.aim(figure, target)       # turn to aim, like the human path
-            state.queue_attack(figure, target)
-        return
-    candidates = by_kind.melee              # front hexes + pole jab
-    if candidates:
-        state.queue_attack(figure, _best_target(state, figure, candidates))
+    if blow.kind is BlowKind.RANGED:
+        state.aim(figure, blow.target)       # turn to aim, like the human path
+    state.queue_attack(figure, blow.target)

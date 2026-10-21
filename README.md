@@ -642,6 +642,19 @@ it. Each helper below is what the engine and its policy call themselves.
   raises `ValueError` when the chosen option makes no move toward a target,
   where it used to jog the figure. The turn loop calls it only for a moving
   option, so no battle's events change.
+- **Whom a classic attack strikes (tarmar-engine #54).**
+  `classic.ai.attack_blow(game, figure)` is the attack
+  `classic.ai.queue_attack_for` would declare from where the figure stands,
+  without declaring it: an `ai.Blow` naming the `target` and its `kind`
+  (`ai.BlowKind.MELEE`, `RANGED` or `HAND_TO_HAND`, the
+  `GameState.attack_candidates` field each is drawn from), or `None`. The
+  declaration itself now declares from it. `classic.ai.planned_blow(game,
+  figure, plan)` asks it after a plan (a CHARGE ATTACK's, say) played on a
+  copy of the game, so a pole's two-hex jab, a multi-hex foe reached through
+  its footprint, a charge that ends beside a weaker foe and bare hands'
+  grapple all come out as the combat phase will declare them; the live game
+  is untouched and the target is its own figure. Only that figure's plan is
+  played: figures moving later in the turn are where they stand now.
 
 ## What it sits on
 
