@@ -541,9 +541,8 @@ ones.
   `policy.cast_success_chance(attribute, rules.casting_failure)` is that
   chance, for a caller showing a spell's odds to show the same number. The
   engine applies the ceiling to the effective attribute, less the injury
-  band and any owed off-balance penalty; the menu still passes the raw
-  attribute, so the two agree only for an unhurt caster until
-  tarmar-engine #56 lands.
+  band and any owed off-balance penalty, and since v0.9.20 so does the menu
+  (tarmar-engine #56); a caller passes the effective attribute too.
 - **Without it.** With `casting_failure=None`, or no `MagicRules` at all,
   the attribute alone judges the roll, no failure costs mana, and no cast
   starts a Runaway. **This changes the default profile:** before v0.9.15
@@ -786,6 +785,62 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   is the policy's own test for a MISSILE throw that would leave the figure
   bare-handed (scored 0 for the AI at every target), for a consumer to read
   rather than copy.
+
+## The menu forecasts the roll the dice make (v0.9.20)
+
+A figure's action rolls lose the injury band (-1 or -2) and an owed
+off-balance -2 (the engine's one reading of them, #43), and the menu's
+forecasts now take them off as well, so a hurt or off-balance figure is
+shown the odds the dice will give rather than better ones (tarmar-engine
+#56). **This changes the AI's scores, and some of its choices, wherever a
+figure is hurt or off-balance, and wherever a strike in close is on the
+menu (below).**
+
+- **A d20 attack.** ATTACK, a CHARGE that reaches, MISSILE, ONE LAST SHOT
+  and an HTH strike forecast the bonus the engine rolls with:
+  `Forecast.bonus`, the printed `d20 +X`, P(hit) and the winning faces are
+  all of the penalised roll, and the rationale names what came off ("to hit
+  less 2 injury and 2 off-balance"). DEFEND's threat prices each adjacent
+  enemy's swing less that enemy's own penalties.
+- **A cast.** P(cast) is the chance under the penalised attribute ("3d6 ≤
+  INT 14 less 2 injury and 2 off-balance = 10"), and a targeted spell's
+  P(aim) under the penalised DEX less, at a dodging target, the dodge's 4,
+  as the engine's aim roll takes it; `Forecast.hit_chance` is their
+  product. `policy.action_roll_penalties(actor)` is that reading, public:
+  `(injury, off_balance)`, each an amount to subtract, so a caller showing
+  a spell's odds passes `cast_success_chance(attribute - injury -
+  off_balance, casting_failure)` and shows the menu's number.
+- **Breaking away.** DISENGAGE (v) from hand-to-hand prices next turn's
+  blows less the injury band only: the break-away spends this turn's
+  off-balance.
+- **A strike's damage.** An HTH strike's expected damage now counts a
+  natural 20's extra damage roll, as the engine rolls it and as every other
+  attack's forecast already did: `combat_math.expected_landed_damage(
+  expression, stops)`, which `expected_attack_damage` now reads too.
+  **The AI strikes in close more often for it.** A strike's score rises (a
+  STR 12 figure's bare hands, 1.000 to 1.100 in the test boards), so it
+  now beats a defensive buff it lost to, and tarmar-engine #38's armoured
+  swordsman at DEX 11, held by a lightly armoured archer, strikes in close
+  (0.316) rather than breaking away (0.312) as it did on v0.9.19. Over 100
+  seeds that pair stays in hand-to-hand 13.6 turns on average, where
+  v0.9.19 broke away after 3.0: the break-away is priced over two turns
+  although a figure once free stays free, so it is under-priced whenever
+  the weapon outclasses bare hands (tarmar-engine #64; at DEX 10 the pair
+  already stayed in on v0.9.19).
+
+An unhurt figure that owes no off-balance reads as before, and scores as
+before except for these: a strike in close's expected damage, the
+break-away that prices it, and a targeted spell's aim at a dodging target,
+which now takes the dodge's 4.
+
+## The gaits' Fatigue costs live with movement (v0.9.20)
+
+`movement.RUN_FATIGUE_COST` (1), `movement.SPRINT_FATIGUE_COST` (6) and
+`movement.GAIT_FATIGUE_COSTS` (by gait; walk and jog are free in combat)
+now sit beside `movement.MOVEMENT_GAITS` and `movement.gait_allowance`, so
+the policy's SPRINT rationale ("for 6 Fatigue") reads the number rather
+than restating it (tarmar-engine #58). `engine.py` re-exports all three
+under their old names, so no caller changes and no battle's events do.
 
 ## What it sits on
 

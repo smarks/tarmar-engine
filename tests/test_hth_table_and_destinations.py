@@ -153,6 +153,12 @@ class HthTableIsTheMenuTest(TestCase):
 
         def casts():
             decision = policy.choose_option(state, caster)
+            # The cast is offered, not chosen: a buff's 1.088 loses to the
+            # strike in close, 1.100 once its expected damage counts a
+            # natural 20's extra roll as the engine rolls it (tarmar-engine
+            # #56; on v0.9.19 the strike forecast 1.000 and Blur, then
+            # Shield, won).
+            self.assertEqual(decision.chosen.letter, "t")
             return [c.spell_key for c in decision.candidates if c.letter == "r"]
 
         self.assertEqual(casts(), ["blur"])  # the broadsword fills a hand
@@ -333,7 +339,7 @@ def break_away_score(state, figure, partner) -> float:
     )
 
 
-def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None):
+def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None, archer_stops=2):
     """tarmar-engine #38's pair, in hand-to-hand: an armoured broadsword
     fighter and a lightly armoured archer, who traded bare-handed blows for
     dozens of turns in tarmar-studio's seeded simulations."""
@@ -357,7 +363,7 @@ def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None):
         facing=3,
         weapon=SMALL_BOW,
         armour_tier="Light",
-        stops=2,
+        stops=archer_stops,
     )
     return in_hand_to_hand(BattleState(arena_radius=8, combatants=[fighter, archer]))
 
@@ -376,7 +382,10 @@ class HthBreakAwayTest(TestCase):
     turn the roll takes."""
 
     def test_the_armoured_swordsman_breaks_away_from_the_archer(self):
-        state = fighter_and_archer()
+        # DEX 12: at DEX 11 the strike in close, its expected damage now
+        # counting a natural 20's extra roll as the engine rolls it
+        # (tarmar-engine #56), edges the break-away, 0.316 to 0.312.
+        state = fighter_and_archer(fighter_dexterity=12)
         fighter, archer = state.by_id(1), state.by_id(2)
         decision = policy.choose_option(state, fighter)
         self.assertEqual(decision.chosen.letter, "v")
@@ -409,12 +418,15 @@ class HthBreakAwayTest(TestCase):
         )
 
     def test_the_boundary_is_whether_the_escape_pays_for_the_turn(self):
-        """DEX 10 and 11 forecast the same blows; only P(escape) differs, and
+        """DEX 12 and 13 forecast the same blows; only P(escape) differs, and
         it decides: v wins exactly when P x weapon + (1 - P) x strike, the
-        next turn's worth, beats two strikes."""
-        for dexterity, expected in ((10, "t"), (11, "v")):
+        next turn's worth, beats two strikes. (An archer in stops 1: against
+        stops 2 the boundary falls between DEX 11 and 12, which forecast
+        different blows, since the strike counts a natural 20's extra damage
+        roll, tarmar-engine #56.)"""
+        for dexterity, expected in ((12, "t"), (13, "v")):
             with self.subTest(dexterity=dexterity):
-                state = fighter_and_archer(fighter_dexterity=dexterity)
+                state = fighter_and_archer(fighter_dexterity=dexterity, archer_stops=1)
                 fighter, archer = state.by_id(1), state.by_id(2)
                 decision = policy.choose_option(state, fighter)
                 self.assertEqual(decision.chosen.letter, expected)

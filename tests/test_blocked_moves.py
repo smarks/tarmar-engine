@@ -627,7 +627,7 @@ class BlockedSprintTest(TestCase):
         self.assertEqual(sprint.target_id, move.target_id)
         self.assertIn(
             "Sprint up to 18 hexes toward Brin (Ulfa, 2 hexes off, cannot be "
-            "neared) for 6 Fatigue",
+            f"neared) for {movement.SPRINT_FATIGUE_COST} Fatigue",
             sprint.rationale,
         )
 
@@ -673,15 +673,18 @@ class BlockedSprintTest(TestCase):
         )
         sprint = sprint_candidate(state)
         self.assertIn(
-            "Sprint up to 18 hexes toward Ulfa for 6 Fatigue", sprint.rationale
+            f"Sprint up to 18 hexes toward Ulfa for {movement.SPRINT_FATIGUE_COST} "
+            "Fatigue",
+            sprint.rationale,
         )
         sprinter = state.by_id(1)
         sprinter.chosen_letter = sprint.letter
         sprinter.chosen_target = sprint.target_id
         runner_for(state).move_towards_target(sprinter)
         self.assertEqual(sprinter.position, (4, -1))
-        self.assertEqual(sprinter.max_fatigue, 40)
-        self.assertEqual(sprinter.fatigue, 34)
+        self.assertEqual(
+            sprinter.fatigue, sprinter.max_fatigue - movement.SPRINT_FATIGUE_COST
+        )
 
     def test_a_blocked_run_takes_an_before_eight(self):
         state = ringed_sprinter_board()
@@ -701,6 +704,7 @@ class BlockedSprintTest(TestCase):
         )
         self.assertEqual(
             sprint_candidate(state).rationale,
-            "Sprint up to 18 hexes toward Ulfa for 6 Fatigue; the AI keeps to "
-            "the run = 0.000",
+            "Sprint up to 18 hexes toward Ulfa for "
+            f"{movement.SPRINT_FATIGUE_COST} Fatigue; the AI keeps to the run "
+            "= 0.000",
         )
