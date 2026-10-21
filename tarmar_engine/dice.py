@@ -1,4 +1,5 @@
-"""Dice-notation parsing for the engine's expected-damage arithmetic.
+"""Dice-notation parsing and dice-sum odds for the engine's expected-damage
+arithmetic.
 
 Vendored from tarmar-studio's ``common/rolling.py`` (the project's single
 dice-notation parser, issues #105/#175) when the engine moved into this
@@ -52,3 +53,30 @@ def parse_dice_expression(specification: str) -> tuple[int, int, int]:
         raise ValueError(f"Dice expression out of range: {specification}")
 
     return count, sides, modifier
+
+
+def sum_distribution(count: int, sides: int) -> dict[int, float]:
+    """Probability of each possible sum of ``count`` dice, by convolution.
+
+    Pure arithmetic, shared by both profiles' forecasts: the Tarmar policy's
+    expected damage (:func:`tarmar_engine.combat_math.expected_damage`) and
+    the classic profile's attack forecast (``Ruleset.hit_odds`` and
+    ``Ruleset.expected_hit_damage``). No dice at all is a certain 0.
+
+    Args:
+        count: How many dice are summed; 0 or more.
+        sides: Faces on each die.
+
+    Returns:
+        Each reachable total mapped to its probability.
+    """
+    distribution = {0: 1.0}
+    for _die in range(count):
+        next_distribution: dict[int, float] = {}
+        for total, probability in distribution.items():
+            for face in range(1, sides + 1):
+                next_distribution[total + face] = (
+                    next_distribution.get(total + face, 0.0) + probability / sides
+                )
+        distribution = next_distribution
+    return distribution

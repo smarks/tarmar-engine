@@ -674,6 +674,70 @@ it. Each helper below is what the engine and its policy call themselves.
   is untouched and the target is its own figure. Only that figure's plan is
   played: figures moving later in the turn are where they stand now.
 
+## A classic attack forecast (v0.9.19)
+
+A classic turn menu can say what a blow faces without reading the engine's
+private terms (tarmar-engine #23). `GameState.attack_forecast(attacker,
+target, option)` returns an `AttackForecast` (`classic.combat`) for a weapon
+attack from where both figures stand:
+
+- **To hit.** `needed`, the adjDX `queue_attack` would declare the blow at
+  (the same derivation, `_attack_terms`, now serves both: situational
+  modifiers, the missile or thrown range penalty, the facing bonus, which a
+  missile never takes), with its `to_hit_breakdown`; `dice_count`, 4 against
+  a target dodging a missile or thrown weapon or defending against a melee
+  blow; `hit_chance`, through `Ruleset.classify_roll` over every total
+  (`Ruleset.hit_odds`), so a 3, 4 or 5 always hits and a 16 to 18 always
+  misses; and `hit_multipliers`, the chance of a triple, double or plain hit.
+- **A hit.** `expected_damage`, the average hits a hit takes off the target's
+  ST (`Ruleset.expected_hit_damage`): the weapon's dice, the special totals'
+  multipliers, a pole weapon's `extra_dice` in or against a charge (after the
+  multiplier), a practice bout's halving, then `armour_stops` (armor, a
+  frontal shield, protection, a ready main-gauche's parry), floored at 0 per
+  roll.
+- **The option.** `option` stands in for the attacker's `current_option`
+  where the declaration reads it (a pole's charge terms, a parting shot's
+  single arrow), so a menu can forecast an option not yet chosen. Everything
+  else is the board's; a charge is forecast from where it ends by asking a
+  rehearsed copy of the game (`to_dict`/`from_dict`).
+- **Not covered.** Legality (`queue_attack` checks it), the off-hand
+  main-gauche jab, a shot's random member of a hand-to-hand pile, and a
+  blow that fails to land because its target moved away. A figure with no
+  ready weapon, or off the field, raises `IllegalAction`.
+
+The forecast draws no dice and changes nothing. Its tests compare it, for
+every attack the existing classic boards declare, with the declared
+`PendingAttack` and with `Ruleset.resolve_attack` rolled on every die face.
+`classic.data.DIE_FACES` (6) and `tarmar_engine.dice.sum_distribution` are
+public alongside it.
+
+## Side labels in the classic narrative (v0.9.19)
+
+A side key is an identifier, not a reader's word: a consumer may key a
+teamless figure's side by its own uid, and the narrative printed that key as
+if it were a team's name ("Yaria Hawkridge (743) advances", "The 743 hold the
+field"; tarmar-engine #25). A figure now carries an optional
+`Figure.side_label`, a `classic.figure.SideLabel(name, team)` the consuming
+game supplies; give every figure on a side the same one.
+
+- **A team** (`team=True`): a member reads "Ada (Red)" and the win "🏆 The
+  Red hold the field — victory!".
+- **A side of one** (`team=False`): the label stands for the figure, so it
+  is the figure's own name, or whatever the game calls a nameless one ("Side
+  3"): "Yaria Hawkridge swings…", "🏆 Yaria Hawkridge holds the field —
+  victory!".
+- **No label** (the default): every line reads exactly as before, the side
+  key in the parens and in the win. The tests pin a duel's lines as v0.9.18
+  wrote them.
+
+`narrate_victory(side, label=None)` takes the label directly; the engine's
+own victory line passes the winning side's, `GameState.side_label(side)`,
+which raises `ValueError` when the side's figures disagree (a label on some
+and not others, or two different labels). The label round-trips through
+`to_dict`/`from_dict` (`"side_label"`, absent from an older snapshot, which
+loads unlabelled). A label name that is blank or has spaces at an end raises
+`ValueError`.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

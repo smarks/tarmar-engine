@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from . import hexes, weapons
 from . import resolution as combat
-from .dice import parse_dice_expression
+from .dice import parse_dice_expression, sum_distribution
 from .spells import get_spell
 from .state import BattleState, CombatantState
 
@@ -305,20 +305,6 @@ def attack_numbers(
     )
 
 
-def _sum_distribution(count: int, sides: int) -> dict[int, float]:
-    """Probability of each possible sum of ``count`` dice, by convolution."""
-    distribution = {0: 1.0}
-    for _die in range(count):
-        next_distribution: dict[int, float] = {}
-        for total, probability in distribution.items():
-            for face in range(1, sides + 1):
-                next_distribution[total + face] = (
-                    next_distribution.get(total + face, 0.0) + probability / sides
-                )
-        distribution = next_distribution
-    return distribution
-
-
 def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -> float:
     """Exact E[max(damage − stops, 0)] for a dice expression rolled N times.
 
@@ -331,7 +317,7 @@ def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -
     **twice**"; tarmar-studio #824).
     """
     count, sides, modifier = parse_dice_expression(expression)
-    distribution = _sum_distribution(count * repetitions, sides)
+    distribution = sum_distribution(count * repetitions, sides)
     total_modifier = modifier - stops_applied
     return sum(
         max(0, total + total_modifier) * probability

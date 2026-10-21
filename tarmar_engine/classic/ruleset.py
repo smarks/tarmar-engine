@@ -20,16 +20,18 @@ from __future__ import annotations
 
 from hexarena.dice import Dice
 
+from ..dice import sum_distribution
 from ..options import movement_budget as _movement_budget
 from .combat import (
     AttackResult,
     SpellResult,
     classify_spell_roll,
+    damage_from_total,
     roll_damage,
     roll_missile_spell_damage,
     roll_weapon_damage,
 )
-from .data import THREE_DICE, Weapon, WeaponKind
+from .data import DIE_FACES, THREE_DICE, Weapon, WeaponKind
 from .facing import FRONT, REAR, facing_bonus, format_situational_parts
 from .figure import Figure
 from .resolution import ClassicResolution
@@ -135,9 +137,107 @@ class Ruleset:
         seam. Override to change the hit/crit/fumble table."""
         return self.resolution.classify_roll(rolled, dice_count, needed)
 
+    def hit_odds(self, dice_count: int, needed: int) -> dict[int, float]:
+        """The chance of a hit at each damage multiplier, before any roll.
+
+        Every total ``dice_count`` dice can make, weighed by its chance and
+        put through :meth:`classify_roll`, so the special totals count
+        exactly as they do on the table: on three dice a 3 is a triple hit,
+        a 4 a double and a 5 a plain hit whatever ``needed`` is, and a 16 to
+        18 always misses.
+
+        Args:
+            dice_count: Dice rolled to hit (3, or 4 against a dodging or
+                defending target).
+            needed: The adjDX to roll at or under.
+
+        Returns:
+            Each multiplier a hit can carry (1, 2, 3) mapped to the chance of
+            a hit at it; a multiplier no total reaches is absent. The values
+            sum to the chance of hitting at all.
+        """
+        odds: dict[int, float] = {}
+        for total, probability in sum_distribution(dice_count, DIE_FACES).items():
+            hit, multiplier, _dropped, _broke = self.classify_roll(
+                total, dice_count, needed)
+            if hit:
+                odds[multiplier] = odds.get(multiplier, 0.0) + probability
+        return odds
+
     def weapon_damage(self, dice: Dice, weapon: Weapon, multiplier: int) -> int:
-        """Pre-armor damage a hit deals. Override to change the damage model."""
+        """Pre-armor damage a hit deals. Override to change the damage model
+        (and :meth:`expected_hit_damage`, which forecasts it)."""
         return roll_weapon_damage(dice, weapon, multiplier)
+
+    def blow_stops(self, target: Figure, weapon: Weapon, *, zone: str | None) -> int:
+        """Hits a weapon's blow loses to the target before any reach its ST:
+        :meth:`absorbed` (armor, a frontal shield, protection) plus a ready
+        main-gauche's parry (p.13)."""
+        return self.absorbed(target, zone=zone) + main_gauche_parry(
+            target, weapon, zone)
+
+    def _landed(
+        self, raw_damage: int, *, blunted: bool, stopped: int
+    ) -> tuple[int, int]:
+        """``(raw, damage)`` of a hit once its dice are totalled.
+
+        The one tail of a damage roll, shared by the roll and its forecast:
+        a practice bout's blunted weapon halves the pre-armor total
+        (:meth:`_blunt`), then ``stopped`` hits come off it, floored at 0.
+        """
+        raw_damage = self._blunt(raw_damage, blunted)
+        return raw_damage, max(0, raw_damage - stopped)
+
+    def expected_hit_damage(
+        self,
+        target: Figure,
+        weapon: Weapon,
+        *,
+        zone: str | None,
+        hit_multipliers: dict[int, float],
+        extra_dice: int = 0,
+        blunted: bool = False,
+    ) -> float:
+        """The average hits a weapon's hit takes off ``target``'s ST.
+
+        Exact, over every total the weapon's dice and any extra dice can
+        make, through the same steps :meth:`resolve_attack` takes: the damage
+        formula (:func:`.combat.damage_from_total`) with each multiplier
+        weighted by its share of the hits, the extra dice added after the
+        multiplier, a practice bout's halving, then :meth:`blow_stops`
+        floored at 0 per roll, so a blow whose average falls short of the
+        armor still counts the high rolls that get through. A subclass that
+        overrides :meth:`weapon_damage` overrides this too.
+
+        Args:
+            target: The figure struck.
+            weapon: The weapon striking it.
+            zone: The target's zone the blow lands on (a shield stops only
+                frontal blows).
+            hit_multipliers: The chance of a hit at each multiplier
+                (:meth:`hit_odds`).
+            extra_dice: A pole weapon's extra dice in or against a charge.
+            blunted: True for a practice bout's blunted weapons (p.22).
+
+        Returns:
+            The expected damage of one hit; 0.0 when no roll hits at all.
+        """
+        hit_chance = sum(hit_multipliers.values())
+        if not hit_chance:
+            return 0.0
+        stopped = self.blow_stops(target, weapon, zone=zone)
+        weapon_totals = sum_distribution(weapon.damage.count, DIE_FACES)
+        extra_totals = sum_distribution(extra_dice, DIE_FACES)
+        expected = 0.0
+        for multiplier, multiplier_chance in hit_multipliers.items():
+            for rolled, rolled_chance in weapon_totals.items():
+                raw_damage = damage_from_total(rolled, weapon.damage, multiplier)
+                for extra, extra_chance in extra_totals.items():
+                    _raw, damage = self._landed(
+                        raw_damage + extra, blunted=blunted, stopped=stopped)
+                    chance = multiplier_chance * rolled_chance * extra_chance
+                    expected += chance * damage
+        return expected / hit_chance
 
     @staticmethod
     def _blunt(raw_damage: int, blunted: bool) -> int:
@@ -200,18 +300,17 @@ class Ruleset:
         raw_damage = 0
         damage = 0
         if hit and hth_damage is not None:      # grapple strike (dagger or bare hands)
-            raw_damage = roll_damage(dice, hth_damage, multiplier)
-            raw_damage = self._blunt(raw_damage, blunted)
-            damage = max(0, raw_damage - self.absorbed(target, zone=zone))
+            raw_damage, damage = self._landed(
+                roll_damage(dice, hth_damage, multiplier), blunted=blunted,
+                stopped=self.absorbed(target, zone=zone))
         elif hit and weapon is not None:
             raw_damage = self.weapon_damage(dice, weapon, multiplier)
             if extra_dice:                      # pole weapon in/against a charge:
                 # ...added AFTER the crit multiplier (classic; melee #154).
                 raw_damage += dice.total(extra_dice)
-            raw_damage = self._blunt(raw_damage, blunted)
-            stopped = self.absorbed(target, zone=zone) + main_gauche_parry(
-                target, weapon, zone)
-            damage = max(0, raw_damage - stopped)
+            raw_damage, damage = self._landed(
+                raw_damage, blunted=blunted,
+                stopped=self.blow_stops(target, weapon, zone=zone))
 
         return AttackResult(
             hit=hit,

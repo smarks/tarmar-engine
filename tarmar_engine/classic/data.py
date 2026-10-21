@@ -222,6 +222,7 @@ SHIELDS: dict[str, Shield] = {
 HUMAN_START_TOTAL = 24       # ST + DX points for a fresh human (8/8 + 8 extra)
 HUMAN_MIN_ATTRIBUTE = 8      # neither ST nor DX may begin below 8
 THREE_DICE = 3               # a "3/DX" to-hit roll is 3d6 under adjDX
+DIE_FACES = 6                # every classic die is a d6
 
 # Reactions to Injury (p.20) thresholds.
 WOUND_DX_PENALTY = -2        # took 5+ hits since last attack

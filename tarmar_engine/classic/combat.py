@@ -86,6 +86,69 @@ class AttackResult:
     #                              apply_attack_side_effects.
 
 
+@dataclass(frozen=True)
+class AttackForecast:
+    """One weapon attack as it stands before a die is thrown.
+
+    What :meth:`GameState.attack_forecast` returns: the to-hit number
+    ``queue_attack`` would declare the blow at, the dice it is rolled on, the
+    chance the roll hits, and what a hit does on average past the target's
+    armor. Every term comes from the same code the declaration and the roll
+    use, so the forecast and the attack cannot drift apart.
+
+    Attributes:
+        needed: The adjDX to roll at or under (``Ruleset.to_hit_number``):
+            DX with armor and wounds, spells, the facing bonus, the range
+            penalty and the situational modifiers.
+        to_hit_breakdown: How ``needed`` was reached, as the attack's
+            result will print it ("DX 12 +2 flank -1 range").
+        dice_count: Dice rolled to hit: 3, or 4 against a target dodging a
+            missile or thrown weapon or defending against a melee blow.
+        hit_chance: The probability the roll hits, special totals counted
+            (an automatic hit on 3, 4, 5 on three dice; a 16 to 18 always
+            misses), through ``Ruleset.classify_roll``.
+        hit_multipliers: The chance of a hit at each damage multiplier
+            (1 plain, 2 double, 3 triple); the values sum to ``hit_chance``.
+        weapon: The weapon the blow is struck with (its ``damage`` dice).
+        extra_dice: Extra damage dice a pole weapon earns in or against a
+            charge, added after the multiplier (p.12).
+        armour_stops: Hits the target's armor, shield, protection spell and
+            ready main-gauche take off this blow.
+        expected_damage: The average hits a hit takes off the target's ST:
+            the weapon's dice, the special totals' multipliers weighted by
+            their chance among hits, the extra dice, a practice bout's
+            halving, then the armor, floored at 0 per roll.
+        zone: The target's zone the blow lands on (front, side or rear), as
+            declared.
+        ignore_facing: True for a missile, which never takes a facing bonus.
+        range_penalty: The DX penalty for range: by megahex for a missile,
+            by hex for a thrown weapon, 0 for a melee blow.
+        situational: The circumstantial DX modifiers, positive easier.
+        situational_note: Their labels ("+2 vs charge -2 over body").
+        ranged: True for a missile or a thrown weapon.
+        thrown: True when a throwable weapon is hurled at a foe past reach.
+        shots: Shots the attack looses this turn (2 for a high-adjDX bow).
+    """
+
+    needed: int
+    to_hit_breakdown: str
+    dice_count: int
+    hit_chance: float
+    hit_multipliers: dict[int, float]
+    weapon: Weapon
+    extra_dice: int
+    armour_stops: int
+    expected_damage: float
+    zone: str | None
+    ignore_facing: bool
+    range_penalty: int
+    situational: int
+    situational_note: str
+    ranged: bool
+    thrown: bool
+    shots: int
+
+
 def classify_roll(
     rolled: int, dice_count: int, needed: int
 ) -> tuple[bool, int, bool, bool]:
@@ -100,6 +163,17 @@ def classify_roll(
     return (rolled <= needed, 1, False, False)
 
 
+def damage_from_total(rolled: int, damage_dice: DamageDice, multiplier: int) -> int:
+    """The pre-armor hits a damage roll's dice total makes.
+
+    The one definition of the damage formula: the expression's modifier
+    added to the dice ``rolled``, floored at 0, then the crit multiplier.
+    :func:`roll_damage` rolls the dice into it; the attack forecast
+    (``Ruleset.expected_hit_damage``) weighs every total it can make.
+    """
+    return max(0, rolled + damage_dice.modifier) * multiplier
+
+
 def roll_damage(dice: Dice, damage_dice: DamageDice, multiplier: int,
                 extra_dice: int = 0) -> int:
     """Roll a damage-dice spec, floor at 0, and apply the crit multiplier.
@@ -109,10 +183,10 @@ def roll_damage(dice: Dice, damage_dice: DamageDice, multiplier: int,
     multiplier instead adds them itself (classic adds the charge die AFTER —
     melee #154 — so ``Ruleset.resolve_attack`` passes them separately).
     """
-    total = dice.total(damage_dice.count) + damage_dice.modifier
+    rolled = dice.total(damage_dice.count)
     if extra_dice:
-        total += dice.total(extra_dice)
-    return max(0, total) * multiplier
+        rolled += dice.total(extra_dice)
+    return damage_from_total(rolled, damage_dice, multiplier)
 
 
 def roll_weapon_damage(dice: Dice, weapon: Weapon, multiplier: int) -> int:
