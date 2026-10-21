@@ -578,9 +578,8 @@ empty.
   casting stays within the debt cap; where Borrowing has no cap, Channel
   bounds only the shortfall, so the casting may take the caster's mana plus
   its Channel (house reading `lifted_channel_bounds_the_shortfall`, marked
-  for Spencer). The menu's push lines name the Channel and say "past
-  Channel N by a Game Master's ruling" (`policy.PAST_BY_RULING`) where a
-  push passes it, and likewise for Push's cap.
+  for Spencer). The menu's push lines name the Channel, and say "past
+  Channel N" where a push passes it, and likewise "past the push cap N".
 - **Push's cap.** `PushRules.cap(cap_lifted=...)` is the cap a caster is
   held to (`None` when lifted), and `PushRules.within_cap(push_mana,
   cap_lifted=...)` the check `cast_spell` makes;
@@ -613,8 +612,15 @@ empty.
   counter. The engine writes its payload from them, and every menu option
   carries the same answer as `Candidate.lifted_bounds` (a tuple, empty for
   every other option; `"lifted_bounds"` in `Candidate.to_payload()` only
-  when non-empty), so a caller reads it instead of recomputing it. The
-  menu's "by a Game Master's ruling" wording is decided from it too.
+  when non-empty), so a caller reads it instead of recomputing it.
+- **The ruling is the caller's to word (since v0.9.19).** A menu line names
+  the bound it goes past and its value ("past Channel 3", "past the push
+  cap 3") and no longer adds "by a Game Master's ruling":
+  `policy.PAST_BY_RULING` is gone (tarmar-engine #55). **A caller that
+  imported `policy.PAST_BY_RULING` must stop.** As with the event
+  messages, saying that a ruling allowed it is the consuming game's, from
+  `Candidate.lifted_bounds`, so the engine and the game do not each print
+  the fact in their own wording.
 
 ## What it sits on
 

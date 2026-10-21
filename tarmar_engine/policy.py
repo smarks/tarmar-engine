@@ -76,10 +76,6 @@ from .reactions import TarmarReactions
 from .spells import Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
 
-#: How a menu line says a bound was passed on a Game Master's lifting of it
-#: (tarmar-studio #37).
-PAST_BY_RULING = "by a Game Master's ruling"
-
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
 DODGE_BASE_SCORE = 0.3
@@ -1121,7 +1117,7 @@ def _within_channel(
     for it (unless a Game Master has lifted Channel for the actor:
     :meth:`.magic.ChannelRules.bound_for`; the cast is then kept, carries
     :data:`~.magic.CHANNEL` in :attr:`Candidate.lifted_bounds` and its
-    rationale says it passes the Channel by ruling), or when the Channel
+    rationale names the Channel it passes), or when the Channel
     rules give the spell no kind of magic (the engine would refuse either), and
     :attr:`Decision.withheld` says why, once per spell. The withheld casts
     leave the player's menu and the AI's choice alike. When the AI had
@@ -1249,7 +1245,8 @@ def _push_note(
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
     lifted_bounds_passed`), which only a Game Master's lifting allows; each
-    says so (:data:`PAST_BY_RULING`).
+    is named with its value. Saying that a ruling allowed it is the caller's,
+    from :attr:`Candidate.lifted_bounds` (tarmar-engine #55).
     """
     injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
@@ -1260,7 +1257,7 @@ def _push_note(
     if channel is not None:
         bound_notes.append(_channel_note(channel, passed))
     if PUSH_CAP in passed:
-        bound_notes.append(f"past the push cap {push.max_push_mana} {PAST_BY_RULING}")
+        bound_notes.append(f"past the push cap {push.max_push_mana}")
     channel_note = "".join(f", {note}" for note in bound_notes)
     return (
         f"Push {extra_mana} extra mana ({total} "
@@ -1273,11 +1270,13 @@ def _push_note(
 
 def _channel_note(channel: int, passed: tuple[str, ...]) -> str:
     """The actor's Channel as a menu line names it for a casting that goes
-    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`): past
-    it only on a Game Master's lifting (:data:`PAST_BY_RULING`)."""
+    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`). Past it
+    only on a Game Master's lifting, which the line leaves to the caller to
+    say from :attr:`Candidate.lifted_bounds`, in its own words
+    (tarmar-engine #55)."""
     if CHANNEL not in passed:
         return f"Channel {channel}"
-    return f"past Channel {channel} {PAST_BY_RULING}"
+    return f"past Channel {channel}"
 
 
 def _borrow_candidates(
