@@ -65,6 +65,37 @@ def hex_span_text(count: int) -> str:
     return f"{article} {count}-hex"
 
 
+#: The first letters that take "an" rather than "a" (:func:`with_article`).
+ARTICLE_AN_LETTERS = frozenset("aeiou")
+
+
+def with_article(word: str) -> str:
+    """``word`` with its indefinite article: "an elf", "a Longbow", "an axe".
+
+    The word form of :func:`hex_span_text`'s numeric one (tarmar-engine #59):
+    "an" before a vowel letter, "a" before any other, whatever the case. The
+    first letter suffices for every weapon, armour, race and tier name the
+    engine's catalogs and the studio's default canon held on 2026-10-21; a
+    name opening on a silent "h" ("hour") or a "you" or "w" sound ("unit",
+    "one") would take the wrong article, and so would a leading digit ("a
+    8-hex", "an 11-hex"), whose spoken number decides: that is
+    :func:`hex_span_text`'s numeric form.
+
+    Args:
+        word: The word or name, as narration prints it.
+
+    Returns:
+        The article, a space, and ``word`` unchanged.
+
+    Raises:
+        ValueError: ``word`` is empty, which has no article.
+    """
+    if not word:
+        raise ValueError("an empty word takes no article")
+    article = "an" if word[0].casefold() in ARTICLE_AN_LETTERS else "a"
+    return f"{article} {word}"
+
+
 def figure_distance(a: CombatantState, b: CombatantState) -> int:
     """Hex distance between two combatants' footprints (closest edge)."""
     return hexes.figure_distance(a.footprint, b.footprint)

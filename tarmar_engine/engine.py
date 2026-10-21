@@ -1302,7 +1302,7 @@ class TurnRunner:
                     "info",
                     f"{combatant.name} looses a second shot this turn "
                     f"(adjDEX {combatant.dexterity}, {weapon.double_shot_dex}+ "
-                    f"for a {weapon.name})",
+                    f"for {combat_math.with_article(weapon.name)})",
                     actor=combatant.name,
                     payload={"second_shot": True},
                 )
@@ -1731,10 +1731,7 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        enemies = self.state.enemies_of(combatant)
-        adjacent = [
-            enemy for enemy in enemies if combat_math.figures_adjacent(combatant, enemy)
-        ]
+        adjacent = movement.left_behind(self.state, combatant, "n")
         if not adjacent:
             return
         threat = adjacent[0]
@@ -2075,12 +2072,7 @@ class TurnRunner:
         even with no clear hex to step to (coordinator's ruling under the
         standing rule; Spencer may overrule).
         """
-        partners = [
-            self.state.by_id(other_id)
-            for other_id in combatant.hth_with
-            if self.state.by_id(other_id).active
-            and combat_math.figures_adjacent(combatant, self.state.by_id(other_id))
-        ]
+        partners = movement.left_behind(self.state, combatant, "v")
         if not partners:
             self.emit(
                 "info",
@@ -2767,7 +2759,8 @@ class TurnRunner:
             tier_payload["debt"] = combatant.debt
         self.emit(
             "status",
-            f"{combatant.name}'s casting of {spell.name} is a {tier.label} "
+            f"{combatant.name}'s casting of {spell.name} is "
+            f"{combat_math.with_article(tier.label)} "
             f"(natural {natural_total}){refund_note}",
             actor=combatant.name,
             payload=tier_payload,

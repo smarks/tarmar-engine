@@ -196,7 +196,9 @@ on the default path, with no field set:
   hand-to-hand menu and placed moves" below);
 - an engaged figure holding a bow gets One Last Shot (`l`), not a bow-club
   `j` (#776, #815);
-- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823);
+- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823),
+  and never at an enemy already in a hold, which the grapple refuses
+  (`target_held`, tarmar-engine #60);
 - a forced retreat pushes into any clear hex, the save only when none is
   clear (#779); a push needs damage past the armour, never a spell (#813);
 - the injury band applies to initiative and the retreat save (#817);
@@ -311,6 +313,24 @@ target, and its `n`, `v` and Struggle Free leave the step to the engine when
 the figure acts, the forecast printing the step it expects. `movement.gait_allowance` is the one jog rule the engine moves
 by and the policy prices a charge by (#17). `CombatantState` gains
 `chosen_destination`.
+
+**Whom a step away steps from (tarmar-engine #62, v0.9.20).**
+`movement.step_away_from(state, actor, letter)` is the figure a step away
+(`n` or `v`) with no hex picked steps straight back from, then to either
+flank (`movement.step_away_hex`), or `None` when there is nobody: for `n`
+the first active enemy beside it in the state's order, for a held figure's
+`v` (Struggle Free) its captor, for any other `v` the first active partner
+beside it in `hth_with` order. `movement.left_behind(state, actor, letter)`
+is the whole list, the one stepped from first: the enemies a DISENGAGE
+records in `disengaged_from`, or the partners a break away leaves
+hand-to-hand with. Both raise `ValueError` for any other letter.
+`TurnRunner.disengage_step` and `TurnRunner.hth_disengage` read
+`left_behind` (the list, for `disengaged_from` and `hth_ended`); the
+policy's `n` forecast and a held figure's Struggle Free forecast read
+`step_away_from`, and its `v` break-away forecast reads `left_behind`. The
+engine's `TurnRunner.grapple_struggle_free` still reads the captor from
+`grappled_by` directly, which is what the held branch returns. The policy's
+private `_hth_partners` is gone. No battle's events change.
 
 ## A Game Master's agreement to hand-to-hand (v0.9.10)
 
@@ -774,17 +794,34 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
   each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
   first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
-  entry condition admits, and each damaging cast at each active enemy,
-  nearest first (a spell has no range), with its pushed, borrowing and
-  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
-  too. `chosen` is the AI's own choice, unchanged, and is one of the
-  candidates (by identity), even where an option aimed elsewhere scores
-  higher. Without the flag the menu is as before. The menu is built twice
-  for it, once for the AI's choice. A player's pick at any target is
-  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
-  is the policy's own test for a MISSILE throw that would leave the figure
-  bare-handed (scored 0 for the AI at every target), for a consumer to read
-  rather than copy.
+  entry condition admits (o not at one already held, #60), and each
+  damaging cast at each active enemy, nearest first (a spell has no range),
+  with its pushed, borrowing and escalated variants; a grappled or
+  grappling mage's Spell Mastery 3 casts too. `chosen` is the AI's own
+  choice, unchanged, and is one of the candidates (by identity), even
+  where an option aimed elsewhere scores higher. Without the flag the menu
+  is as before. The menu is built twice for it, once for the AI's choice.
+  A player's pick at any target is resolved by the engine as always.
+  `weapons.throw_leaves_no_hand_weapon` is the policy's own test for a
+  MISSILE throw that would leave the figure bare-handed (scored 0 for the
+  AI at every target), for a consumer to read rather than copy.
+
+## The indefinite article in narration (v0.9.20)
+
+`combat_math.with_article(word)` is a word with its indefinite article:
+"an" before a vowel letter, "a" before any other, whatever the case ("an
+Elven bow", "an elf", "a Lucky cast"), and `ValueError` for an empty word
+(tarmar-engine #59). The first letter suffices for every weapon, armour,
+race and tier name the engine's catalogs and the studio's default canon
+held on 2026-10-21; a name opening on a silent "h" or a "you" or "w"
+sound ("hour", "unit", "one") would take the wrong one, and so would a
+leading digit ("a 8-hex", "an 11-hex"), whose spoken number decides:
+that is `hex_span_text`'s numeric form. The second-shot
+line ("for an Elven bow"), a casting tier ("is an uncanny cast"), the
+classic race floor ("an elf's ST may not begin below 6") and the classic
+narrative's weapon lines all read it; `hex_span_text` keeps the numeric
+form. tarmar-studio's own `gm.engine._with_article` makes the same choice
+and could read this one.
 
 ## The menu forecasts the roll the dice make (v0.9.20)
 

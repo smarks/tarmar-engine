@@ -364,6 +364,31 @@ class RateOfFireTest(TestCase):
             2,
         )
 
+    def test_the_second_shot_names_its_bow_with_the_right_article(self):
+        # "for an Elven bow", not "for a Elven bow" (tarmar-engine #59).
+        bow = WeaponState(
+            item_id="elven_bow",
+            name="Elven bow",
+            weapon_class="Missile — Bows",
+            damage="1d6",
+            is_missile=True,
+            double_shot_dex=18,
+        )
+        archer = make_combatant(1, q=-4, r=0, dexterity=18, weapon=bow)
+        state = BattleState(
+            arena_radius=8, combatants=[archer, make_combatant(2, q=0, r=0)]
+        )
+        archer.chosen_target = 2
+        events = []
+        runner_for(state, [[2], [2]], events).missile_attack(archer)
+        second = [
+            event
+            for event in events_of_type(events, "info")
+            if event["payload"].get("second_shot")
+        ]
+        self.assertEqual(len(second), 1)
+        self.assertIn("18+ for an Elven bow)", second[0]["message"])
+
     def test_a_light_crossbow_shoots_every_other_turn(self):
         crossbow = WeaponState(
             item_id="light_crossbow",

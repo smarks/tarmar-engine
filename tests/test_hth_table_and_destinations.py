@@ -773,3 +773,113 @@ class HthAgreementByGameMasterTest(TestCase):
                     [_comparable(event) for event in replayed],
                     [_comparable(event) for event in recorded],
                 )
+
+
+def pressed_from_two_sides() -> BattleState:
+    """Fighter 1 with enemies 3 and 4 beside it, enemy 2 far off, and its
+    teammate 5 beside it too."""
+    return BattleState(
+        arena_radius=8,
+        combatants=[
+            make_combatant(1, q=0, r=0, facing=0, team="near"),
+            make_combatant(2, q=5, r=0, facing=3, team="far"),
+            make_combatant(3, q=0, r=1, facing=4, team="far"),
+            make_combatant(4, q=1, r=0, facing=3, team="far"),
+            make_combatant(5, q=-1, r=1, facing=0, team="near"),
+        ],
+    )
+
+
+class StepAwayFromTest(TestCase):
+    """#62 — one public answer to whom a step away (n or v) steps from, read
+    by the engine, the AI's forecast and a consuming game alike."""
+
+    def test_a_disengage_leaves_every_enemy_beside_it_and_steps_from_the_first(
+        self,
+    ):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        left = movement.left_behind(state, figure, "n")
+        self.assertEqual([enemy.combatant_id for enemy in left], [3, 4])
+        threat = movement.step_away_from(state, figure, "n")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 3)
+        expected = movement.step_away_hex(state, figure, threat)
+        decision = policy.choose_option(state, figure)
+        disengage = next(
+            candidate for candidate in decision.candidates if candidate.letter == "n"
+        )
+        self.assertIn(f"toward {expected}", disengage.rationale)
+        figure.chosen_letter = "n"
+        events = []
+        runner_for(state, [], events).execute_action(figure)
+        self.assertEqual(figure.position, expected)
+        self.assertEqual(figure.disengaged_from, [3, 4])
+        self.assertIn(
+            f"disengages one hex from {threat.name}",
+            events_of_type(events, "movement")[0]["message"],
+        )
+
+    def test_a_break_away_steps_from_the_first_partner_in_hand_to_hand(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 4)
+        in_hand_to_hand(state, 1, 3)
+        in_hand_to_hand(state, 1, 2)  # not beside it: no partner to leave
+        left = movement.left_behind(state, figure, "v")
+        self.assertEqual([partner.combatant_id for partner in left], [4, 3])
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 4)
+        expected = movement.step_away_hex(state, figure, threat)
+        decision = policy.choose_option(state, figure)
+        break_away = next(
+            candidate for candidate in decision.candidates if candidate.letter == "v"
+        )
+        self.assertIn(f"toward {expected}", break_away.rationale)
+        figure.chosen_letter = "v"
+        events = []
+        runner_for(state, [[2, 2, 2, 2]], events).execute_action(figure)
+        self.assertEqual(figure.position, expected)
+        self.assertEqual(
+            events_of_type(events, "movement")[0]["payload"]["hth_ended"], [4, 3]
+        )
+
+    def test_a_partner_out_of_the_fight_is_not_stepped_from(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 4)
+        in_hand_to_hand(state, 1, 3)
+        state.by_id(4).alive = False
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 3)
+
+    def test_a_held_figure_struggles_free_of_its_captor(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 3)
+        in_hand_to_hand(state, 1, 4)
+        figure.grappled_by, state.by_id(4).grappling = 4, 1
+        self.assertEqual(
+            [
+                captor.combatant_id
+                for captor in movement.left_behind(state, figure, "v")
+            ],
+            [4],
+        )
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 4)
+
+    def test_nobody_to_step_away_from(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(2)  # nobody beside it, in hand-to-hand with no one
+        for letter in sorted(movement.STEP_OPTIONS):
+            self.assertEqual(movement.left_behind(state, figure, letter), [])
+            self.assertIsNone(movement.step_away_from(state, figure, letter))
+
+    def test_only_the_step_options_have_an_answer(self):
+        state = pressed_from_two_sides()
+        with self.assertRaises(ValueError):
+            movement.step_away_from(state, state.by_id(1), "j")

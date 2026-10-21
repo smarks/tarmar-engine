@@ -20,6 +20,7 @@ from typing import ClassVar
 
 from hexarena.hex import Hex, HexLayout
 
+from ..combat_math import with_article
 from .data import (
     CLOTH,
     HUMAN_MIN_ATTRIBUTE,
@@ -550,7 +551,8 @@ def create_fighter(
     if validate:
         if strength < spread.min_strength or dexterity < spread.min_dexterity:
             raise ValueError(
-                f"a {race.value}'s ST may not begin below {spread.min_strength} "
+                f"{with_article(race.value)}'s ST may not begin below "
+                f"{spread.min_strength} "
                 f"nor its DX below {spread.min_dexterity} "
                 f"(got ST {strength}, DX {dexterity})"
             )

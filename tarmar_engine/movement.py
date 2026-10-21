@@ -122,6 +122,88 @@ def step_away_hex(
     return None
 
 
+def _partners_beside(
+    state: BattleState, combatant: CombatantState
+) -> list[CombatantState]:
+    """The active figures beside ``combatant`` that its ``hth_with`` names,
+    in that order: whom it is in hand-to-hand with as the board stands."""
+    partners = [state.by_id(partner_id) for partner_id in combatant.hth_with]
+    return [
+        partner
+        for partner in partners
+        if partner.active and combat_math.figures_adjacent(combatant, partner)
+    ]
+
+
+def left_behind(
+    state: BattleState, actor: CombatantState, letter: str
+) -> list[CombatantState]:
+    """The figures a step away (``n`` or ``v``) leaves, the one it steps from first.
+
+    * DISENGAGE (``n``): every active enemy beside the figure, in the state's
+      order. The engine records them as ``disengaged_from``, so a slower one
+      may strike as the figure goes (#777).
+    * Struggle Free (``v`` for a held figure): its captor.
+    * HTH DISENGAGE (``v`` otherwise): every active partner beside the figure
+      that it is in hand-to-hand with, in ``hth_with`` order; a success
+      leaves hand-to-hand with each of them.
+
+    The held branch checks neither that the captor is active nor that it is
+    beside the figure: a hold locks both sides to the shared hex, so neither
+    can move apart, and death or unconsciousness releases it
+    (``TurnRunner._release_grapples_involving``), so a live hold's captor is
+    always active and beside its captive.
+
+    Args:
+        state: The board as it stands.
+        actor: The figure stepping away.
+        letter: The step option, ``n`` or ``v`` (:data:`STEP_OPTIONS`).
+
+    Returns:
+        The figures, possibly none.
+
+    Raises:
+        ValueError: ``letter`` is not a step option.
+    """
+    if letter not in STEP_OPTIONS:
+        raise ValueError(
+            f"{letter!r} is not a step-away option ({sorted(STEP_OPTIONS)})"
+        )
+    if letter == "n":
+        return [
+            enemy
+            for enemy in state.enemies_of(actor)
+            if combat_math.figures_adjacent(actor, enemy)
+        ]
+    if actor.grappled_by is not None:
+        return [state.by_id(actor.grappled_by)]
+    return _partners_beside(state, actor)
+
+
+def step_away_from(
+    state: BattleState, actor: CombatantState, letter: str
+) -> CombatantState | None:
+    """Whom a step away (``n`` or ``v``) steps from when no hex is picked.
+
+    The first of :func:`left_behind`: the engine steps straight back from
+    this figure, then to either flank (:func:`step_away_hex`), and the AI's
+    forecast names the same hex (tarmar-engine #62).
+
+    Args:
+        state: The board as it stands.
+        actor: The figure stepping away.
+        letter: The step option, ``n`` or ``v`` (:data:`STEP_OPTIONS`).
+
+    Returns:
+        The figure, or ``None`` when there is nobody to step away from.
+
+    Raises:
+        ValueError: ``letter`` is not a step option.
+    """
+    figures = left_behind(state, actor, letter)
+    return figures[0] if figures else None
+
+
 def in_hand_to_hand(state: BattleState, combatant: CombatantState) -> bool:
     """Is the figure in hand-to-hand with an active enemy beside it?
 
@@ -133,11 +215,7 @@ def in_hand_to_hand(state: BattleState, combatant: CombatantState) -> bool:
     """
     if combatant.is_beast:
         return False
-    for other_id in combatant.hth_with:
-        other = state.by_id(other_id)
-        if other.active and combat_math.figures_adjacent(combatant, other):
-            return True
-    return False
+    return bool(_partners_beside(state, combatant))
 
 
 def _paths(
