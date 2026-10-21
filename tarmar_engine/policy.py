@@ -919,6 +919,22 @@ def _hth_targets(state: BattleState, actor: CombatantState) -> list[CombatantSta
     )
 
 
+def _grapple_targets(hth_targets: list[CombatantState]) -> list[CombatantState]:
+    """The HTH targets an ATTEMPT HTH (o) may take a grip on, in their order.
+
+    An enemy already in a hold, as captive or captor, is left out: the
+    engine's grapple refuses it (``target_held``), reading the same
+    :func:`hexes.figure_locked_by_grapple`, so the menu never offers an
+    attempt the engine will turn down (tarmar-engine #60). It stays an HTH
+    strike (t) target, which the engine allows.
+    """
+    return [
+        target
+        for target in hth_targets
+        if not hexes.figure_locked_by_grapple(target.grappled_by, target.grappling)
+    ]
+
+
 def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantState]:
     """The active enemies beside the actor that it is in hand-to-hand with."""
     return [
@@ -1662,10 +1678,11 @@ def _score_options(
     # grapple, like any HTH, needs one of "Entering Hand-to-Hand"'s
     # conditions against its target (#823).
     hth_targets = [] if actor.is_beast else _hth_targets(state, actor)
+    grapple_targets = _grapple_targets(hth_targets)
     # Inside hand-to-hand the HTH table is the whole menu (tarmar-engine #19).
     in_hth = movement.in_hand_to_hand(state, actor)
     partners = _hth_partners(state, actor) if in_hth else []
-    can_grapple = engaged and bool(hth_targets)
+    can_grapple = engaged and bool(grapple_targets)
     melee_weapon = weapons.has_melee_weapon(actor)
     in_reach = weapons_in_reach(state, actor)
     spares = [spare for spare in actor.spare_weapons if spare.item_id]
@@ -1971,11 +1988,12 @@ def _score_options(
             )
         elif letter == "v" and partners:
             candidates.append(_hth_disengage_candidate(state, actor, partners))
-        elif letter == "o" and hth_targets:
+        elif letter == "o" and grapple_targets:
             # Deterministic target pick (lowest id among the enemies an HTH
-            # entry condition admits, #823) — score is always 0, so this
-            # candidate never wins a comparison against a real attack; it
-            # only exists to show the AI considered and declined it.
+            # entry condition admits, #823, and no hold already has, #60) —
+            # score is always 0, so this candidate never wins a comparison
+            # against a real attack; it only exists to show the AI considered
+            # and declined it.
             candidates.extend(
                 Candidate(
                     letter,
@@ -1984,7 +2002,7 @@ def _score_options(
                     f"Grapple valued at 0 ({GRAPPLE_TACTICS_RATIONALE})",
                     target_id=target.combatant_id,
                 )
-                for target in _aimed_at(hth_targets, every_target)
+                for target in _aimed_at(grapple_targets, every_target)
             )
 
         elif letter == "sprint" and enemy is not None:

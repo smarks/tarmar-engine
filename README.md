@@ -196,7 +196,9 @@ on the default path, with no field set:
   hand-to-hand menu and placed moves" below);
 - an engaged figure holding a bow gets One Last Shot (`l`), not a bow-club
   `j` (#776, #815);
-- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823);
+- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823),
+  and never at an enemy already in a hold, which the grapple refuses
+  (`target_held`, tarmar-engine #60);
 - a forced retreat pushes into any clear hex, the save only when none is
   clear (#779); a push needs damage past the armour, never a spell (#813);
 - the injury band applies to initiative and the retreat save (#817);
@@ -775,10 +777,10 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
   each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
   first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
-  entry condition admits, and each damaging cast at each active enemy,
-  nearest first (a spell has no range), with its pushed, borrowing and
-  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
-  too. `chosen` is the AI's own choice, unchanged, and is one of the
+  entry condition admits (o not at one already held, #60), and each
+  damaging cast at each active enemy, nearest first (a spell has no range),
+  with its pushed, borrowing and escalated variants; a grappled or
+  grappling mage's Spell Mastery 3 casts too. `chosen` is the AI's own choice, unchanged, and is one of the
   candidates (by identity), even where an option aimed elsewhere scores
   higher. Without the flag the menu is as before. The menu is built twice
   for it, once for the AI's choice. A player's pick at any target is

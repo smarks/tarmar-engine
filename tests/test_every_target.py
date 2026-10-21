@@ -8,6 +8,7 @@ choice stays what it was. tarmar-studio's turn menu built this itself from
 the policy's private helpers; these tests pin the behaviour it relied on.
 """
 
+from copy import deepcopy
 from dataclasses import replace
 from unittest import TestCase
 
@@ -75,6 +76,23 @@ def two_beside() -> BattleState:
             make_combatant(3, q=0, r=1, facing=4),
         ],
     )
+
+
+def one_held_one_free() -> BattleState:
+    """Fighter 1 (dagger in hand) beside 2 and 3, who agree to close (#867);
+    1's ally 4 holds 2 in a grapple, and 3 is free (tarmar-engine #60)."""
+    state = BattleState(
+        arena_radius=8,
+        combatants=[
+            make_combatant(1, q=0, r=0, facing=0, team="near", weapon=DAGGER),
+            make_combatant(2, q=1, r=0, facing=3, team="far"),
+            make_combatant(3, q=0, r=1, facing=4, team="far"),
+            make_combatant(4, q=2, r=-1, facing=4, team="near"),
+        ],
+    )
+    state.by_id(1).hth_agreed_with = [2, 3]
+    state.by_id(4).grappling, state.by_id(2).grappled_by = 2, 4
+    return state
 
 
 def three_at_range(weapon: WeaponState) -> BattleState:
@@ -272,6 +290,40 @@ class AttacksAtEveryTargetTest(TestCase):
         self.assertEqual(strikes[0].score, max(strike.score for strike in strikes))
         self.assertTrue(all(strike.forecast is not None for strike in strikes))
         self.assertEqual(targets(aimed(widened, "o")), [2, 3])
+
+    def test_no_grapple_attempt_at_an_enemy_already_held(self):
+        # The engine refuses a grip on a held enemy (target_held), so neither
+        # the AI's own ATTEMPT HTH nor the every-target menu offers one; a
+        # strike in close at it stays, since the engine allows that (#60).
+        state = one_held_one_free()
+        self.assertEqual(targets(aimed(plain(state), "o")), [3])
+        widened = wide(state)
+        self.assertEqual(targets(aimed(widened, "o")), [3])
+        self.assertEqual(sorted(targets(aimed(widened, "t"))), [2, 3])
+
+    def test_every_grapple_attempt_offered_is_one_the_engine_takes_up(self):
+        state = one_held_one_free()
+        for attempt in aimed(wide(state), "o"):
+            board = deepcopy(state)
+            attacker = board.by_id(1)
+            attacker.chosen_letter, attacker.chosen_target = "o", attempt.target_id
+            events: list[dict] = []
+            engine.TurnRunner(
+                board, SeededStubRoller(3), events.append
+            ).attempt_grapple(attacker)
+            refusals = [
+                event
+                for event in events
+                if "grapple_refused" in (event.get("payload") or {})
+            ]
+            self.assertEqual(refusals, [], attempt)
+
+    def test_no_grapple_attempt_when_the_only_admitted_enemy_is_held(self):
+        state = one_held_one_free()
+        state.by_id(3).position = (-5, 0)
+        widened = wide(state)
+        self.assertEqual(aimed(widened, "o"), [])
+        self.assertEqual(targets(aimed(widened, "t")), [2])
 
 
 class CastsAtEveryTargetTest(TestCase):
