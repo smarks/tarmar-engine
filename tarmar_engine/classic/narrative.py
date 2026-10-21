@@ -13,6 +13,7 @@ more``) — keyed off ``result.roll_under``.
 """
 from __future__ import annotations
 
+from ..combat_math import with_article
 from .combat import AttackResult, SpellResult
 from .data import WeaponKind
 from .facing import REAR, SIDE
@@ -38,10 +39,6 @@ def _name(figure: Figure) -> str:
     return f"{figure.name} ({figure.side if label is None else label.name})"
 
 
-def _article(word: str) -> str:
-    return ("an " if word[:1].lower() in "aeiou" else "a ") + word
-
-
 def _cap(sentence: str) -> str:
     return sentence[0].upper() + sentence[1:] if sentence else sentence
 
@@ -61,7 +58,8 @@ def _approach(attacker: Figure, target: Figure, weapon, zone: str | None = None,
     if weapon.kind != WeaponKind.MISSILE and not thrown:
         spot = ("the flank of " if zone == SIDE
                 else "the rear of " if zone == REAR else "")
-    return f"{_name(attacker)} {verb} {_article(weapon.name)} at {spot}{_name(target)}"
+    wielded = with_article(weapon.name)
+    return f"{_name(attacker)} {verb} {wielded} at {spot}{_name(target)}"
 
 
 def _defense_beat_this_attack(target: Figure, result: AttackResult) -> bool:
@@ -149,7 +147,7 @@ def narrate_fumble(attacker: Figure, weapon, *, broke: bool) -> str:
     name = weapon.name if weapon else "weapon"
     if broke:
         return _cap(f"{_name(attacker)}'s {name} shatters with the blow!")
-    return _cap(f"{_name(attacker)} fumbles and drops {_article(name)}!")
+    return _cap(f"{_name(attacker)} fumbles and drops {with_article(name)}!")
 
 
 def narrate_status(target: Figure, status: str | None) -> str | None:
@@ -277,7 +275,7 @@ def narrate_ready(figure: Figure, weapon) -> str:
     re-slinging what it held to stand bare-handed (#425)."""
     if weapon is None:
         return _cap(f"{_name(figure)} re-slings its weapon and readies bare hands.")
-    return _cap(f"{_name(figure)} readies {_article(weapon.name)}.")
+    return _cap(f"{_name(figure)} readies {with_article(weapon.name)}.")
 
 
 def narrate_retreat(attacker: Figure, target: Figure, advanced: bool) -> str:

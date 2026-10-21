@@ -238,6 +238,25 @@ class CastingSuccessTierTest(TestCase):
         )
         self.assertGreater(tier_event["sequence"], casting["sequence"])
         self.assertIn("radiant cast", tier_event["message"])
+        self.assertIn("is a radiant cast", tier_event["message"])
+
+    def test_a_vowel_initial_tier_takes_an(self):
+        # "is an uncanny cast", not "is a uncanny cast" (tarmar-engine #59).
+        rules = example_magic_rules()
+        uncanny = replace(rules.casting_success_tiers[0], label="uncanny cast")
+        profile = TarmarProfile(
+            magic=replace(
+                rules,
+                casting_success_tiers=(uncanny, *rules.casting_success_tiers[1:]),
+            )
+        )
+        events = cast(wizard_state(), [[2, 2, 2], [2, 2, 2], [5]], profile=profile)
+        tier_event = next(
+            event
+            for event in events
+            if event["payload"].get("success_tier") == "radiant"
+        )
+        self.assertIn("is an uncanny cast", tier_event["message"])
 
     def test_the_tier_effect_bonus_adds_to_the_rolled_damage(self):
         state = wizard_state()

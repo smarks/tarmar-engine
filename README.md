@@ -314,7 +314,7 @@ the figure acts, the forecast printing the step it expects. `movement.gait_allow
 by and the policy prices a charge by (#17). `CombatantState` gains
 `chosen_destination`.
 
-**Whom a step away steps from (tarmar-engine #62, unreleased).**
+**Whom a step away steps from (tarmar-engine #62, v0.9.20).**
 `movement.step_away_from(state, actor, letter)` is the figure a step away
 (`n` or `v`) with no hex picked steps straight back from, then to either
 flank (`movement.step_away_hex`), or `None` when there is nobody: for `n`
@@ -806,6 +806,23 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   `weapons.throw_leaves_no_hand_weapon` is the policy's own test for a
   MISSILE throw that would leave the figure bare-handed (scored 0 for the
   AI at every target), for a consumer to read rather than copy.
+
+## The indefinite article in narration (v0.9.20)
+
+`combat_math.with_article(word)` is a word with its indefinite article:
+"an" before a vowel letter, "a" before any other, whatever the case ("an
+Elven bow", "an elf", "a Lucky cast"), and `ValueError` for an empty word
+(tarmar-engine #59). The first letter suffices for every weapon, armour,
+race and tier name the engine's catalogs and the studio's default canon
+held on 2026-10-21; a name opening on a silent "h" or a "you" or "w"
+sound ("hour", "unit", "one") would take the wrong one, and so would a
+leading digit ("a 8-hex", "an 11-hex"), whose spoken number decides:
+that is `hex_span_text`'s numeric form. The second-shot
+line ("for an Elven bow"), a casting tier ("is an uncanny cast"), the
+classic race floor ("an elf's ST may not begin below 6") and the classic
+narrative's weapon lines all read it; `hex_span_text` keeps the numeric
+form. tarmar-studio's own `gm.engine._with_article` makes the same choice
+and could read this one.
 
 ## What it sits on
 

@@ -30,7 +30,7 @@ from tarmar_engine.classic.data import (
     SMALL_BOW,
     max_missile_shots,
 )
-from tarmar_engine.classic.figure import Posture, create_human
+from tarmar_engine.classic.figure import Posture, Race, create_fighter, create_human
 from tarmar_engine.classic.options import Option
 from tarmar_engine.classic.state import GameState, IllegalAction
 
@@ -384,3 +384,11 @@ def test_picking_up_a_two_handed_weapon_unreadies_the_shield() -> None:
     state.pick_up_weapon(bearer, "Battleaxe")
     assert bearer.ready_weapon is BATTLEAXE
     assert not bearer.shield_ready
+
+
+def test_an_elf_below_its_strength_floor_is_named_with_an() -> None:
+    # "an elf's ST may not begin below 6", not "a elf's" (tarmar-engine #59).
+    with pytest.raises(ValueError, match="^an elf's ST may not begin below 6 "):
+        create_fighter("Yaria", 5, 19, "red", race=Race.ELF)
+    with pytest.raises(ValueError, match="^a dwarf's ST may not begin below 10 "):
+        create_fighter("Borin", 9, 15, "red", race=Race.DWARF)

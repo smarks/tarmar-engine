@@ -1305,7 +1305,7 @@ class TurnRunner:
                     "info",
                     f"{combatant.name} looses a second shot this turn "
                     f"(adjDEX {combatant.dexterity}, {weapon.double_shot_dex}+ "
-                    f"for a {weapon.name})",
+                    f"for {combat_math.with_article(weapon.name)})",
                     actor=combatant.name,
                     payload={"second_shot": True},
                 )
@@ -2762,7 +2762,8 @@ class TurnRunner:
             tier_payload["debt"] = combatant.debt
         self.emit(
             "status",
-            f"{combatant.name}'s casting of {spell.name} is a {tier.label} "
+            f"{combatant.name}'s casting of {spell.name} is "
+            f"{combat_math.with_article(tier.label)} "
             f"(natural {natural_total}){refund_note}",
             actor=combatant.name,
             payload=tier_payload,
