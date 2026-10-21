@@ -109,7 +109,8 @@ REARM_SCORE = 1.5
 # level at which a spell needs no gestures (spell-mastery.md).
 HTH_NO_GESTURE_MASTERY = 2
 # Options offered for a player to choose that the AI does not take: Sprint's
-# 6 Fatigue a turn, going prone, drawing a dagger mid-hold.
+# Fatigue a turn (movement.SPRINT_FATIGUE_COST), going prone, drawing a
+# dagger mid-hold.
 PLAYER_ONLY_SCORE = 0.0
 # Anchoring one's own Runaway is the only way to stop it feeding (tarmar-
 # engine #30): flat, above every flat score here, and the AI's choice
@@ -2152,7 +2153,8 @@ def _score_options(
                 passed_over = _passed_over_note(enemy, distance, target)
                 rationale = (
                     f"Sprint up to {actor.move_sprint} hexes toward "
-                    f"{target.name}{passed_over} for 6 Fatigue; {keeps_to_the_run}"
+                    f"{target.name}{passed_over} for "
+                    f"{movement.SPRINT_FATIGUE_COST} Fatigue; {keeps_to_the_run}"
                 )
             candidates.append(
                 Candidate(

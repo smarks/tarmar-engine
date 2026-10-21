@@ -833,6 +833,15 @@ before except for these: a strike in close's expected damage, the
 break-away that prices it, and a targeted spell's aim at a dodging target,
 which now takes the dodge's 4.
 
+## The gaits' Fatigue costs live with movement (v0.9.20)
+
+`movement.RUN_FATIGUE_COST` (1), `movement.SPRINT_FATIGUE_COST` (6) and
+`movement.GAIT_FATIGUE_COSTS` (by gait; walk and jog are free in combat)
+now sit beside `movement.MOVEMENT_GAITS` and `movement.gait_allowance`, so
+the policy's SPRINT rationale ("for 6 Fatigue") reads the number rather
+than restating it (tarmar-engine #58). `engine.py` re-exports all three
+under their old names, so no caller changes and no battle's events do.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

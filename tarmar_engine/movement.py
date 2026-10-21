@@ -51,6 +51,17 @@ MOVEMENT_GAITS: dict[str, str] = {
     "c": "jog",
 }
 
+#: movement.md's Speed table: the Fatigue a combat turn at each gait costs.
+RUN_FATIGUE_COST = 1
+SPRINT_FATIGUE_COST = 6
+#: The Fatigue a turn moving at each gait costs, by gait; a gait not named
+#: (walk, jog) is free in combat. The engine charges it and the policy's
+#: SPRINT rationale names it (tarmar-engine #58).
+GAIT_FATIGUE_COSTS: dict[str, int] = {
+    "run": RUN_FATIGUE_COST,
+    "sprint": SPRINT_FATIGUE_COST,
+}
+
 #: Options whose move may end at a placed hex, and the gait that bounds it:
 #: the target-derived movers less the CHARGE, plus DROP ("Jog or less").
 PLACED_GAITS: dict[str, str] = {
