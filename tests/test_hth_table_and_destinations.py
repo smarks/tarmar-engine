@@ -246,6 +246,20 @@ class HthDisengageTest(TestCase):
             events_of_type(events, "movement")[0]["message"],
         )
 
+    def test_the_forecast_rolls_against_the_penalised_dex(self):
+        # The break-away forecast reads the penalties the engine's escape roll
+        # takes (tarmar-engine #43): the -2 injury band and the -2 owed
+        # off-balance.
+        state = in_hand_to_hand(duel_state())
+        figure = state.by_id(1)
+        figure.fatigue = 5  # max_fatigue 40: within the 1-5 band, -2.
+        figure.off_balance = True
+        decision = policy.choose_option(state, figure)
+        break_away = next(
+            candidate for candidate in decision.candidates if candidate.letter == "v"
+        )
+        self.assertIn(f"4d6 ≤ DEX {figure.dexterity - 4} ", break_away.rationale)
+
     def test_failure_stays_in(self):
         state = in_hand_to_hand(duel_state())
         figure = state.by_id(1)
@@ -312,8 +326,8 @@ def break_away_score(state, figure, partner) -> float:
     damage, halved — this turn spent on the roll, next turn the weapon in
     hand if free and the strike in close if not."""
     escape = policy.four_d6_at_most(figure.dexterity)
-    weapon, _rationale = policy._attack_forecast(figure, partner, ranged=False)
-    strike, _rationale = policy._hth_strike_forecast(state, figure, partner)
+    weapon = policy._attack_forecast(figure, partner, ranged=False)[0].score
+    strike = policy._hth_strike_forecast(state, figure, partner)[0].score
     return policy.round_score(
         (policy.product_of(escape, weapon) + policy.product_of(1 - escape, strike)) / 2
     )

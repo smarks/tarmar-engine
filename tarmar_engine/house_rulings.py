@@ -437,7 +437,9 @@ HOUSE_RULINGS += (
         "the menu; where Push's own optional cap is injected too, the "
         "tighter of the two holds.",
         "spell cost + pushed mana",
-        "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py _within_channel",
+        "tarmar_engine/magic.py MagicRules.cast_within_channel, called by "
+        "tarmar_engine/engine.py cast_spell and tarmar_engine/policy.py "
+        "_within_channel",
         RULING,
         "#825 (tarmar-engine #29)",
     ),
@@ -511,7 +513,8 @@ HOUSE_RULINGS += (
         "the only bound, so Borrowing without a cap needs Channel rules.",
         "spell cost + pushed mana, borrowed or not",
         "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py "
-        "_borrow_candidates; tarmar_engine/magic.py MagicRules",
+        "_borrow_candidates; tarmar_engine/magic.py "
+        "MagicRules.cast_within_channel and MagicRules.channel_bound",
         RULING,
         "#825 (tarmar-engine #28)",
     ),

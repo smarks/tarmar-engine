@@ -21,8 +21,10 @@ from tarmar_engine.magic import (
     LIFTED_BOUNDS_KEY,
     LIFTED_COUNTER_MINIMUM,
     PUSH_CAP,
+    ChannelUnclassifiedSpell,
     MagicRules,
     bound_lifted,
+    casting_mana,
 )
 from tarmar_engine.profile import TarmarProfile
 from tarmar_engine.spells import get_spell
@@ -382,18 +384,31 @@ class LiftedMenuTest(TestCase):
             )
 
         self.assertIn(", Channel 3)", rationale(2))
+        self.assertIn(", past Channel 3)", rationale(3, CHANNEL))
         self.assertIn(
-            f", past Channel 3 {policy.PAST_BY_RULING})", rationale(3, CHANNEL)
-        )
-        self.assertIn(
-            f"past Channel 3 {policy.PAST_BY_RULING}, past the push cap 3 "
-            f"{policy.PAST_BY_RULING})",
+            ", past Channel 3, past the push cap 3)",
             rationale(4, CHANNEL, PUSH_CAP),
         )
 
+    def test_the_ruling_is_left_to_the_caller_s_words(self):
+        # The line names the bound; that a ruling allowed it rides on
+        # lifted_bounds for the caller to word (tarmar-engine #55).
+        self.assertFalse(hasattr(policy, "PAST_BY_RULING"))
+        decision = self.menu(
+            lift(channel_caster({"fire_missile": 2}), CHANNEL, PUSH_CAP)
+        )
+        past = [
+            candidate for candidate in decision.candidates if candidate.lifted_bounds
+        ]
+        self.assertTrue(past)
+        for candidate in past:
+            with self.subTest(candidate=candidate.name):
+                self.assertNotIn("ruling", candidate.rationale)
+                self.assertNotIn("Game Master", candidate.rationale)
+
     def test_an_unpushed_cast_past_a_lifted_channel_says_so(self):
         # Channel 1 for the Bolt (cost 3).
-        note = f"; 3 mana, past Channel 1 {policy.PAST_BY_RULING}"
+        note = "; 3 mana, past Channel 1"
 
         def bolt_lines(state: BattleState, rules: MagicRules) -> list[str]:
             return [
@@ -414,7 +429,7 @@ class LiftedMenuTest(TestCase):
         within = self.menu(lift(channel_caster({"fire_missile": 3}), CHANNEL))
         self.assertFalse(
             any(
-                policy.PAST_BY_RULING in candidate.rationale
+                "past Channel" in candidate.rationale
                 for candidate in within.candidates
                 if candidate.spell_key == "fire_missile" and not candidate.push_mana
             )
@@ -567,3 +582,233 @@ class CandidatesCarryTheEnginesAnswerTest(TestCase):
                 {bound for option in offered for bound in option.lifted_bounds},
                 set(bounds),
             )
+
+
+class CastWithinChannelValueTest(TestCase):
+    """The public Channel check (tarmar-engine #41), by expected value, one
+    test per branch. Fire Missile costs 1 and Lightning Bolt 3; a recorded
+    level L gives Channel 2L - 1, never below 0."""
+
+    def within(
+        self,
+        rules: MagicRules,
+        state: BattleState,
+        spell_key: str,
+        push_mana: int = 0,
+        *,
+        borrowing: bool = False,
+    ) -> bool:
+        return rules.cast_within_channel(
+            state.by_id(1), get_spell(spell_key), push_mana, borrowing=borrowing
+        )
+
+    def test_unlifted_a_cast_at_the_channel_passes_and_one_past_does_not(self):
+        rules = channel_magic_rules()
+        # Level 2: Channel 3, the Bolt's cost exactly.
+        self.assertTrue(
+            self.within(rules, channel_caster({"lightning_bolt": 2}), "lightning_bolt")
+        )
+        # Level 0: Channel 0, one short of Fire Missile's cost.
+        self.assertFalse(
+            self.within(rules, channel_caster({"fire_missile": 0}), "fire_missile")
+        )
+
+    def test_pushed_mana_counts_toward_the_channel(self):
+        rules = channel_magic_rules()
+        # Level 2: Channel 3; Fire Missile costs 1.
+        state = channel_caster({"fire_missile": 2})
+        self.assertTrue(self.within(rules, state, "fire_missile", 2))
+        self.assertFalse(self.within(rules, state, "fire_missile", 3))
+
+    def test_lifted_and_not_borrowing_past_the_channel_passes(self):
+        # Channel 1 for the Bolt (cost 3), lifted.
+        state = lift(bolt_caster(), CHANNEL)
+        rules = channel_magic_rules()
+        self.assertTrue(self.within(rules, state, "lightning_bolt"))
+        self.assertTrue(self.within(rules, state, "lightning_bolt", 6))
+
+    def test_lifted_and_borrowing_past_the_debt_cap_passes(self):
+        # Debt cap 4, 2 mana: 9 mana borrows 7, past the cap; the cap is the
+        # caller's check, not Channel's.
+        state = lift(bolt_caster(mana=2), CHANNEL)
+        rules = capped_channel_borrowing_rules()
+        self.assertTrue(self.within(rules, state, "lightning_bolt", 6, borrowing=True))
+
+    def test_lifted_and_borrowing_with_no_debt_cap_holds_to_mana_plus_channel(self):
+        # 2 mana plus Channel 1: 3, the Bolt's cost.
+        state = lift(bolt_caster(mana=2), CHANNEL)
+        rules = channel_borrowing_rules()
+        self.assertTrue(self.within(rules, state, "lightning_bolt", borrowing=True))
+        self.assertFalse(self.within(rules, state, "lightning_bolt", 1, borrowing=True))
+        # The same casting from the purse is not bounded at all.
+        self.assertTrue(self.within(rules, state, "lightning_bolt", 1))
+
+    def test_no_channel_rules_bound_nothing(self):
+        from .test_magic import example_magic_rules
+
+        self.assertTrue(
+            self.within(example_magic_rules(), channel_caster({}), "lightning_bolt", 6)
+        )
+
+
+class CastWithinChannelTest(TestCase):
+    """Pins the call sites: the casting phase refuses, and the menu withholds,
+    exactly the casts the public Channel check (tarmar-engine #41) says no
+    to, for every caster, spell, push and borrowing the test boards hold,
+    lifted or not. Both call it, so this guards their use of it; the method's
+    own answers are pinned by :class:`CastWithinChannelValueTest`."""
+
+    RULE_SETS = {
+        "channel": channel_magic_rules(),
+        "debt cap": capped_channel_borrowing_rules(),
+        "no debt cap": channel_borrowing_rules(),
+    }
+    LIFTINGS = ((), (CHANNEL,), (PUSH_CAP,), (CHANNEL, PUSH_CAP))
+    SPELLS = ("fire_missile", "lightning_bolt", "heal")
+
+    def caster(self, fire_level: int, mana: int, *bounds: str) -> BattleState:
+        return lift(
+            channel_caster(
+                {"fire_missile": fire_level, "lightning_bolt": 1},
+                skill_levels={"tapestry": 0},
+                spells=list(self.SPELLS),
+                mana=mana,
+                intelligence=30,
+                wisdom=30,
+            ),
+            *bounds,
+        )
+
+    def engine_allows(
+        self,
+        state: BattleState,
+        rules: MagicRules,
+        spell_key: str,
+        push_mana: int,
+        borrow: bool,
+    ) -> bool:
+        """Does the casting phase let the cast past its Channel check? Only
+        its Channel refusal says no; any later outcome says yes."""
+        trial = BattleState.from_dict(state.to_dict())
+        caster = trial.by_id(1)
+        caster.chosen_spell = spell_key
+        caster.chosen_target = 2
+        caster.chosen_push_mana = push_mana
+        caster.chosen_borrow = borrow
+        try:
+            engine.TurnRunner(
+                trial,
+                ScriptedRoller(),
+                lambda event: None,
+                profile=TarmarProfile(magic=rules),
+            ).cast_spell(caster)
+        except ValueError as refusal:
+            if "their Channel for it" in str(refusal):
+                return False
+        return True
+
+    def cases(self):
+        """Every case the Channel check decides: the engine refuses a push
+        the rules give no effect or past an unlifted cap before it."""
+        for rules_name, rules in self.RULE_SETS.items():
+            assert rules.push is not None
+            for bounds in self.LIFTINGS:
+                for fire_level in (0, 1, 2, 3, 5):
+                    for mana in (2, 8):
+                        state = self.caster(fire_level, mana, *bounds)
+                        cap_lifted = PUSH_CAP in bounds
+                        for spell_key in self.SPELLS:
+                            spell = get_spell(spell_key)
+                            for push_mana in range(0, 7):
+                                if push_mana and not (
+                                    rules.push.can_push(spell)
+                                    and rules.push.within_cap(
+                                        push_mana, cap_lifted=cap_lifted
+                                    )
+                                ):
+                                    continue
+                                for borrow in (False, True):
+                                    if borrow and rules.borrowing is None:
+                                        continue
+                                    yield (
+                                        rules_name,
+                                        rules,
+                                        bounds,
+                                        state,
+                                        spell_key,
+                                        push_mana,
+                                        borrow,
+                                    )
+
+    def test_the_casting_phase_refuses_exactly_what_it_says_no_to(self):
+        answers: dict[tuple[tuple[str, ...], bool], int] = {}
+        for rules_name, rules, bounds, state, spell_key, push, borrow in self.cases():
+            spell = get_spell(spell_key)
+            caster = state.by_id(1)
+            borrows = borrow and casting_mana(spell, push) > caster.mana
+            with self.subTest(
+                rules=rules_name,
+                bounds=bounds,
+                fire=caster.spell_skill_levels,
+                mana=caster.mana,
+                spell=spell_key,
+                push=push,
+                borrow=borrow,
+            ):
+                answer = rules.cast_within_channel(
+                    caster, spell, push, borrowing=borrows
+                )
+                self.assertEqual(
+                    answer,
+                    self.engine_allows(state, rules, spell_key, push, borrow),
+                )
+                key = (bounds, answer)
+                answers[key] = answers.get(key, 0) + 1
+        # Not vacuous: each lifting has casts allowed, and the unlifted and
+        # push-cap-only boards have casts refused.
+        for bounds in self.LIFTINGS:
+            self.assertTrue(answers.get((bounds, True)))
+        self.assertTrue(answers.get(((), False)))
+        self.assertTrue(answers.get(((PUSH_CAP,), False)))
+
+    def test_the_menu_withholds_exactly_what_it_says_no_to(self):
+        refused = allowed_past_channel = 0
+        for rules_name, rules, bounds, state, spell_key, push, borrow in self.cases():
+            spell = get_spell(spell_key)
+            caster = state.by_id(1)
+            # The menu tests the Channel of the plain casts it offers: those
+            # the caster can pay for from the purse.
+            if push or borrow or spell.level > caster.mana:
+                continue
+            with self.subTest(
+                rules=rules_name,
+                bounds=bounds,
+                fire=caster.spell_skill_levels,
+                mana=caster.mana,
+                spell=spell_key,
+            ):
+                withheld = policy.choose_option(state, caster, magic=rules).withheld
+                answer = rules.cast_within_channel(caster, spell)
+                self.assertEqual(
+                    not answer,
+                    any(line.startswith(f"{spell.name} withheld") for line in withheld),
+                )
+                refused += not answer
+                channel = rules.channel_for(caster, spell)
+                assert channel is not None
+                allowed_past_channel += answer and spell.level > channel
+        self.assertTrue(refused)
+        self.assertTrue(allowed_past_channel)
+
+    def test_an_unclassified_spell_raises_lifted_or_not(self):
+        rules = replace(
+            channel_magic_rules(),
+            channel=replace(example_channel_rules(), default_kind=None),
+        )
+        for bounds in ((), (CHANNEL,)):
+            state = lift(channel_caster({"fire_missile": 3}), *bounds)
+            with self.subTest(bounds=bounds):
+                with self.assertRaises(ChannelUnclassifiedSpell):
+                    rules.cast_within_channel(state.by_id(1), get_spell("fire_missile"))
+                with self.assertRaises(ChannelUnclassifiedSpell):
+                    cast(state, [[3, 3, 3]], profile=TarmarProfile(magic=rules))

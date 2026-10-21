@@ -4,7 +4,8 @@ movement.md's Speed table gives each gait its hexes, and action-options.md's
 Move column says which gait (or which one-hex shift) each option allows. Most
 of the engine's movement is derived from a target: MOVE and CHARGE close on
 the chosen enemy, DODGE jogs toward the missile threat, all along
-:func:`approach_route`, which the AI also prices a charge's reach by. A few
+:func:`approach_route` at the option's gait (:func:`default_approach`, which
+the AI also prices a charge's reach by, with :func:`charge_reaches`). A few
 moves are placed instead, at a hex the figure picks (tarmar-engine #20, from
 tarmar-studio #819 and #866):
 
@@ -316,6 +317,75 @@ def approach_route(
             )
             best = Approach(route=route, distance=arrival)
     return best
+
+
+#: The figure distance a CHARGE ATTACK's approach must end within to strike:
+#: beside its target. Footprints never overlap out of a grapple, so such an
+#: approach ends adjacent, and ``TurnRunner.melee_attack`` strikes an adjacent
+#: target (``combat_math.figures_adjacent``) and logs "charge fell short" of
+#: any other; a test holds the two equal.
+CHARGE_REACH = 1
+
+
+def option_gait(option_key: str) -> str:
+    """The gait a target-derived move for this option goes at
+    (:data:`MOVEMENT_GAITS`): MOVE runs, SPRINT sprints, CHARGE ATTACK and
+    DODGE jog, and a yielded variant at its own option's gait.
+
+    Raises:
+        ValueError: for an option that makes no target-derived move.
+    """
+    gait = MOVEMENT_GAITS.get(actions.base_option(option_key))
+    if gait is None:
+        raise ValueError(f"option {option_key!r} makes no move toward a target")
+    return gait
+
+
+def option_allowance(combatant: CombatantState, option_key: str) -> int:
+    """Hexes this option's target-derived move may cover: the
+    :func:`gait_allowance` of its :func:`option_gait`.
+
+    Raises:
+        ValueError: for an option that makes no target-derived move.
+    """
+    return gait_allowance(combatant, option_gait(option_key))
+
+
+def default_approach(
+    state: BattleState,
+    combatant: CombatantState,
+    option_key: str,
+    target: CombatantState,
+) -> Approach:
+    """Where this option's default move toward ``target`` ends: the
+    :func:`approach_route` at the option's :func:`option_allowance`.
+
+    The one derivation, option key to gait to allowance to route, that
+    ``TurnRunner.move_towards_target`` walks and the policy prices MOVE,
+    CHARGE ATTACK and DODGE by, public so a caller asks it rather than
+    restating it (tarmar-engine #50). An empty ``route`` is a move that
+    stands; :func:`charge_reaches` says whether a charge's approach strikes.
+
+    Args:
+        state: The battle.
+        combatant: The mover.
+        option_key: A target-derived moving option's key (MOVE, SPRINT,
+            CHARGE ATTACK, DODGE, or a yielded one).
+        target: The figure it closes on.
+
+    Raises:
+        ValueError: for an option that makes no target-derived move.
+    """
+    return approach_route(
+        state, combatant, target, option_allowance(combatant, option_key)
+    )
+
+
+def charge_reaches(approach: Approach) -> bool:
+    """Does a CHARGE ATTACK whose jog is ``approach`` (:func:`default_approach`
+    for the charge) end within :data:`CHARGE_REACH` of its target, and so
+    strike?"""
+    return approach.distance <= CHARGE_REACH
 
 
 def path_to(

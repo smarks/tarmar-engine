@@ -400,6 +400,32 @@ class CheckableRationaleTest(TestCase):
         )
         self.assertIn("beyond a 7-hex jog, so the full 1.000", move.rationale)
 
+    def test_the_jog_line_takes_an_before_eight_and_eleven(self):
+        cases = (
+            (8, 3, "within an 8-hex jog"),
+            (11, 3, "within an 11-hex jog"),
+            (8, 15, "beyond an 8-hex jog"),
+            (11, 15, "beyond an 11-hex jog"),
+            (9, 15, "beyond a 9-hex jog"),
+        )
+        for jog, distance, wording in cases:
+            with self.subTest(jog=jog, distance=distance):
+                state = BattleState(
+                    arena_radius=20,
+                    combatants=[
+                        make_combatant(1, q=0, r=0, weapon=bow(), move_jog=jog),
+                        make_combatant(2, q=distance, r=0),
+                    ],
+                )
+                move = next(
+                    candidate
+                    for candidate in policy.choose_option(
+                        state, state.by_id(1)
+                    ).candidates
+                    if candidate.letter == "a"
+                )
+                self.assertIn(wording, move.rationale)
+
     def test_payload_carries_a_score_string_matching_the_rationale(self):
         state = self.melee_pair()
         strike = next(

@@ -73,6 +73,7 @@ from .magic import (
     attribute_score,
     bound_lifted,
     casting_mana,
+    casting_success_ceiling,
     spell_effect_kind,
 )
 from .profile import TARMAR, RulesProfile
@@ -588,7 +589,7 @@ class TurnRunner:
                 # "Shift 1 hex or stand still during movement".
                 self.shift_to(combatant)
             elif option in MOVEMENT_GAITS:
-                self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+                self.move_towards_target(combatant)
             else:
                 # Everyone else yields: a yielded mover (#819) takes its
                 # movement in phase 4, the missile/cast options their
@@ -606,7 +607,7 @@ class TurnRunner:
                 if self._placed_destination(combatant) is not None:
                     self.move_to_destination(combatant)
                 elif option in MOVEMENT_GAITS:
-                    self.move_towards_target(combatant, gait=MOVEMENT_GAITS[option])
+                    self.move_towards_target(combatant)
             elif option in ("f", "h"):
                 # MISSILE ATTACK and CAST SPELL move at "Walk (slow)". The
                 # engaged cast (r) is "Shift/still" (action-options.md), so it
@@ -898,25 +899,28 @@ class TurnRunner:
             payload={"from": list(start), "to": list(destination), "gait": "shift"},
         )
 
-    def move_towards_target(self, combatant: CombatantState, gait: str = "") -> None:
+    def move_towards_target(self, combatant: CombatantState) -> None:
         """Movement toward the chosen target at the option's gait.
 
-        Walks :func:`movement.approach_route` toward the chosen target, the
-        straight line or, when that is blocked, a clear path round, stopping
-        the moment the mover becomes engaged (movement.md: figures stop
-        immediately when engaged). Running costs 1 Fatigue and sprinting 6
-        (movement.md); jogging is free in combat. ``gait`` defaults to the
-        chosen option's (MOVE runs, CHARGE ATTACK jogs).
+        Walks the chosen option's :func:`movement.default_approach` toward the
+        chosen target, the straight line or, when that is blocked, a clear
+        path round, stopping the moment the mover becomes engaged
+        (movement.md: figures stop immediately when engaged). Running costs 1
+        Fatigue and sprinting 6 (movement.md); jogging is free in combat. The
+        gait is the chosen option's (:func:`movement.option_gait`: MOVE runs,
+        CHARGE ATTACK jogs).
+
+        Raises:
+            ValueError: for a chosen option that makes no move toward a
+                target.
         """
         if combatant.chosen_target is None:
             return
         target = self.state.by_id(combatant.chosen_target)
-        if not gait:
-            gait = MOVEMENT_GAITS.get(
-                actions.base_option(combatant.chosen_letter), "jog"
-            )
-        allowance = movement.gait_allowance(combatant, gait)
-        approach = movement.approach_route(self.state, combatant, target, allowance)
+        gait = movement.option_gait(combatant.chosen_letter)
+        approach = movement.default_approach(
+            self.state, combatant, combatant.chosen_letter, target
+        )
         start = combatant.position
         steps = 0
         for cell, facing in approach.route:
@@ -1034,10 +1038,19 @@ class TurnRunner:
             self._acting = False
             self._off_balance_actor = None
 
-    def _casting_penalties(self, combatant: CombatantState) -> int:
-        """The injury band and owed off-balance penalty a casting roll takes,
-        and with it the Control Roll and the debt roll (one roll-under
-        reading for the magic rolls)."""
+    def _action_roll_penalty(self, combatant: CombatantState) -> int:
+        """The situational penalty a roll the figure makes as its action owes.
+
+        Two penalties, both properties of the figure rather than of the roll:
+        injury-thresholds-death.md's -1/-2 band for a badly hurt figure (#296)
+        and the off-balance -2 owed by the action being taken (#811). One
+        reading for every such roll so none can drift (#12, tarmar-engine
+        #43): the attack roll (both shots of a double shot) and its critical
+        confirm roll, the grapple attempt, the hand-to-hand disengage and
+        Struggle Free, drawing a dagger, a targeted spell's aim, the casting
+        roll, the Control Roll, the debt roll, the anchor roll and the
+        caster's side of a counter contest.
+        """
         return self.profile.reactions.injury_penalty(
             combatant
         ) + self._off_balance_penalty(combatant)
@@ -1330,19 +1343,6 @@ class TurnRunner:
             and not combatant.last_shot_spent
         )
 
-    def _attack_roll_penalty(self, attacker: CombatantState) -> int:
-        """The situational penalty any attack roll owes.
-
-        Two bands, both of them properties of the attacker rather than of
-        the blow: the off-balance -2 owed by the action being taken (#811 —
-        it lands on the whole action, both shots of a double shot included),
-        and injury-thresholds-death.md's -1/-2 for a badly hurt figure
-        (#296). One helper for every attack path so none can drift (#12).
-        """
-        return self._off_balance_penalty(
-            attacker
-        ) + self.profile.reactions.injury_penalty(attacker)
-
     def resolve_attack(
         self,
         attacker: CombatantState,
@@ -1372,7 +1372,7 @@ class TurnRunner:
             ignore_attacker_skill=weapon_override is not None,
             ignore_defender_bonuses=ignore_defender_bonuses,
         )
-        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
+        bonus = numbers.bonus - self._action_roll_penalty(attacker)
         # The three dice are thrown first and logged after, so each one can
         # carry the verdict the resolver reaches — the d20 line says "hit",
         # not just a number a reader has to adjudicate themselves (#301).
@@ -1847,7 +1847,7 @@ class TurnRunner:
             extra_situational=self.profile.grapple.to_hit_bonus,
             ignore_attacker_skill=True,
         )
-        bonus = numbers.bonus - self._attack_roll_penalty(attacker)
+        bonus = numbers.bonus - self._action_roll_penalty(attacker)
         record, attack_sequence = self.roll(
             "1d20",
             purpose="grapple attempt",
@@ -2024,11 +2024,7 @@ class TurnRunner:
         is effective: injury-thresholds-death.md's -1/-2 band (#296) and an
         off-balance figure's −2 on this action (#811) come off it.
         """
-        effective_dex = (
-            combatant.dexterity
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
-        )
+        effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
         record, _sequence = self.roll(
             "4d6",
             purpose="escape",
@@ -2217,11 +2213,7 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        effective_dex = (
-            combatant.dexterity
-            - self.profile.reactions.injury_penalty(combatant)
-            - self._off_balance_penalty(combatant)
-        )
+        effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
         record, _sequence = self.roll(
             "3d6",
             purpose="draw dagger",
@@ -2289,12 +2281,12 @@ class TurnRunner:
         cast's Control Roll (:meth:`_push_control_roll`). Their bonuses add
         to the spell's rolled effect. With injected Channel rules the whole
         mana of the casting, cost and pushed mana together, must lie within
-        the caster's Channel for the spell (:meth:`.magic.ChannelRules.
-        channel_for`), and the cast names the Channel it used. With injected
-        Borrowing rules a cast the caster chose to borrow for, and cannot
-        afford, empties the pool and adds the shortfall to its debt when the
-        cast pays; after the spell has resolved, whatever became of it, the
-        caster makes the debt roll (:meth:`_debt_roll`). A Game Master may
+        the caster's Channel for the spell (:meth:`.magic.MagicRules.
+        cast_within_channel`), and the cast names the Channel it used. With
+        injected Borrowing rules a cast the caster chose to borrow for, and
+        cannot afford, empties the pool and adds the shortfall to its debt
+        when the cast pays; after the spell has resolved, whatever became of
+        it, the caster makes the debt roll (:meth:`_debt_roll`). A Game Master may
         have lifted Channel or Push's own cap for the caster
         (``CombatantState.lifted_magic_bounds``): the cast may then go past
         it, still names the Channel, and lists each lifted bound it went past
@@ -2353,12 +2345,11 @@ class TurnRunner:
             if borrowing is not None and combatant.chosen_borrow
             else 0
         )
-        bound = (
-            None
-            if magic is None
-            else magic.channel_bound(combatant, spell, borrowing=shortfall > 0)
-        )
-        if bound is not None and cost > bound:
+        borrows = shortfall > 0
+        if magic is not None and not magic.cast_within_channel(
+            combatant, spell, push_mana, borrowing=borrows
+        ):
+            bound = magic.channel_bound(combatant, spell, borrowing=borrows)
             borrowing_note = (
                 "" if bound == channel else f", which lets them borrow to {bound}"
             )
@@ -2458,7 +2449,7 @@ class TurnRunner:
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
         # off-balance figure's −2 on this action (#811).
-        attribute = base_attribute - self._casting_penalties(combatant)
+        attribute = base_attribute - self._action_roll_penalty(combatant)
         # How a casting roll fails on its natural total is injected
         # (tarmar-engine #46); with none, the attribute alone judges it.
         casting_failure = None if magic is None else magic.casting_failure
@@ -2560,9 +2551,7 @@ class TurnRunner:
             casting_failure: The injected casting failure rules, or ``None``:
                 the attribute alone judges the roll.
         """
-        if natural_total > attribute:
-            return False
-        return casting_failure is None or natural_total < casting_failure.fumble_floor
+        return natural_total <= casting_success_ceiling(attribute, casting_failure)
 
     def _pay_cast(
         self, caster: CombatantState, spell: Spell, push_mana: int, borrowed: int
@@ -2696,9 +2685,7 @@ class TurnRunner:
             # additional DEX roll — 3d6 ≤ DEX. A dodging target's +4-TN is
             # re-mapped onto the caster's effective DEX for this check, and
             # so is the injury-thresholds-death.md -1/-2 band (#296).
-            effective_dex = combatant.dexterity
-            effective_dex -= self.profile.reactions.injury_penalty(combatant)
-            effective_dex -= self._off_balance_penalty(combatant)
+            effective_dex = combatant.dexterity - self._action_roll_penalty(combatant)
             if target.dodging:
                 effective_dex -= DODGE_DEX_CHECK_PENALTY
             aim_record, _sequence = self.roll(
@@ -2847,7 +2834,7 @@ class TurnRunner:
         target = (
             attribute_score(combatant, push.control_attribute)
             - push.penalty_per_mana * invested
-            - self._casting_penalties(combatant)
+            - self._action_roll_penalty(combatant)
         )
         control = self._roll_under(
             push.control_dice,
@@ -2924,7 +2911,7 @@ class TurnRunner:
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
-        ) - self._casting_penalties(combatant)
+        ) - self._action_roll_penalty(combatant)
         debt = self._roll_under(
             borrowing.debt_dice,
             purpose="debt",
@@ -3173,7 +3160,7 @@ class TurnRunner:
             )
             return
         anchorer.mana -= cost
-        target = attribute_score(anchorer, rule.attribute) - self._casting_penalties(
+        target = attribute_score(anchorer, rule.attribute) - self._action_roll_penalty(
             anchorer
         )
         anchor = self._roll_under(
@@ -3416,7 +3403,7 @@ class TurnRunner:
             purpose="counter",
             modifier=attribute_score(caster, attribute)
             + caster_bonus
-            - self._casting_penalties(caster),
+            - self._action_roll_penalty(caster),
         )
         defender_records = [
             (

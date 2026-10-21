@@ -85,6 +85,7 @@ from .figure import (
     Figure,
     Posture,
     Race,
+    SideLabel,
 )
 from .options import Option
 from .ruleset import Ruleset
@@ -296,6 +297,9 @@ def figure_to_json(figure: Figure) -> dict:
         "name": figure.name,
         "char_class": figure.char_class,
         "side": figure.side,
+        # What a reader calls the side (#25); absent from older snapshots.
+        "side_label": (dataclasses.asdict(figure.side_label)
+                       if figure.side_label is not None else None),
         "uid": figure.uid,
         "strength": figure.strength,
         "dexterity": figure.dexterity,
@@ -343,6 +347,8 @@ def figure_from_json(data: dict) -> Figure:
         char_class=data.get("char_class", ""),
     )
     figure.uid = data["uid"]
+    side_label = data.get("side_label")
+    figure.side_label = SideLabel(**side_label) if side_label is not None else None
     position = data["position"]
     figure.position = Hex(position[0], position[1]) if position is not None else None
     figure.facing = data["facing"]

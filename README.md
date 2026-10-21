@@ -532,6 +532,18 @@ ones.
 - **The Runaway.** A failing cast whose natural total is `runaway_total`
   begins a Runaway, run on later turns when `MagicRules.runaway` is
   injected too.
+- **The estimate (since v0.9.19).** The policy prices a cast by the same
+  ceiling the engine judges the roll by (tarmar-engine #47):
+  `choose_option(..., magic=rules)` estimates each cast's chance as 3d6 at
+  most `magic.casting_success_ceiling(attribute, rules.casting_failure)`,
+  the highest natural total that succeeds, and the rationale names the
+  fumble floor where it lowers that ceiling.
+  `policy.cast_success_chance(attribute, rules.casting_failure)` is that
+  chance, for a caller showing a spell's odds to show the same number. The
+  engine applies the ceiling to the effective attribute, less the injury
+  band and any owed off-balance penalty; the menu still passes the raw
+  attribute, so the two agree only for an unhurt caster until
+  tarmar-engine #56 lands.
 - **Without it.** With `casting_failure=None`, or no `MagicRules` at all,
   the attribute alone judges the roll, no failure costs mana, and no cast
   starts a Runaway. **This changes the default profile:** before v0.9.15
@@ -566,9 +578,8 @@ empty.
   casting stays within the debt cap; where Borrowing has no cap, Channel
   bounds only the shortfall, so the casting may take the caster's mana plus
   its Channel (house reading `lifted_channel_bounds_the_shortfall`, marked
-  for Spencer). The menu's push lines name the Channel and say "past
-  Channel N by a Game Master's ruling" (`policy.PAST_BY_RULING`) where a
-  push passes it, and likewise for Push's cap.
+  for Spencer). The menu's push lines name the Channel, and say "past
+  Channel N" where a push passes it, and likewise "past the push cap N".
 - **Push's cap.** `PushRules.cap(cap_lifted=...)` is the cap a caster is
   held to (`None` when lifted), and `PushRules.within_cap(push_mana,
   cap_lifted=...)` the check `cast_spell` makes;
@@ -601,8 +612,180 @@ empty.
   counter. The engine writes its payload from them, and every menu option
   carries the same answer as `Candidate.lifted_bounds` (a tuple, empty for
   every other option; `"lifted_bounds"` in `Candidate.to_payload()` only
-  when non-empty), so a caller reads it instead of recomputing it. The
-  menu's "by a Game Master's ruling" wording is decided from it too.
+  when non-empty), so a caller reads it instead of recomputing it.
+- **The ruling is the caller's to word (since v0.9.19).** A menu line names
+  the bound it goes past and its value ("past Channel 3", "past the push
+  cap 3") and no longer adds "by a Game Master's ruling":
+  `policy.PAST_BY_RULING` is gone (tarmar-engine #55). **A caller that
+  imported `policy.PAST_BY_RULING` must stop.** As with the event
+  messages, saying that a ruling allowed it is the consuming game's, from
+  `Candidate.lifted_bounds`, so the engine and the game do not each print
+  the fact in their own wording.
+
+## Public answers, so callers need not restate the engine (v0.9.19)
+
+A consuming game that must explain a menu (why a cast is withheld, where a
+move ends, whom a charge strikes) asks the engine's own rule, not a copy of
+it. Each helper below is what the engine and its policy call themselves.
+
+- **Channel (tarmar-engine #41).** `MagicRules.cast_within_channel(caster,
+  spell, push_mana=0, *, borrowing=False)` says whether Channel lets the
+  casting's whole mana (`magic.casting_mana`) through: within
+  `MagicRules.channel_bound`, so `True` with no Channel rules and for a
+  caster a Game Master has lifted Channel for, except a borrowing casting
+  where Borrowing has no debt cap, which is held to the caster's mana plus
+  its Channel. The debt cap is the caller's own check
+  (`BorrowingRules.borrowing_ceiling`; `cast_spell` refuses past it).
+  It raises `ChannelUnclassifiedSpell` for a spell the rules give no kind,
+  lifted or not, as `channel_for` does. `cast_spell` refuses by it and the
+  menu withholds by it; it says nothing of the purse, Push's cap or the
+  debt cap.
+- **Where a move ends (tarmar-engine #50).**
+  `movement.default_approach(state, combatant, option_key, target)` is the
+  `Approach` (its `route`, empty for a move that stands, and its end
+  `distance`) of the option's default move toward the target: the option
+  key to its gait (`movement.option_gait`; MOVE runs, SPRINT sprints,
+  CHARGE ATTACK and DODGE jog, a yielded key at its own option's gait), to
+  the gait's allowance (`movement.option_allowance`), to
+  `movement.approach_route`. `TurnRunner.move_towards_target` walks it and
+  the policy prices MOVE, CHARGE ATTACK and DODGE by it. Each raises
+  `ValueError` for an option that makes no move toward a target.
+  `movement.charge_reaches(approach)` says whether a charge's approach ends
+  within `movement.CHARGE_REACH` (1: beside its target), the reach the menu
+  prices a charge by; an approach that ends there leaves the charger
+  adjacent, which is what `TurnRunner.melee_attack` strikes.
+- **Two changes to `TurnRunner.move_towards_target(combatant)` come with
+  it.** It no longer takes a `gait` argument (it was only ever passed the
+  chosen option's own gait); the gait is always the chosen option's. And it
+  raises `ValueError` when the chosen option makes no move toward a target,
+  where it used to jog the figure. The turn loop calls it only for a moving
+  option, so no battle's events change.
+- **Whom a classic attack strikes (tarmar-engine #54).**
+  `classic.ai.attack_blow(game, figure)` is the attack
+  `classic.ai.queue_attack_for` would declare from where the figure stands,
+  without declaring it: an `ai.Blow` naming the `target` and its `kind`
+  (`ai.BlowKind.MELEE`, `RANGED` or `HAND_TO_HAND`, the
+  `GameState.attack_candidates` field each is drawn from), or `None`. The
+  declaration itself now declares from it. `classic.ai.planned_blow(game,
+  figure, plan)` asks it after a plan (a CHARGE ATTACK's, say) played on a
+  copy of the game, so a pole's two-hex jab, a multi-hex foe reached through
+  its footprint, a charge that ends beside a weaker foe and bare hands'
+  grapple all come out as the combat phase will declare them; the live game
+  is untouched and the target is its own figure. Only that figure's plan is
+  played: figures moving later in the turn are where they stand now.
+
+## A classic attack forecast (v0.9.19)
+
+A classic turn menu can say what a blow faces without reading the engine's
+private terms (tarmar-engine #23). `GameState.attack_forecast(attacker,
+target, option)` returns an `AttackForecast` (`classic.combat`) for a weapon
+attack from where both figures stand:
+
+- **To hit.** `needed`, the adjDX `queue_attack` would declare the blow at
+  (the same derivation, `_attack_terms`, now serves both: situational
+  modifiers, the missile or thrown range penalty, the facing bonus, which a
+  missile never takes), with its `to_hit_breakdown`; `dice_count`, 4 against
+  a target dodging a missile or thrown weapon or defending against a melee
+  blow; `hit_chance`, through `Ruleset.classify_roll` over every total
+  (`Ruleset.hit_odds`), so a 3, 4 or 5 always hits and a 16 to 18 always
+  misses; and `hit_multipliers`, the chance of a triple, double or plain hit.
+- **A hit.** `expected_damage`, the average hits a hit takes off the target's
+  ST (`Ruleset.expected_hit_damage`): the weapon's dice, the special totals'
+  multipliers, a pole weapon's `extra_dice` in or against a charge (after the
+  multiplier), a practice bout's halving, then `armour_stops` (armor, a
+  frontal shield, protection, a ready main-gauche's parry), floored at 0 per
+  roll.
+- **The option.** `option` stands in for the attacker's `current_option`
+  where the declaration reads it (a pole's charge terms, a parting shot's
+  single arrow), so a menu can forecast an option not yet chosen. Everything
+  else is the board's; a charge is forecast from where it ends by asking a
+  rehearsed copy of the game (`to_dict`/`from_dict`).
+- **Not covered.** Legality (`queue_attack` checks it), the off-hand
+  main-gauche jab, a shot's random member of a hand-to-hand pile, and a
+  blow that fails to land because its target moved away. A figure with no
+  ready weapon, or off the field, raises `IllegalAction`.
+
+The forecast draws no dice and changes nothing. Its tests compare it, for
+every attack the existing classic boards declare, with the declared
+`PendingAttack` and with `Ruleset.resolve_attack` rolled on every die face.
+`classic.data.DIE_FACES` (6) and `tarmar_engine.dice.sum_distribution` are
+public alongside it.
+
+## Side labels in the classic narrative (v0.9.19)
+
+A side key is an identifier, not a reader's word: a consumer may key a
+teamless figure's side by its own uid, and the narrative printed that key as
+if it were a team's name ("Yaria Hawkridge (743) advances", "The 743 hold the
+field"; tarmar-engine #25). A figure now carries an optional
+`Figure.side_label`, a `classic.figure.SideLabel(name, team)` the consuming
+game supplies; give every figure on a side the same one.
+
+- **A team** (`team=True`): a member reads "Ada (Red)" and the win "🏆 The
+  Red hold the field — victory!".
+- **A side of one** (`team=False`): the label stands for the figure, so it
+  is the figure's own name, or whatever the game calls a nameless one ("Side
+  3"): "Yaria Hawkridge swings…", "🏆 Yaria Hawkridge holds the field —
+  victory!".
+- **No label** (the default): every line reads exactly as before, the side
+  key in the parens and in the win. The tests pin a duel's lines as v0.9.18
+  wrote them.
+
+`narrate_victory(side, label=None)` takes the label directly; the engine's
+own victory line passes the winning side's, `GameState.side_label(side)`,
+which raises `ValueError` when the side's figures disagree (a label on some
+and not others, or two different labels). The label round-trips through
+`to_dict`/`from_dict` (`"side_label"`, absent from an older snapshot, which
+loads unlabelled). A label name that is blank or has spaces at an end raises
+`ValueError`.
+
+## A menu a person can read (v0.9.19)
+
+- **Forecasts as fields** (#22). A menu option that forecasts damage
+  carries the figures as `Candidate.forecast`, a frozen
+  `policy.Forecast`: `hit_chance` (P(hit) for a d20 attack, P(land) for a
+  cast), `damage_expression` (the dice, e.g. `2d6-1`), `armour_stops`,
+  `expected_damage` per landed hit, and for a d20 attack `target_number`,
+  `bonus` and `winning_faces` (of `resolution.DIE_FACES`; `None` for a cast,
+  whose chance comes from 3d6 roll-unders). ATTACK, a CHARGE that reaches,
+  MISSILE (a throw of the only hand weapon carried included, though the AI
+  scores it 0), ONE LAST SHOT, an HTH strike and a damaging cast carry one,
+  and so do the copies made of them (a yielded CHARGE, a borrowing cast, a
+  cast in a grapple or in hand-to-hand); every other option carries `None`,
+  a pushed cast too. `to_payload()` carries it under `"forecast"`
+  (`policy.FORECAST_KEY`) only when present. Each figure is held at the
+  precision the rationale prints, the rationale's working is
+  `Forecast.working()`, and `Forecast.score` is the product of the printed
+  factors, so the prose and the fields cannot disagree. An option's own
+  score may be adjusted after its forecast, as its rationale says: a wounded
+  beast's caution scales it, and the thrown last hand weapon, a borrowing
+  cast and an escalated cast score 0 with their forecasts kept. The HTH
+  strike's line now names its winning faces, as every other d20 forecast's
+  does.
+- **Breaking for callers of the private helpers.** `policy._melee_score`
+  and `policy._missile_score` are gone, and `policy._attack_forecast` and
+  `policy._hth_strike_forecast` now return `(Forecast, rationale)` rather
+  than `(score, rationale)` (the score is `Forecast.score`). tarmar-studio's
+  `battle/turn_menu.py` imported them to widen the menu itself; it moves to
+  the public every-target menu below in the same bump.
+- **Every legal target** (#21). `choose_option(state, actor, magic=...,
+  every_target=True)` returns the same `Decision` with each aimed option
+  also offered at every other enemy it may be aimed at, right after the AI's
+  own target and priced by the same code (score, rationale and
+  `forecast`): ATTACK (j) and ONE LAST SHOT (l) at each adjacent enemy
+  (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
+  each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
+  first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
+  entry condition admits, and each damaging cast at each active enemy,
+  nearest first (a spell has no range), with its pushed, borrowing and
+  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
+  too. `chosen` is the AI's own choice, unchanged, and is one of the
+  candidates (by identity), even where an option aimed elsewhere scores
+  higher. Without the flag the menu is as before. The menu is built twice
+  for it, once for the AI's choice. A player's pick at any target is
+  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
+  is the policy's own test for a MISSILE throw that would leave the figure
+  bare-handed (scored 0 for the AI at every target), for a consumer to read
+  rather than copy.
 
 ## What it sits on
 

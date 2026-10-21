@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from . import hexes, weapons
 from . import resolution as combat
-from .dice import parse_dice_expression
+from .dice import parse_dice_expression, sum_distribution
 from .spells import get_spell
 from .state import BattleState, CombatantState
 
@@ -47,6 +47,22 @@ def hexes_text(distance: int) -> str:
     engine's resolution log say the same thing about reach.
     """
     return f"{distance} hex" if distance == 1 else f"{distance} hexes"
+
+
+def hex_span_text(count: int) -> str:
+    """``"a 9-hex"`` / ``"an 8-hex"`` / ``"an 18-hex"``: a span of hexes with
+    the article its spoken number takes, for "within a 9-hex run".
+
+    The number is read aloud for the article: "an" before eight, eleven,
+    eighteen and the eighties, and before a leading thousands group that
+    reads so (eleven thousand, eight hundred); "a" before every other.
+    """
+    leading = count
+    while leading >= 1000:
+        leading //= 1000
+    vowel_sound = str(leading).startswith("8") or leading in (11, 18)
+    article = "an" if vowel_sound else "a"
+    return f"{article} {count}-hex"
 
 
 def figure_distance(a: CombatantState, b: CombatantState) -> int:
@@ -289,20 +305,6 @@ def attack_numbers(
     )
 
 
-def _sum_distribution(count: int, sides: int) -> dict[int, float]:
-    """Probability of each possible sum of ``count`` dice, by convolution."""
-    distribution = {0: 1.0}
-    for _die in range(count):
-        next_distribution: dict[int, float] = {}
-        for total, probability in distribution.items():
-            for face in range(1, sides + 1):
-                next_distribution[total + face] = (
-                    next_distribution.get(total + face, 0.0) + probability / sides
-                )
-        distribution = next_distribution
-    return distribution
-
-
 def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -> float:
     """Exact E[max(damage − stops, 0)] for a dice expression rolled N times.
 
@@ -315,7 +317,7 @@ def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -
     **twice**"; tarmar-studio #824).
     """
     count, sides, modifier = parse_dice_expression(expression)
-    distribution = _sum_distribution(count * repetitions, sides)
+    distribution = sum_distribution(count * repetitions, sides)
     total_modifier = modifier - stops_applied
     return sum(
         max(0, total + total_modifier) * probability

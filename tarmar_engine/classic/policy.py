@@ -215,13 +215,6 @@ def _same_entry(candidate: Candidate, chosen: Candidate) -> bool:
             and candidate.spell_key == chosen.spell_key)
 
 
-def _figure_by_uid(game: GameState, uid) -> Figure | None:
-    """The figure with this uid, or ``None`` — including for ``None`` itself."""
-    if not uid:
-        return None
-    return next((figure for figure in game.figures if figure.uid == uid), None)
-
-
 def plan_for(game: GameState, figure: Figure, candidate: Candidate) -> ai.Plan:
     """The concrete move ``candidate`` means for ``figure``.
 
@@ -242,7 +235,8 @@ def plan_for(game: GameState, figure: Figure, candidate: Candidate) -> ai.Plan:
         return intent
 
     option = Option(candidate.letter)
-    target = _figure_by_uid(game, candidate.target_id) or ai._pick_target(game, figure)
+    target = (ai._figure_by_uid(game, candidate.target_id)
+              or ai._pick_target(game, figure))
     if target is None:
         return ai.Plan(option)
 

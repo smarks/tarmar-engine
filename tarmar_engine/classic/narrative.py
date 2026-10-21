@@ -16,7 +16,7 @@ from __future__ import annotations
 from .combat import AttackResult, SpellResult
 from .data import WeaponKind
 from .facing import REAR, SIDE
-from .figure import Figure
+from .figure import Figure, SideLabel
 from .options import Option
 from .ruleset import DEAD, KNOCKDOWN, UNCONSCIOUS
 from .spells import SPELLS
@@ -25,8 +25,17 @@ from .spells import SPELLS
 def _name(figure: Figure) -> str:
     """A figure by its characterful name, with its side in parens for clarity:
     "Baylor the Bashful (red)". The side keeps the two teams distinguishable at a
-    glance now that the name no longer carries the class."""
-    return f"{figure.name} ({figure.side})"
+    glance now that the name no longer carries the class.
+
+    The side reads as the figure's :class:`SideLabel` when the consuming game
+    supplied one: a team's name in the parens ("Ada (Red)"), or, for a side of
+    one, the label alone ("Yaria Hawkridge"), so no side key reaches a reader
+    (tarmar-engine #25). Without a label the side key prints, as before.
+    """
+    label = figure.side_label
+    if label is not None and not label.team:
+        return label.name
+    return f"{figure.name} ({figure.side if label is None else label.name})"
 
 
 def _article(word: str) -> str:
@@ -244,9 +253,17 @@ def narrate_shield_rush(attacker: Figure, target: Figure, outcome: str) -> str:
                 f"their feet.")
 
 
-def narrate_victory(side: str) -> str:
-    """The game-ending line: one side is the last left standing."""
-    return f"🏆 The {side} hold the field — victory!"
+def narrate_victory(side: str, label: SideLabel | None = None) -> str:
+    """The game-ending line: one side is the last left standing.
+
+    ``label`` is what a reader calls the winning side (tarmar-engine #25): a
+    team's win reads "The Red hold the field", a side of one's "Yaria
+    Hawkridge holds the field". Without one the side key prints, as before.
+    """
+    if label is not None and not label.team:
+        return f"🏆 {label.name} holds the field — victory!"
+    team = side if label is None else label.name
+    return f"🏆 The {team} hold the field — victory!"
 
 
 def narrate_dropout(figure: Figure) -> str:

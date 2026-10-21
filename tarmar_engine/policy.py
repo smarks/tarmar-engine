@@ -49,7 +49,8 @@ the step it expects. A player may give any option
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from typing import TypeVar
 
 from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
@@ -60,6 +61,7 @@ from .magic import (
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
+    CastingFailureRules,
     ChannelUnclassifiedSpell,
     CounterspellRules,
     MagicRules,
@@ -69,14 +71,19 @@ from .magic import (
     attribute_score,
     bound_lifted,
     casting_mana,
+    casting_success_ceiling,
 )
 from .reactions import TarmarReactions
 from .spells import Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
 
-#: How a menu line says a bound was passed on a Game Master's lifting of it
-#: (tarmar-studio #37).
-PAST_BY_RULING = "by a Game Master's ruling"
+#: Whatever an option is aimed with (tarmar-engine #21): its targets, or its
+#: candidates at them.
+Aimed = TypeVar("Aimed")
+
+#: The key a candidate's forecast is carried under in its payload
+#: (:class:`Forecast`, tarmar-engine #22).
+FORECAST_KEY = "forecast"
 
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
@@ -145,6 +152,107 @@ def score_text(value: float) -> str:
     return f"{value:.{SCORE_PRECISION}f}"
 
 
+@dataclass(frozen=True)
+class Forecast:
+    """What an option expects to do to its target, as the figures its score
+    and rationale are built from (tarmar-engine #22).
+
+    Filled for an attack (ATTACK, a CHARGE that reaches, MISSILE, ONE LAST
+    SHOT, a hand-to-hand strike) and for a damaging cast; ``None`` on every
+    other option. Each figure is held at :data:`SCORE_PRECISION`, as the
+    rationale prints it: the rationale's working is :meth:`working`, and the
+    forecast's own score, :attr:`score`, is the product of the two factors it
+    prints. A caller reads the figures here rather than out of the prose.
+
+    The forecast is what one attempt would do. The option's score may be
+    adjusted after it, as its rationale then says: a wounded beast's caution
+    scales it, and a throw of the only hand weapon carried, a borrowing cast
+    and a cast pressing a countered spell again (:func:`_mark_escalations`)
+    are scored :data:`PLAYER_ONLY_SCORE` with their forecasts kept.
+    """
+
+    #: The chance the option lands: P(hit) for a d20 attack; P(land) for a
+    #: cast, its casting roll times, for a targeted spell, its aim roll.
+    hit_chance: float
+    #: The dice one landed hit rolls, e.g. ``"2d6-1"``.
+    damage_expression: str
+    #: The armour stops that come off a landed hit's damage.
+    armour_stops: int
+    #: The expected damage of one landed hit, after the armour stops.
+    expected_damage: float
+    #: A d20 attack's Target Number, the bonus its d20 gets, and how many of
+    #: the die's faces (``resolution.DIE_FACES``) hit. ``None`` for a cast,
+    #: whose chance comes from 3d6 roll-unders the rationale names.
+    target_number: int | None = None
+    bonus: int | None = None
+    winning_faces: int | None = None
+
+    @property
+    def score(self) -> float:
+        """P(land) times the expected damage, as :func:`product_of` takes it."""
+        return product_of(self.hit_chance, self.expected_damage)
+
+    def working(self, aimed_at: str = "") -> str:
+        """The forecast as the rationale prints it, ending in its score.
+
+        A d20 attack: "d20 +3 vs TN 15 — P(hit) 0.450 (9 of 20 faces) x
+        6.350 expected damage (2d6-1 less 0 armour stops) = 2.857". A cast:
+        "P(land) 0.375 x 3.500 expected damage on Foe (1d6 less 0 armour
+        stops) = 1.312", ``aimed_at`` naming whom (" on Foe").
+        """
+        damage = (
+            f"x {score_text(self.expected_damage)} expected damage{aimed_at} "
+            f"({self.damage_expression} less {self.armour_stops} armour stops) "
+            f"= {score_text(self.score)}"
+        )
+        if (
+            self.target_number is None
+            or self.bonus is None
+            or self.winning_faces is None
+        ):
+            return f"P(land) {score_text(self.hit_chance)} {damage}"
+        return (
+            f"d20 {self.bonus:+d} vs TN {self.target_number} "
+            f"— P(hit) {score_text(self.hit_chance)} "
+            f"({self.winning_faces} of {combat.DIE_FACES} faces) {damage}"
+        )
+
+    def to_payload(self) -> dict:
+        """The forecast's figures by field name, ``None`` where they do not
+        apply (a cast's d20 figures)."""
+        return asdict(self)
+
+
+def _d20_forecast(
+    numbers: combat_math.AttackNumbers,
+    damage_expression: str,
+    armour_stops: int,
+    expected_damage: float,
+) -> Forecast:
+    """The forecast of a d20 attack made with ``numbers``.
+
+    Args:
+        numbers: The attack's Target Number and bonus, as
+            :func:`.combat_math.attack_numbers` gives them.
+        damage_expression: The dice a hit rolls.
+        armour_stops: The stops a hit's damage loses.
+        expected_damage: The expected damage of one hit after them.
+
+    Returns:
+        The forecast, the winning faces counted from the exact P(hit).
+    """
+    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
+    return Forecast(
+        hit_chance=round_score(probability),
+        damage_expression=damage_expression,
+        armour_stops=armour_stops,
+        expected_damage=round_score(expected_damage),
+        target_number=numbers.target_number,
+        bonus=numbers.bonus,
+        winning_faces=round(probability * combat.DIE_FACES),
+    )
+
+
 @dataclass
 class Candidate:
     """One scored action option."""
@@ -184,6 +292,11 @@ class Candidate:
     #: same answer the engine's event payload gives when it runs, so a caller
     #: reads it here rather than recomputing it. Empty for every other option.
     lifted_bounds: tuple[str, ...] = ()
+    #: What the option expects to do to its target (tarmar-engine #22), the
+    #: figures its rationale prints, or ``None`` for an option with no
+    #: forecast (DEFEND, DODGE, a move, a grapple, a buff or a heal, a pushed
+    #: cast).
+    forecast: Forecast | None = None
 
     def to_payload(self) -> dict:
         payload = {
@@ -219,6 +332,9 @@ class Candidate:
         # And for the bounds passed by ruling, only where there are some.
         if self.lifted_bounds:
             payload[LIFTED_BOUNDS_KEY] = list(self.lifted_bounds)
+        # And for a forecast, only on an option that has one.
+        if self.forecast is not None:
+            payload[FORECAST_KEY] = self.forecast.to_payload()
         return payload
 
 
@@ -243,6 +359,29 @@ def three_d6_at_most(target: int) -> float:
                 if first + second + third <= target:
                     outcomes += 1
     return outcomes / 216
+
+
+def cast_success_chance(
+    attribute: int, casting_failure: CastingFailureRules | None
+) -> float:
+    """Exact chance a casting roll succeeds, as the engine judges it.
+
+    3d6 at or under the attribute and, with casting failure rules injected,
+    under their fumble floor (:func:`.magic.casting_success_ceiling`). The
+    AI's spell choice is scored by it, and a caller showing a spell's odds
+    calls it with the same rules to show the same number (tarmar-engine #47).
+
+    Args:
+        attribute: The effective attribute the roll is made under: the
+            engine rolls under the attribute less the injury band and any
+            owed off-balance penalty. The policy's own menu still passes the
+            raw attribute (tarmar-engine #56), so its estimate matches the
+            engine's verdict only for an unhurt caster with no off-balance
+            owed.
+        casting_failure: The injected casting failure rules
+            (``MagicRules.casting_failure``), or ``None``: the attribute alone.
+    """
+    return three_d6_at_most(casting_success_ceiling(attribute, casting_failure))
 
 
 def four_d6_at_most(target: int) -> float:
@@ -328,29 +467,60 @@ def nearest_enemy(state: BattleState, actor: CombatantState) -> CombatantState |
 
 
 def _approaches(
-    state: BattleState, actor: CombatantState, gait: str
+    state: BattleState, actor: CombatantState, option_key: str
 ) -> Iterator[tuple[CombatantState, int, movement.Approach]]:
     """Each enemy, closest first, with its distance now and where the
-    engine's own approach at ``gait`` would leave the actor
-    (:func:`movement.approach_route`), worked out only as far as asked.
+    engine's own move for ``option_key`` would leave the actor
+    (:func:`movement.default_approach`), worked out only as far as asked.
 
     MOVE and CHARGE read past a nearest enemy no clear path gets nearer to,
     so a blocked figure goes for one it can reach rather than standing
     (tarmar-engine #37).
     """
-    allowance = movement.gait_allowance(actor, gait)
     for enemy in enemies_by_distance(state, actor):
         yield (
             enemy,
             combat_math.figure_distance(actor, enemy),
-            movement.approach_route(state, actor, enemy, allowance),
+            movement.default_approach(state, actor, option_key, enemy),
         )
+
+
+def _nearable_enemy(
+    state: BattleState, actor: CombatantState, option_key: str
+) -> tuple[CombatantState, int] | None:
+    """The nearest enemy the engine's own move for ``option_key`` gets the
+    actor nearer to, with its distance now, or ``None`` when no path gets
+    nearer to any.
+
+    MOVE and SPRINT close on this enemy rather than on a nearer one the
+    engine's own approach could not near, where the figure would stand
+    (tarmar-engine #37, #51).
+    """
+    return next(
+        (
+            (other, now)
+            for other, now, approach in _approaches(state, actor, option_key)
+            if approach.distance < now
+        ),
+        None,
+    )
+
+
+def _passed_over_note(
+    nearest: CombatantState, distance: int, target: CombatantState
+) -> str:
+    """How a MOVE or SPRINT names the nearer enemy it reads past for
+    ``target`` (:func:`_nearable_enemy`), or nothing when it goes for the
+    nearest."""
+    if target is nearest:
+        return ""
+    return f" ({nearest.name}, {distance} hexes off, cannot be neared)"
 
 
 def _attack_forecast(
     actor: CombatantState, defender: CombatantState, *, ranged: bool
-) -> tuple[float, str]:
-    """Score one prospective swing or shot, showing every input it used.
+) -> tuple[Forecast, str]:
+    """Forecast one prospective swing or shot, showing every input it used.
 
     The rationale names the four numbers a reader would need to check the
     forecast by hand and could not previously see (tarmar-studio #301): the
@@ -362,38 +532,72 @@ def _attack_forecast(
 
     Melee and missile share this one function: they differed only in which
     numbers they printed, which is exactly how melee came to hide the
-    distance that missile showed.
+    distance that missile showed. The figures are the :class:`Forecast`
+    returned beside the rationale, which prints them (tarmar-engine #22).
     """
     numbers = combat_math.attack_numbers(actor, defender, ranged=ranged)
-    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
-    damage = combat_math.expected_attack_damage(actor, defender)
-    score = product_of(probability, damage)
     stops = combat.applied_armour_stops(
         defender.stops, actor.weapon.weapon_class, defender.armour_tier
     )
-    winning_faces = round(probability * combat.DIE_FACES)
+    forecast = _d20_forecast(
+        numbers,
+        actor.weapon.damage,
+        stops,
+        combat_math.expected_attack_damage(actor, defender),
+    )
     range_note = f" (range {numbers.range_penalty:+d})" if ranged else ""
     reach = combat_math.hexes_text(numbers.distance)
-    rationale = (
-        f"{actor.weapon.name} at {reach}{range_note}, "
-        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
-        f"— P(hit) {score_text(probability)} "
-        f"({winning_faces} of {combat.DIE_FACES} faces) "
-        f"x {score_text(damage)} expected damage "
-        f"({actor.weapon.damage} less {stops} armour stops) "
-        f"= {score_text(score)}"
+    return forecast, f"{actor.weapon.name} at {reach}{range_note}, {forecast.working()}"
+
+
+def _aimed_at(targets: list[Aimed], every_target: bool) -> list[Aimed]:
+    """The first of ``targets``, the AI's, or with ``every_target`` all of
+    them, the AI's first (tarmar-engine #21)."""
+    return targets if every_target else targets[:1]
+
+
+def _best_first(aimed: list[Candidate], every_target: bool) -> list[Candidate]:
+    """The best-scoring of one option's candidates at its targets (the first
+    on a tie), the AI's pick, then with ``every_target`` the rest in their
+    order (tarmar-engine #21)."""
+    best = max(aimed, key=lambda candidate: candidate.score)
+    if not every_target:
+        return [best]
+    return [best, *(candidate for candidate in aimed if candidate is not best)]
+
+
+def _charge_candidate(
+    actor: CombatantState,
+    target: CombatantState,
+    passed_over: CombatantState | None,
+    hurt: bool,
+    letter: str,
+) -> Candidate:
+    """A CHARGE (b) at an enemy its jog ends beside, priced as the swing it
+    ends in; ``passed_over`` is the nearer enemy it cannot reach, if any."""
+    forecast, rationale = _attack_forecast(actor, target, ranged=False)
+    if passed_over is not None:
+        rationale = f"{passed_over.name} is nearer but out of charge reach; {rationale}"
+    score, rationale = _beast_caution(actor, hurt, forecast.score, rationale)
+    return _charge(letter, target, score, rationale, forecast)
+
+
+def _charge(
+    letter: str,
+    target: CombatantState,
+    score: float,
+    rationale: str,
+    forecast: Forecast | None = None,
+) -> Candidate:
+    """A CHARGE (b) candidate at ``target``, reaching it or not."""
+    return Candidate(
+        letter,
+        actions.option_name(letter),
+        score,
+        f"Charge {target.name}: {rationale}",
+        target_id=target.combatant_id,
+        forecast=forecast,
     )
-    return score, rationale
-
-
-def _melee_score(actor: CombatantState, defender: CombatantState) -> tuple[float, str]:
-    return _attack_forecast(actor, defender, ranged=False)
-
-
-def _missile_score(
-    actor: CombatantState, defender: CombatantState
-) -> tuple[float, str]:
-    return _attack_forecast(actor, defender, ranged=True)
 
 
 def _cast_candidates(
@@ -401,14 +605,23 @@ def _cast_candidates(
     actor: CombatantState,
     letter: str,
     beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
     ``beyond_purse`` lists the spells the actor cannot afford too, for the
     borrowing variants to be built from (:func:`_borrow_candidates`).
+    ``casting_failure`` is the injected casting failure rules, whose fumble
+    floor bounds the chance of a cast (:func:`cast_success_chance`).
+
+    The AI aims a damaging spell at the nearest enemy. ``every_target``
+    offers it at every active enemy as well, the nearest first, each priced
+    against its own target (tarmar-engine #21): a spell has no range, and the
+    engine lands a cast on whichever active enemy it names.
     """
     candidates = []
-    enemy = nearest_enemy(state, actor)
+    aimed_at = _aimed_at(enemies_by_distance(state, actor), every_target)
     for key in actor.spells:
         spell = get_spell(key)
         if spell.level > actor.mana and not beyond_purse:
@@ -416,10 +629,16 @@ def _cast_candidates(
         if spell.continuing and key in actor.active_spells:
             continue  # already up; renewal happens in phase 2
         attribute = actor.intelligence if spell.attribute == "INT" else actor.wisdom
-        cast_probability = three_d6_at_most(attribute)
+        cast_probability = cast_success_chance(attribute, casting_failure)
         attribute_name = spell.attribute
+        floor_note = ""
+        if (
+            casting_failure is not None
+            and casting_success_ceiling(attribute, casting_failure) < attribute
+        ):
+            floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
         cast_note = (
-            f"3d6 ≤ {attribute_name} {attribute} — P(cast) "
+            f"3d6 ≤ {attribute_name} {attribute}{floor_note} — P(cast) "
             f"{score_text(cast_probability)}"
         )
         if spell.heals:
@@ -450,40 +669,46 @@ def _cast_candidates(
                 )
             )
             continue
-        if enemy is None:
-            continue
-        stops = 0 if spell.ignores_armour else enemy.stops
-        damage = combat_math.expected_damage(spell.damage, stops)
         aim_note = ""
         probability = cast_probability
         if spell.targeted:
             aim_probability = three_d6_at_most(actor.dexterity)
-            probability = round_score(probability * aim_probability)
+            probability = probability * aim_probability
             aim_note = (
                 f" x P(aim) {score_text(aim_probability)} "
                 f"(3d6 ≤ DEX {actor.dexterity})"
             )
-        value = product_of(probability, damage)
-        rationale = (
-            f"{cast_note}{aim_note} — P(land) {score_text(probability)} "
-            f"x {score_text(damage)} expected damage on {enemy.name} "
-            f"({spell.damage} less {stops} armour stops) = {score_text(value)}"
-        )
-        candidates.append(
-            Candidate(
-                letter,
-                f"CAST SPELL {spell.name}",
-                value,
-                rationale,
-                target_id=enemy.combatant_id,
-                spell_key=key,
+        for enemy in aimed_at:
+            stops = 0 if spell.ignores_armour else enemy.stops
+            forecast = Forecast(
+                hit_chance=round_score(probability),
+                damage_expression=spell.damage,
+                armour_stops=stops,
+                expected_damage=round_score(
+                    combat_math.expected_damage(spell.damage, stops)
+                ),
             )
-        )
+            working = forecast.working(f" on {enemy.name}")
+            candidates.append(
+                Candidate(
+                    letter,
+                    f"CAST SPELL {spell.name}",
+                    forecast.score,
+                    f"{cast_note}{aim_note} — {working}",
+                    target_id=enemy.combatant_id,
+                    spell_key=key,
+                    forecast=forecast,
+                )
+            )
     return candidates
 
 
 def _grappled_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
@@ -540,12 +765,18 @@ def _grappled_decision(
                 target_id=grappler_id,
             )
         )
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(
+        state, actor, beyond_purse, casting_failure, every_target
+    )
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
 def _mastery_three_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
     return [
@@ -557,14 +788,21 @@ def _mastery_three_casts(
             f"({GRAPPLE_TACTICS_RATIONALE}; {candidate.rationale})",
             target_id=candidate.target_id,
             spell_key=candidate.spell_key,
+            forecast=candidate.forecast,
         )
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure, every_target
+        )
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
 
 
 def _grappler_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
@@ -600,7 +838,9 @@ def _grappler_decision(
     ]
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(
+        state, actor, beyond_purse, casting_failure, every_target
+    )
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
@@ -690,7 +930,11 @@ def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantSt
 
 
 def _hth_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """Casts the HTH table allows: "If hands free or no-gesture spell".
 
@@ -701,7 +945,9 @@ def _hth_casts(
     hands_free = actor.weapon.item_id == ""
     return [
         candidate
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure, every_target
+        )
         if hands_free
         or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
     ]
@@ -725,16 +971,16 @@ def _hth_disengage_candidate(
     of two strikes' worth is never more than one.
     """
     partner = partners[0]
-    injury = TarmarReactions().injury_penalty(actor)
-    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    injury, off_balance = _action_roll_penalties(actor)
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
     held = 1 - probability
-    strike, _strike_rationale = _hth_strike_forecast(state, actor, partner)
+    strike = _hth_strike_forecast(state, actor, partner)[0].score
     if actor.weapon.item_id:
-        free, _free_rationale = _attack_forecast(
+        weapon_forecast, _rationale = _attack_forecast(
             actor, partner, ranged=actor.weapon.is_missile
         )
+        free = weapon_forecast.score
         once_free = f"the {actor.weapon.name} {score_text(free)}"
     else:
         free = 0.0
@@ -761,8 +1007,8 @@ def _hth_disengage_candidate(
 
 def _hth_strike_forecast(
     state: BattleState, actor: CombatantState, defender: CombatantState
-) -> tuple[float, str]:
-    """Score a standalone HTH strike (t): bare hands or a dagger, +4."""
+) -> tuple[Forecast, str]:
+    """Forecast a standalone HTH strike (t): bare hands or a dagger, +4."""
     dagger = actor.weapon.hth_usable
     numbers = combat_math.attack_numbers(
         actor,
@@ -772,7 +1018,6 @@ def _hth_strike_forecast(
         extra_situational=hexes.HTH_TO_HIT_BONUS,
         ignore_attacker_skill=not dagger,
     )
-    probability = combat.hit_probability(numbers.target_number, numbers.bonus)
     damage_expression = (
         actor.weapon.damage if dagger else combat_math.bare_handed_expression(actor)
     )
@@ -781,22 +1026,23 @@ def _hth_strike_forecast(
         actor.weapon.weapon_class if dagger else "Striking",
         defender.armour_tier,
     )
-    damage = combat_math.expected_damage(damage_expression, stops)
-    score = product_of(probability, damage)
+    forecast = _d20_forecast(
+        numbers,
+        damage_expression,
+        stops,
+        combat_math.expected_damage(damage_expression, stops),
+    )
     reason = combat_math.hth_entry_reason(state, actor, defender)
     held = f"the {actor.weapon.name}" if dagger else "bare hands"
-    rationale = (
-        f"in close ({reason}) with {held}, "
-        f"d20 {numbers.bonus:+d} vs TN {numbers.target_number} "
-        f"— P(hit) {score_text(probability)} x {score_text(damage)} expected "
-        f"damage ({damage_expression} less {stops} armour stops) "
-        f"= {score_text(score)}"
-    )
-    return score, rationale
+    return forecast, f"in close ({reason}) with {held}, {forecast.working()}"
 
 
 def choose_option(
-    state: BattleState, actor: CombatantState, magic: MagicRules | None = None
+    state: BattleState,
+    actor: CombatantState,
+    magic: MagicRules | None = None,
+    *,
+    every_target: bool = False,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -821,8 +1067,26 @@ def choose_option(
     ``functools.partial(choose_option, magic=rules)``: the engine refuses a
     cast past the Channel, so a menu built without them can offer one it
     will not run.
+
+    ``every_target`` is the menu a person aims (tarmar-engine #21). The AI
+    aims each attack and each damaging cast at one enemy; this menu also
+    offers it at every other enemy the option may legally be aimed at, each
+    priced and explained by the code that prices the AI's own (its score,
+    rationale and :attr:`Candidate.forecast`), right after the AI's own
+    target: ATTACK (j) and ONE LAST SHOT (l) at each adjacent enemy, CHARGE
+    (b, and its yielded variant) at each enemy its jog ends beside, MISSILE
+    (f) at each active enemy, an HTH strike (t) and ATTEMPT HTH (o) at each
+    enemy an entry condition admits, and a damaging cast at each active
+    enemy, with its pushed, borrowing and escalated variants. ``chosen`` is
+    the AI's own choice, unchanged, and is one of the candidates. A figure
+    in a grapple keeps its fixed menu, but for its casts.
     """
-    decision = _score_options(state, actor)
+    decision = _score_options(
+        state,
+        actor,
+        casting_failure=None if magic is None else magic.casting_failure,
+        every_target=every_target,
+    )
     if magic is not None and magic.channel is not None:
         decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
@@ -831,7 +1095,7 @@ def choose_option(
         )
     if magic is not None and magic.borrowing is not None:
         decision.candidates.extend(
-            _borrow_candidates(state, actor, magic, magic.borrowing)
+            _borrow_candidates(state, actor, magic, magic.borrowing, every_target)
         )
     if magic is not None and magic.counterspell is not None:
         _mark_escalations(actor, decision)
@@ -852,7 +1116,31 @@ def choose_option(
         decision.candidates.extend(
             _counter_candidates(state, actor, magic.counterspell)
         )
+    if every_target:
+        # The AI's choice is made on its own menu, so an option it aims
+        # elsewhere can never displace it, whatever it scores.
+        decision.chosen = _the_ais_choice(
+            decision.candidates, choose_option(state, actor, magic).chosen
+        )
     return decision
+
+
+def _the_ais_choice(candidates: list[Candidate], chosen: Candidate) -> Candidate:
+    """The candidate on the every-target menu that is the AI's own choice.
+
+    Both menus are built by the same code, so the AI's choice is on the wider
+    one, field for field, ahead of every option aimed elsewhere.
+
+    Raises:
+        LookupError: the wider menu lacks it, which would be a policy bug.
+    """
+    for candidate in candidates:
+        if candidate == chosen:
+            return candidate
+    raise LookupError(
+        f"the every-target menu lacks the AI's choice {chosen.letter} "
+        f"at {chosen.target_id}"
+    )
 
 
 def _is_mage(actor: CombatantState) -> bool:
@@ -920,7 +1208,7 @@ def _counter_candidates(
         return []
     bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
-    injury, _off_balance = _casting_penalties(actor)
+    injury, _off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
     for caster in state.enemies_of(actor):
         if not _is_mage(caster):
@@ -1018,8 +1306,8 @@ def _anchor_candidates(
 def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
     """An anchor roll as the menu prints it: less the injury band and an
     owed off-balance penalty, as the engine takes them
-    (:func:`_casting_penalties`)."""
-    injury, off_balance = _casting_penalties(actor)
+    (:func:`_action_roll_penalties`)."""
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, rule.attribute)
     target = attribute - injury - off_balance
     return (
@@ -1034,15 +1322,15 @@ def _within_channel(
     """The decision less every cast the actor's Channel does not allow.
 
     A cast is withheld when its spell costs more than the actor's Channel
-    for it (unless a Game Master has lifted Channel for the actor:
-    :meth:`.magic.ChannelRules.bound_for`; the cast is then kept, carries
-    :data:`~.magic.CHANNEL` in :attr:`Candidate.lifted_bounds` and its
-    rationale says it passes the Channel by ruling), or when the Channel
-    rules give the spell no kind of magic (the engine would refuse either), and
-    :attr:`Decision.withheld` says why, once per spell. The withheld casts
-    leave the player's menu and the AI's choice alike. When the AI had
-    chosen one, it takes the best of what remains by the rule it chose with
-    (the highest score, the first listed on a tie).
+    for it (:meth:`.magic.MagicRules.cast_within_channel`, the engine's own
+    test; unless a Game Master has lifted Channel for the actor: the cast is
+    then kept, carries :data:`~.magic.CHANNEL` in
+    :attr:`Candidate.lifted_bounds` and its rationale names the Channel it
+    passes), or when the Channel rules give the spell no kind of magic (the
+    engine would refuse either), and :attr:`Decision.withheld` says why, once
+    per spell. The withheld casts leave the player's menu and the AI's choice
+    alike. When the AI had chosen one, it takes the best of what remains by
+    the rule it chose with (the highest score, the first listed on a tie).
 
     The MOVE fallback for a menu left empty is defensive: every menu
     :func:`_score_options` builds holds an option that is not a cast (DODGE,
@@ -1063,15 +1351,15 @@ def _within_channel(
         spell = get_spell(candidate.spell_key)
         try:
             actor_channel = channel.channel_for(actor, spell)
-            limit = channel.bound_for(actor, spell)
+            within = magic.cast_within_channel(actor, spell)
         except ChannelUnclassifiedSpell as unclassified:
             withheld.setdefault(spell.key, f"{spell.name} withheld: {unclassified}")
             continue
-        if limit is not None and spell.level > limit:
+        if not within:
             withheld.setdefault(
                 spell.key,
                 f"{spell.name} withheld: it costs {spell.level} mana, past "
-                f"{actor.name}'s Channel {limit} for it",
+                f"{actor.name}'s Channel {actor_channel} for it",
             )
             continue
         candidate.lifted_bounds = magic.lifted_bounds_passed(actor, spell)
@@ -1160,14 +1448,15 @@ def _push_note(
     """A pushed cast's Control Roll as the menu prints it.
 
     The target is the one the engine will roll against: less the injury
-    band and an owed off-balance penalty (:func:`_casting_penalties`).
+    band and an owed off-balance penalty (:func:`_action_roll_penalties`).
     ``channel`` is the actor's Channel for the spell (``None`` with no
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
     lifted_bounds_passed`), which only a Game Master's lifting allows; each
-    says so (:data:`PAST_BY_RULING`).
+    is named with its value. Saying that a ruling allowed it is the caller's,
+    from :attr:`Candidate.lifted_bounds` (tarmar-engine #55).
     """
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
     invested = push.mana_invested(spell, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
@@ -1176,7 +1465,7 @@ def _push_note(
     if channel is not None:
         bound_notes.append(_channel_note(channel, passed))
     if PUSH_CAP in passed:
-        bound_notes.append(f"past the push cap {push.max_push_mana} {PAST_BY_RULING}")
+        bound_notes.append(f"past the push cap {push.max_push_mana}")
     channel_note = "".join(f", {note}" for note in bound_notes)
     return (
         f"Push {extra_mana} extra mana ({total} "
@@ -1189,11 +1478,13 @@ def _push_note(
 
 def _channel_note(channel: int, passed: tuple[str, ...]) -> str:
     """The actor's Channel as a menu line names it for a casting that goes
-    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`): past
-    it only on a Game Master's lifting (:data:`PAST_BY_RULING`)."""
+    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`). Past it
+    only on a Game Master's lifting, which the line leaves to the caller to
+    say from :attr:`Candidate.lifted_bounds`, in its own words
+    (tarmar-engine #55)."""
     if CHANNEL not in passed:
         return f"Channel {channel}"
-    return f"past Channel {channel} {PAST_BY_RULING}"
+    return f"past Channel {channel}"
 
 
 def _borrow_candidates(
@@ -1201,6 +1492,7 @@ def _borrow_candidates(
     actor: CombatantState,
     magic: MagicRules,
     borrowing: BorrowingRules,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """The borrowing variant of each cast, and each pushed cast, the actor
     cannot afford.
@@ -1227,7 +1519,13 @@ def _borrow_candidates(
         return []
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
-    menu = _score_options(state, actor, beyond_purse=True)
+    menu = _score_options(
+        state,
+        actor,
+        beyond_purse=True,
+        casting_failure=magic.casting_failure,
+        every_target=every_target,
+    )
     menu = _within_channel(actor, menu, magic)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
     cap_lifted = bound_lifted(actor, PUSH_CAP)
@@ -1252,6 +1550,7 @@ def _borrow_candidates(
                     spell_key=candidate.spell_key,
                     borrow=True,
                     lifted_bounds=candidate.lifted_bounds,
+                    forecast=candidate.forecast,
                 )
             )
         if magic.push is None:
@@ -1286,11 +1585,11 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
 
     The target is the one the engine will roll against, before any refund
     pays some of the debt back: less the injury band and an owed off-balance
-    penalty (:func:`_casting_penalties`).
+    penalty (:func:`_action_roll_penalties`).
     """
     shortfall = cost - actor.mana
     owed = actor.debt + shortfall
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     target = borrowing.debt_target(actor, owed) - injury - off_balance
     return (
         f"Borrow {shortfall} mana ({cost} in all, {actor.mana} in the pool, "
@@ -1301,17 +1600,25 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
     )
 
 
-def _casting_penalties(actor: CombatantState) -> tuple[int, int]:
-    """The injury band and owed off-balance penalty the magic rolls take, as
-    the engine takes them: the Tarmar profile's band, the only one the
-    injected magic rules run under."""
+def _action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
+    """The injury band and owed off-balance penalty a roll the figure makes as
+    its action takes, as the engine's ``_action_roll_penalty`` takes them:
+    the Tarmar profile's band, the only one this policy and the injected
+    magic rules run under. Read by the hand-to-hand disengage forecast, the
+    anchor, Control Roll and debt notes, and (the injury half only, as the
+    engine's defender side of a counter takes it) the counter candidates
+    (tarmar-engine #43)."""
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     return injury, off_balance
 
 
 def _score_options(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
+    every_target: bool = False,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -1325,12 +1632,21 @@ def _score_options(
 
     ``beyond_purse`` lists every cast the situation allows, affordable or
     not: the menu :func:`_borrow_candidates` builds its variants from. The
-    AI's own menu never sets it.
+    AI's own menu never sets it. ``casting_failure`` is the injected casting
+    failure rules every cast's chance is estimated under.
+
+    ``every_target`` adds each aimed option at every other legal target
+    (:func:`choose_option`), after the AI's own; the choice made here is
+    then not the AI's, and :func:`choose_option` replaces it.
     """
     if actor.grappled_by is not None:
-        return _grappled_decision(state, actor, beyond_purse)
+        return _grappled_decision(
+            state, actor, beyond_purse, casting_failure, every_target
+        )
     if actor.grappling is not None:
-        return _grappler_decision(state, actor, beyond_purse)
+        return _grappler_decision(
+            state, actor, beyond_purse, casting_failure, every_target
+        )
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
     adjacent_enemies = [
@@ -1410,29 +1726,15 @@ def _score_options(
                 distance = combat_math.figure_distance(actor, enemy)
                 # The jog the engine would charge at: a figure barred from
                 # jogging charges at its walk (tarmar-engine #17).
-                jog = movement.gait_allowance(actor, "jog")
-                run_gait = movement.MOVEMENT_GAITS["a"]
-                run = movement.gait_allowance(actor, run_gait)
+                jog = movement.option_allowance(actor, "b")
+                run = movement.option_allowance(actor, letter)
                 # The enemy to close on: the nearest one a clear path gets
                 # nearer to, not a nearer one it cannot (#37).
                 nearable = None
                 if distance > 1:
-                    nearable = next(
-                        (
-                            (other, now)
-                            for other, now, approach in _approaches(
-                                state, actor, run_gait
-                            )
-                            if approach.distance < now
-                        ),
-                        None,
-                    )
+                    nearable = _nearable_enemy(state, actor, letter)
                 target, target_distance = nearable or (enemy, distance)
-                passed_over = (
-                    f" ({enemy.name}, {distance} hexes off, cannot be neared)"
-                    if target is not enemy
-                    else ""
-                )
+                passed_over = _passed_over_note(enemy, distance, target)
                 distance = target_distance
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
@@ -1444,19 +1746,19 @@ def _score_options(
                     # make gets no nearer, so it would stand still (#37).
                     score = 0.0
                     band = (
-                        f"no clear path within a {run}-hex run gets nearer "
-                        "to any enemy, so moving gains nothing"
+                        f"no clear path within {combat_math.hex_span_text(run)} run "
+                        "gets nearer to any enemy, so moving gains nothing"
                     )
                 elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
-                        f"within a {jog}-hex jog, so half of "
+                        f"within {combat_math.hex_span_text(jog)} jog, so half of "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 else:
                     score = round_score(MOVE_BASE_SCORE)
                     band = (
-                        f"beyond a {jog}-hex jog, so the full "
+                        f"beyond {combat_math.hex_span_text(jog)} jog, so the full "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 candidates.append(
@@ -1471,21 +1773,20 @@ def _score_options(
                 )
         elif letter == "b" and enemy is not None:
             distance = combat_math.figure_distance(actor, enemy)
-            jog_gait = movement.MOVEMENT_GAITS["b"]
-            jog = movement.gait_allowance(actor, jog_gait)
+            jog = movement.option_allowance(actor, letter)
             # The charge's reach is where the engine's own approach ends, so a
             # figure blocked short of its target is not sent at it turn after
             # turn to fall short; it charges the nearest enemy it can reach
             # (#37).
-            target = enemy if distance <= 1 else None
+            target = enemy if distance <= movement.CHARGE_REACH else None
             arrival = distance
             if target is None:
                 for index, (other, _now, approach) in enumerate(
-                    _approaches(state, actor, jog_gait)
+                    _approaches(state, actor, letter)
                 ):
                     if index == 0:
                         arrival = approach.distance
-                    if approach.distance <= 1:
+                    if movement.charge_reaches(approach):
                         target = other
                         break
             if target is None:
@@ -1493,26 +1794,31 @@ def _score_options(
                 score = 0.0
                 rationale = (
                     f"{enemy.name} is {combat_math.hexes_text(distance)} away and "
-                    f"a {jog}-hex jog along a clear path ends "
+                    f"{combat_math.hex_span_text(jog)} jog along a clear path ends "
                     f"{combat_math.hexes_text(arrival)} from it, out of charge "
                     f"reach, as is every other enemy = {score_text(score)}"
                 )
+                score, rationale = _beast_caution(actor, hurt, score, rationale)
+                candidates.append(_charge(letter, target, score, rationale))
             else:
-                score, rationale = _melee_score(actor, target)
-                if target is not enemy:
-                    rationale = (
-                        f"{enemy.name} is nearer but out of charge reach; {rationale}"
-                    )
-            score, rationale = _beast_caution(actor, hurt, score, rationale)
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Charge {target.name}: {rationale}",
-                    target_id=target.combatant_id,
+                # The nearest enemy, when the charge passes it over.
+                passed_over = None if target is enemy else enemy
+                candidates.append(
+                    _charge_candidate(actor, target, passed_over, hurt, letter)
                 )
-            )
+                if every_target:
+                    # Every other enemy the jog ends beside, nearest first, by
+                    # the reach test the AI's own pick above makes
+                    # (movement.charge_reaches, #50).
+                    candidates.extend(
+                        _charge_candidate(actor, other, passed_over, hurt, letter)
+                        for other, now, approach in _approaches(state, actor, letter)
+                        if other is not target
+                        and (
+                            now <= movement.CHARGE_REACH
+                            or movement.charge_reaches(approach)
+                        )
+                    )
         elif letter == "c":
             missile_threats = [
                 other for other in state.enemies_of(actor) if other.weapon.is_missile
@@ -1532,9 +1838,8 @@ def _score_options(
             # threat no clear jog gets nearer to is dodged standing (#37).
             movement_note = ""
             if closing_on is not None:
-                jog = movement.gait_allowance(actor, movement.MOVEMENT_GAITS["c"])
-                nearer = movement.approach_route(
-                    state, actor, closing_on, jog
+                nearer = movement.default_approach(
+                    state, actor, letter, closing_on
                 ).distance < combat_math.figure_distance(actor, closing_on)
                 movement_note = (
                     f", jogging toward {closing_on.name}"
@@ -1554,45 +1859,49 @@ def _score_options(
                 )
             )
         elif letter == "f" and enemy is not None:
-            score, rationale = _missile_score(actor, enemy)
-            if (
-                actor.weapon.is_thrown
-                and not actor.weapon.is_missile
-                and not any(not spare.is_missile for spare in spares)
-            ):
-                # A hand weapon that can be thrown (dagger, spear, mace) is
-                # this figure's only one: the AI keeps it rather than end the
-                # turn bare-handed. Still on the menu for a player (#812).
-                score = PLAYER_ONLY_SCORE
-                rationale = (
-                    f"{rationale}; but the {actor.weapon.name} is the only hand "
-                    f"weapon carried, so the AI keeps it = {score_text(score)}"
+            # A hand weapon that can be thrown (dagger, spear, mace) is this
+            # figure's only one: the AI keeps it rather than end the turn
+            # bare-handed. Still on the menu for a player (#812).
+            keeps_it = weapons.throw_leaves_no_hand_weapon(actor)
+            # The AI shoots the nearest enemy; the every-target menu any.
+            for defender in _aimed_at(enemies_by_distance(state, actor), every_target):
+                forecast, rationale = _attack_forecast(actor, defender, ranged=True)
+                score = forecast.score
+                if keeps_it:
+                    score = PLAYER_ONLY_SCORE
+                    rationale = (
+                        f"{rationale}; but the {actor.weapon.name} is the only "
+                        f"hand weapon carried, so the AI keeps it = "
+                        f"{score_text(score)}"
+                    )
+                candidates.append(
+                    Candidate(
+                        letter,
+                        name,
+                        score,
+                        f"Shoot {defender.name}: {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
                 )
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Shoot {enemy.name}: {rationale}",
-                    target_id=enemy.combatant_id,
-                )
-            )
         elif letter == "j" and adjacent_enemies:
-            best = None
+            strikes = []
             for defender in adjacent_enemies:
-                score, rationale = _melee_score(actor, defender)
-                score, rationale = _beast_caution(actor, hurt, score, rationale)
-                candidate = Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Strike {defender.name}: {rationale}",
-                    target_id=defender.combatant_id,
+                forecast, rationale = _attack_forecast(actor, defender, ranged=False)
+                score, rationale = _beast_caution(
+                    actor, hurt, forecast.score, rationale
                 )
-                if best is None or candidate.score > best.score:
-                    best = candidate
-            if best is not None:
-                candidates.append(best)
+                strikes.append(
+                    Candidate(
+                        letter,
+                        name,
+                        score,
+                        f"Strike {defender.name}: {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
+                )
+            candidates.extend(_best_first(strikes, every_target))
         elif letter == "k":
             # Scaled by the credible incoming melee threat, and deliberately
             # NOT scaled up when hurt: with no healing or reinforcements,
@@ -1641,9 +1950,15 @@ def _score_options(
                 )
             )
         elif letter == "r" and in_hth:
-            candidates.extend(_hth_casts(state, actor, beyond_purse))
+            candidates.extend(
+                _hth_casts(state, actor, beyond_purse, casting_failure, every_target)
+            )
         elif letter in ("h", "r"):
-            candidates.extend(_cast_candidates(state, actor, letter, beyond_purse))
+            candidates.extend(
+                _cast_candidates(
+                    state, actor, letter, beyond_purse, casting_failure, every_target
+                )
+            )
         elif letter == "u" and in_hth:
             candidates.append(
                 Candidate(
@@ -1661,8 +1976,7 @@ def _score_options(
             # entry condition admits, #823) — score is always 0, so this
             # candidate never wins a comparison against a real attack; it
             # only exists to show the AI considered and declined it.
-            target = hth_targets[0]
-            candidates.append(
+            candidates.extend(
                 Candidate(
                     letter,
                     name,
@@ -1670,18 +1984,47 @@ def _score_options(
                     f"Grapple valued at 0 ({GRAPPLE_TACTICS_RATIONALE})",
                     target_id=target.combatant_id,
                 )
+                for target in _aimed_at(hth_targets, every_target)
             )
 
         elif letter == "sprint" and enemy is not None:
+            # The sprint it says it makes is the one the engine will make: at
+            # the enemy MOVE would pick, the nearest a clear path gets nearer
+            # to, and standing (no Fatigue paid) when none is (#51).
+            distance = combat_math.figure_distance(actor, enemy)
+            nearable = None
+            if distance > 1:
+                nearable = _nearable_enemy(state, actor, letter)
+            keeps_to_the_run = (
+                f"the AI keeps to the run = {score_text(PLAYER_ONLY_SCORE)}"
+            )
+            if nearable is None:
+                target = enemy
+                why = (
+                    f"already adjacent to {enemy.name}"
+                    if distance <= 1
+                    else "no clear path within "
+                    f"{combat_math.hex_span_text(actor.move_sprint)} sprint gets "
+                    "nearer to any enemy"
+                )
+                rationale = (
+                    f"Stand where you are, {why}, so no Fatigue is paid; "
+                    f"{keeps_to_the_run}"
+                )
+            else:
+                target = nearable[0]
+                passed_over = _passed_over_note(enemy, distance, target)
+                rationale = (
+                    f"Sprint up to {actor.move_sprint} hexes toward "
+                    f"{target.name}{passed_over} for 6 Fatigue; {keeps_to_the_run}"
+                )
             candidates.append(
                 Candidate(
                     letter,
                     actions.option_name(letter),
                     PLAYER_ONLY_SCORE,
-                    f"Sprint up to {actor.move_sprint} hexes toward {enemy.name} "
-                    f"for 6 Fatigue; the AI keeps to the run = "
-                    f"{score_text(PLAYER_ONLY_SCORE)}",
-                    target_id=enemy.combatant_id,
+                    rationale,
+                    target_id=target.combatant_id,
                 )
             )
         elif letter == "d":
@@ -1695,36 +2038,42 @@ def _score_options(
                 )
             )
         elif letter == "l" and enemy is not None:
-            shot_target = min(
+            # The AI shoots the adjacent enemy with the lowest id; the
+            # every-target menu each adjacent enemy.
+            shot_targets = sorted(
                 adjacent_enemies or [enemy],
                 key=lambda other: other.combatant_id,
             )
-            score, rationale = _missile_score(actor, shot_target)
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"One last shot at {shot_target.name}, the bow ready before "
-                    f"the engagement: {rationale}",
-                    target_id=shot_target.combatant_id,
+            for shot_target in _aimed_at(shot_targets, every_target):
+                forecast, rationale = _attack_forecast(
+                    actor, shot_target, ranged=True
                 )
-            )
+                candidates.append(
+                    Candidate(
+                        letter,
+                        name,
+                        forecast.score,
+                        f"One last shot at {shot_target.name}, the bow ready "
+                        f"before the engagement: {rationale}",
+                        target_id=shot_target.combatant_id,
+                        forecast=forecast,
+                    )
+                )
         elif letter == "t" and hth_targets:
-            best = None
+            strikes = []
             for defender in hth_targets:
-                score, rationale = _hth_strike_forecast(state, actor, defender)
-                candidate = Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Strike {defender.name} {rationale}",
-                    target_id=defender.combatant_id,
+                forecast, rationale = _hth_strike_forecast(state, actor, defender)
+                strikes.append(
+                    Candidate(
+                        letter,
+                        name,
+                        forecast.score,
+                        f"Strike {defender.name} {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
                 )
-                if best is None or candidate.score > best.score:
-                    best = candidate
-            if best is not None:
-                candidates.append(best)
+            candidates.extend(_best_first(strikes, every_target))
         elif letter in ("e", "m", "q"):
             pool = {
                 "e": spares,
@@ -1749,27 +2098,26 @@ def _score_options(
                 )
             )
         elif actions.is_yielded(letter):
-            base = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if candidate.letter == actions.base_option(letter)
-                ),
-                None,
-            )
-            if base is not None:
-                candidates.append(
-                    Candidate(
-                        letter,
-                        actions.option_name(letter),
-                        base.score,
-                        f"As {base.name}, moving in Final Movement instead: "
-                        f"{base.rationale}",
-                        target_id=base.target_id,
-                        spell_key=base.spell_key,
-                        destination=base.destination,
-                    )
+            # The yielded copy of the option, at each target it is offered at.
+            bases = [
+                candidate
+                for candidate in candidates
+                if candidate.letter == actions.base_option(letter)
+            ]
+            candidates.extend(
+                Candidate(
+                    letter,
+                    actions.option_name(letter),
+                    base.score,
+                    f"As {base.name}, moving in Final Movement instead: "
+                    f"{base.rationale}",
+                    target_id=base.target_id,
+                    spell_key=base.spell_key,
+                    destination=base.destination,
+                    forecast=base.forecast,
                 )
+                for base in _aimed_at(bases, every_target)
+            )
 
     if not candidates:
         candidates = [Candidate("a", "MOVE", 0.0, "Nothing else is legal")]
