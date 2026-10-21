@@ -65,6 +65,37 @@ def hex_span_text(count: int) -> str:
     return f"{article} {count}-hex"
 
 
+#: The first letters that take "an" rather than "a" (:func:`with_article`).
+ARTICLE_AN_LETTERS = frozenset("aeiou")
+
+
+def with_article(word: str) -> str:
+    """``word`` with its indefinite article: "an elf", "a Longbow", "an axe".
+
+    The word form of :func:`hex_span_text`'s numeric one (tarmar-engine #59):
+    "an" before a vowel letter, "a" before any other, whatever the case. The
+    first letter suffices for every weapon, armour, race and tier name the
+    engine's catalogs and the studio's default canon held on 2026-10-21; a
+    name opening on a silent "h" ("hour") or a "you" or "w" sound ("unit",
+    "one") would take the wrong article, and so would a leading digit ("a
+    8-hex", "an 11-hex"), whose spoken number decides: that is
+    :func:`hex_span_text`'s numeric form.
+
+    Args:
+        word: The word or name, as narration prints it.
+
+    Returns:
+        The article, a space, and ``word`` unchanged.
+
+    Raises:
+        ValueError: ``word`` is empty, which has no article.
+    """
+    if not word:
+        raise ValueError("an empty word takes no article")
+    article = "an" if word[0].casefold() in ARTICLE_AN_LETTERS else "a"
+    return f"{article} {word}"
+
+
 def figure_distance(a: CombatantState, b: CombatantState) -> int:
     """Hex distance between two combatants' footprints (closest edge)."""
     return hexes.figure_distance(a.footprint, b.footprint)
@@ -325,20 +356,31 @@ def expected_damage(expression: str, stops_applied: int, repetitions: int = 1) -
     )
 
 
-def expected_attack_damage(attacker: CombatantState, defender: CombatantState) -> float:
-    """Expected post-armour damage of one landed swing, crits included.
+def expected_landed_damage(expression: str, stops_applied: int) -> float:
+    """Expected post-armour damage of one landed d20 attack, crits included.
 
     E[one damage roll] plus the natural-20 path's extra roll (a nat 20 is
     1-in-20 of all *hits'* faces and rolls the dice
     :data:`tarmar_rules.CRIT_DAMAGE_ROLLS` times). Severe-critical
     tripling is left out — the confirm branch is small and the policy only
-    needs a ranking.
+    needs a ranking. Every d20 attack the engine resolves takes that path,
+    a weapon's swing or shot and a strike in close alike (tarmar-engine #56).
+
+    Args:
+        expression: The dice one hit rolls, e.g. ``"2d6-1"``.
+        stops_applied: The armour stops that come off the hit's damage.
     """
+    single = expected_damage(expression, stops_applied)
+    crit = expected_damage(
+        expression, stops_applied, repetitions=combat.CRIT_DAMAGE_ROLLS
+    )
+    return single + (crit - single) / combat.DIE_FACES
+
+
+def expected_attack_damage(attacker: CombatantState, defender: CombatantState) -> float:
+    """Expected post-armour damage of one landed swing or shot with the
+    attacker's weapon, crits included (:func:`expected_landed_damage`)."""
     stops = combat.applied_armour_stops(
         defender.stops, attacker.weapon.weapon_class, defender.armour_tier
     )
-    single = expected_damage(attacker.weapon.damage, stops)
-    crit = expected_damage(
-        attacker.weapon.damage, stops, repetitions=combat.CRIT_DAMAGE_ROLLS
-    )
-    return single + (crit - single) / combat.DIE_FACES
+    return expected_landed_damage(attacker.weapon.damage, stops)

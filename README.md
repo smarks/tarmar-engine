@@ -196,7 +196,9 @@ on the default path, with no field set:
   hand-to-hand menu and placed moves" below);
 - an engaged figure holding a bow gets One Last Shot (`l`), not a bow-club
   `j` (#776, #815);
-- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823);
+- ATTEMPT HTH (`o`) is offered only when an entry condition holds (#823),
+  and never at an enemy already in a hold, which the grapple refuses
+  (`target_held`, tarmar-engine #60);
 - a forced retreat pushes into any clear hex, the save only when none is
   clear (#779); a push needs damage past the armour, never a spell (#813);
 - the injury band applies to initiative and the retreat save (#817);
@@ -311,6 +313,24 @@ target, and its `n`, `v` and Struggle Free leave the step to the engine when
 the figure acts, the forecast printing the step it expects. `movement.gait_allowance` is the one jog rule the engine moves
 by and the policy prices a charge by (#17). `CombatantState` gains
 `chosen_destination`.
+
+**Whom a step away steps from (tarmar-engine #62, v0.9.20).**
+`movement.step_away_from(state, actor, letter)` is the figure a step away
+(`n` or `v`) with no hex picked steps straight back from, then to either
+flank (`movement.step_away_hex`), or `None` when there is nobody: for `n`
+the first active enemy beside it in the state's order, for a held figure's
+`v` (Struggle Free) its captor, for any other `v` the first active partner
+beside it in `hth_with` order. `movement.left_behind(state, actor, letter)`
+is the whole list, the one stepped from first: the enemies a DISENGAGE
+records in `disengaged_from`, or the partners a break away leaves
+hand-to-hand with. Both raise `ValueError` for any other letter.
+`TurnRunner.disengage_step` and `TurnRunner.hth_disengage` read
+`left_behind` (the list, for `disengaged_from` and `hth_ended`); the
+policy's `n` forecast and a held figure's Struggle Free forecast read
+`step_away_from`, and its `v` break-away forecast reads `left_behind`. The
+engine's `TurnRunner.grapple_struggle_free` still reads the captor from
+`grappled_by` directly, which is what the held branch returns. The policy's
+private `_hth_partners` is gone. No battle's events change.
 
 ## A Game Master's agreement to hand-to-hand (v0.9.10)
 
@@ -541,9 +561,8 @@ ones.
   `policy.cast_success_chance(attribute, rules.casting_failure)` is that
   chance, for a caller showing a spell's odds to show the same number. The
   engine applies the ceiling to the effective attribute, less the injury
-  band and any owed off-balance penalty; the menu still passes the raw
-  attribute, so the two agree only for an unhurt caster until
-  tarmar-engine #56 lands.
+  band and any owed off-balance penalty, and since v0.9.20 so does the menu
+  (tarmar-engine #56); a caller passes the effective attribute too.
 - **Without it.** With `casting_failure=None`, or no `MagicRules` at all,
   the attribute alone judges the roll, no failure costs mana, and no cast
   starts a Runaway. **This changes the default profile:** before v0.9.15
@@ -775,17 +794,90 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
   each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
   first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
-  entry condition admits, and each damaging cast at each active enemy,
-  nearest first (a spell has no range), with its pushed, borrowing and
-  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
-  too. `chosen` is the AI's own choice, unchanged, and is one of the
-  candidates (by identity), even where an option aimed elsewhere scores
-  higher. Without the flag the menu is as before. The menu is built twice
-  for it, once for the AI's choice. A player's pick at any target is
-  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
-  is the policy's own test for a MISSILE throw that would leave the figure
-  bare-handed (scored 0 for the AI at every target), for a consumer to read
-  rather than copy.
+  entry condition admits (o not at one already held, #60), and each
+  damaging cast at each active enemy, nearest first (a spell has no range),
+  with its pushed, borrowing and escalated variants; a grappled or
+  grappling mage's Spell Mastery 3 casts too. `chosen` is the AI's own
+  choice, unchanged, and is one of the candidates (by identity), even
+  where an option aimed elsewhere scores higher. Without the flag the menu
+  is as before. The menu is built twice for it, once for the AI's choice.
+  A player's pick at any target is resolved by the engine as always.
+  `weapons.throw_leaves_no_hand_weapon` is the policy's own test for a
+  MISSILE throw that would leave the figure bare-handed (scored 0 for the
+  AI at every target), for a consumer to read rather than copy.
+
+## The indefinite article in narration (v0.9.20)
+
+`combat_math.with_article(word)` is a word with its indefinite article:
+"an" before a vowel letter, "a" before any other, whatever the case ("an
+Elven bow", "an elf", "a Lucky cast"), and `ValueError` for an empty word
+(tarmar-engine #59). The first letter suffices for every weapon, armour,
+race and tier name the engine's catalogs and the studio's default canon
+held on 2026-10-21; a name opening on a silent "h" or a "you" or "w"
+sound ("hour", "unit", "one") would take the wrong one, and so would a
+leading digit ("a 8-hex", "an 11-hex"), whose spoken number decides:
+that is `hex_span_text`'s numeric form. The second-shot
+line ("for an Elven bow"), a casting tier ("is an uncanny cast"), the
+classic race floor ("an elf's ST may not begin below 6") and the classic
+narrative's weapon lines all read it; `hex_span_text` keeps the numeric
+form. tarmar-studio's own `gm.engine._with_article` makes the same choice
+and could read this one.
+
+## The menu forecasts the roll the dice make (v0.9.20)
+
+A figure's action rolls lose the injury band (-1 or -2) and an owed
+off-balance -2 (the engine's one reading of them, #43), and the menu's
+forecasts now take them off as well, so a hurt or off-balance figure is
+shown the odds the dice will give rather than better ones (tarmar-engine
+#56). **This changes the AI's scores, and some of its choices, wherever a
+figure is hurt or off-balance, and wherever a strike in close is on the
+menu (below).**
+
+- **A d20 attack.** ATTACK, a CHARGE that reaches, MISSILE, ONE LAST SHOT
+  and an HTH strike forecast the bonus the engine rolls with:
+  `Forecast.bonus`, the printed `d20 +X`, P(hit) and the winning faces are
+  all of the penalised roll, and the rationale names what came off ("to hit
+  less 2 injury and 2 off-balance"). DEFEND's threat prices each adjacent
+  enemy's swing less that enemy's own penalties.
+- **A cast.** P(cast) is the chance under the penalised attribute ("3d6 ≤
+  INT 14 less 2 injury and 2 off-balance = 10"), and a targeted spell's
+  P(aim) under the penalised DEX less, at a dodging target, the dodge's 4,
+  as the engine's aim roll takes it; `Forecast.hit_chance` is their
+  product. `policy.action_roll_penalties(actor)` is that reading, public:
+  `(injury, off_balance)`, each an amount to subtract, so a caller showing
+  a spell's odds passes `cast_success_chance(attribute - injury -
+  off_balance, casting_failure)` and shows the menu's number.
+- **Breaking away.** DISENGAGE (v) from hand-to-hand prices next turn's
+  blows less the injury band only: the break-away spends this turn's
+  off-balance.
+- **A strike's damage.** An HTH strike's expected damage now counts a
+  natural 20's extra damage roll, as the engine rolls it and as every other
+  attack's forecast already did: `combat_math.expected_landed_damage(
+  expression, stops)`, which `expected_attack_damage` now reads too.
+  **The AI strikes in close more often for it.** A strike's score rises (a
+  STR 12 figure's bare hands, 1.000 to 1.100 in the test boards), so it
+  now beats a defensive buff it lost to, and tarmar-engine #38's armoured
+  swordsman at DEX 11, held by a lightly armoured archer, strikes in close
+  (0.316) rather than breaking away (0.312) as it did on v0.9.19. Over 100
+  seeds that pair stays in hand-to-hand 13.6 turns on average, where
+  v0.9.19 broke away after 3.0: the break-away is priced over two turns
+  although a figure once free stays free, so it is under-priced whenever
+  the weapon outclasses bare hands (tarmar-engine #64; at DEX 10 the pair
+  already stayed in on v0.9.19).
+
+An unhurt figure that owes no off-balance reads as before, and scores as
+before except for these: a strike in close's expected damage, the
+break-away that prices it, and a targeted spell's aim at a dodging target,
+which now takes the dodge's 4.
+
+## The gaits' Fatigue costs live with movement (v0.9.20)
+
+`movement.RUN_FATIGUE_COST` (1), `movement.SPRINT_FATIGUE_COST` (6) and
+`movement.GAIT_FATIGUE_COSTS` (by gait; walk and jog are free in combat)
+now sit beside `movement.MOVEMENT_GAITS` and `movement.gait_allowance`, so
+the policy's SPRINT rationale ("for 6 Fatigue") reads the number rather
+than restating it (tarmar-engine #58). `engine.py` re-exports all three
+under their old names, so no caller changes and no battle's events do.
 
 ## What it sits on
 

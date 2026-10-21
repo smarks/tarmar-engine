@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import TestCase
 
 import tarmar_engine
-from tarmar_engine import actions, combat_math, engine, hexes
+from tarmar_engine import actions, combat_math, engine, hexes, movement
 from tarmar_engine.spells import SPELLS
 from tarmar_engine.state import BARE_HANDED_DAMAGE_TABLE, WeaponState
 
@@ -206,12 +206,28 @@ class MovementDriftGuard(TestCase):
         # range-band conversion uses.
         self.assertEqual(hexes.HEXES_PER_MEGAHEX_STEP, 3)
 
-    def test_run_fatigue_cost_matches_movement_md(self):
+    def test_gait_fatigue_costs_match_movement_md(self):
         markdown = (COMBAT / "action-options" / "movement.md").read_text()
         rows = _table_rows(markdown, "| Speed")
         costs = {row[0]: row[2] for row in rows[1:]}
-        self.assertEqual(costs["Run"], f"{engine.RUN_FATIGUE_COST} per turn")
-        self.assertEqual(costs["Sprint"], f"{engine.SPRINT_FATIGUE_COST} per turn")
+        self.assertEqual(costs["Run"], f"{movement.RUN_FATIGUE_COST} per turn")
+        self.assertEqual(costs["Sprint"], f"{movement.SPRINT_FATIGUE_COST} per turn")
+        self.assertEqual(
+            movement.GAIT_FATIGUE_COSTS,
+            {"run": movement.RUN_FATIGUE_COST, "sprint": movement.SPRINT_FATIGUE_COST},
+        )
+        # Every other gait is free in a combat turn.
+        for speed, cost in costs.items():
+            if speed.lower() not in movement.GAIT_FATIGUE_COSTS:
+                with self.subTest(speed=speed):
+                    self.assertTrue(cost.startswith("None"), cost)
+        # The engine re-exports the movement module's own, not copies of them
+        # (tarmar-engine #58).
+        self.assertIs(engine.GAIT_FATIGUE_COSTS, movement.GAIT_FATIGUE_COSTS)
+        self.assertEqual(
+            (engine.RUN_FATIGUE_COST, engine.SPRINT_FATIGUE_COST),
+            (movement.RUN_FATIGUE_COST, movement.SPRINT_FATIGUE_COST),
+        )
 
 
 class EngagementDriftGuard(TestCase):

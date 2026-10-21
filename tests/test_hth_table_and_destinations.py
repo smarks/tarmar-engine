@@ -153,6 +153,12 @@ class HthTableIsTheMenuTest(TestCase):
 
         def casts():
             decision = policy.choose_option(state, caster)
+            # The cast is offered, not chosen: a buff's 1.088 loses to the
+            # strike in close, 1.100 once its expected damage counts a
+            # natural 20's extra roll as the engine rolls it (tarmar-engine
+            # #56; on v0.9.19 the strike forecast 1.000 and Blur, then
+            # Shield, won).
+            self.assertEqual(decision.chosen.letter, "t")
             return [c.spell_key for c in decision.candidates if c.letter == "r"]
 
         self.assertEqual(casts(), ["blur"])  # the broadsword fills a hand
@@ -333,7 +339,7 @@ def break_away_score(state, figure, partner) -> float:
     )
 
 
-def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None):
+def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None, archer_stops=2):
     """tarmar-engine #38's pair, in hand-to-hand: an armoured broadsword
     fighter and a lightly armoured archer, who traded bare-handed blows for
     dozens of turns in tarmar-studio's seeded simulations."""
@@ -357,7 +363,7 @@ def fighter_and_archer(fighter_dexterity=11, fighter_weapon=None):
         facing=3,
         weapon=SMALL_BOW,
         armour_tier="Light",
-        stops=2,
+        stops=archer_stops,
     )
     return in_hand_to_hand(BattleState(arena_radius=8, combatants=[fighter, archer]))
 
@@ -376,7 +382,10 @@ class HthBreakAwayTest(TestCase):
     turn the roll takes."""
 
     def test_the_armoured_swordsman_breaks_away_from_the_archer(self):
-        state = fighter_and_archer()
+        # DEX 12: at DEX 11 the strike in close, its expected damage now
+        # counting a natural 20's extra roll as the engine rolls it
+        # (tarmar-engine #56), edges the break-away, 0.316 to 0.312.
+        state = fighter_and_archer(fighter_dexterity=12)
         fighter, archer = state.by_id(1), state.by_id(2)
         decision = policy.choose_option(state, fighter)
         self.assertEqual(decision.chosen.letter, "v")
@@ -409,12 +418,15 @@ class HthBreakAwayTest(TestCase):
         )
 
     def test_the_boundary_is_whether_the_escape_pays_for_the_turn(self):
-        """DEX 10 and 11 forecast the same blows; only P(escape) differs, and
+        """DEX 12 and 13 forecast the same blows; only P(escape) differs, and
         it decides: v wins exactly when P x weapon + (1 - P) x strike, the
-        next turn's worth, beats two strikes."""
-        for dexterity, expected in ((10, "t"), (11, "v")):
+        next turn's worth, beats two strikes. (An archer in stops 1: against
+        stops 2 the boundary falls between DEX 11 and 12, which forecast
+        different blows, since the strike counts a natural 20's extra damage
+        roll, tarmar-engine #56.)"""
+        for dexterity, expected in ((12, "t"), (13, "v")):
             with self.subTest(dexterity=dexterity):
-                state = fighter_and_archer(fighter_dexterity=dexterity)
+                state = fighter_and_archer(fighter_dexterity=dexterity, archer_stops=1)
                 fighter, archer = state.by_id(1), state.by_id(2)
                 decision = policy.choose_option(state, fighter)
                 self.assertEqual(decision.chosen.letter, expected)
@@ -761,3 +773,113 @@ class HthAgreementByGameMasterTest(TestCase):
                     [_comparable(event) for event in replayed],
                     [_comparable(event) for event in recorded],
                 )
+
+
+def pressed_from_two_sides() -> BattleState:
+    """Fighter 1 with enemies 3 and 4 beside it, enemy 2 far off, and its
+    teammate 5 beside it too."""
+    return BattleState(
+        arena_radius=8,
+        combatants=[
+            make_combatant(1, q=0, r=0, facing=0, team="near"),
+            make_combatant(2, q=5, r=0, facing=3, team="far"),
+            make_combatant(3, q=0, r=1, facing=4, team="far"),
+            make_combatant(4, q=1, r=0, facing=3, team="far"),
+            make_combatant(5, q=-1, r=1, facing=0, team="near"),
+        ],
+    )
+
+
+class StepAwayFromTest(TestCase):
+    """#62 — one public answer to whom a step away (n or v) steps from, read
+    by the engine, the AI's forecast and a consuming game alike."""
+
+    def test_a_disengage_leaves_every_enemy_beside_it_and_steps_from_the_first(
+        self,
+    ):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        left = movement.left_behind(state, figure, "n")
+        self.assertEqual([enemy.combatant_id for enemy in left], [3, 4])
+        threat = movement.step_away_from(state, figure, "n")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 3)
+        expected = movement.step_away_hex(state, figure, threat)
+        decision = policy.choose_option(state, figure)
+        disengage = next(
+            candidate for candidate in decision.candidates if candidate.letter == "n"
+        )
+        self.assertIn(f"toward {expected}", disengage.rationale)
+        figure.chosen_letter = "n"
+        events = []
+        runner_for(state, [], events).execute_action(figure)
+        self.assertEqual(figure.position, expected)
+        self.assertEqual(figure.disengaged_from, [3, 4])
+        self.assertIn(
+            f"disengages one hex from {threat.name}",
+            events_of_type(events, "movement")[0]["message"],
+        )
+
+    def test_a_break_away_steps_from_the_first_partner_in_hand_to_hand(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 4)
+        in_hand_to_hand(state, 1, 3)
+        in_hand_to_hand(state, 1, 2)  # not beside it: no partner to leave
+        left = movement.left_behind(state, figure, "v")
+        self.assertEqual([partner.combatant_id for partner in left], [4, 3])
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 4)
+        expected = movement.step_away_hex(state, figure, threat)
+        decision = policy.choose_option(state, figure)
+        break_away = next(
+            candidate for candidate in decision.candidates if candidate.letter == "v"
+        )
+        self.assertIn(f"toward {expected}", break_away.rationale)
+        figure.chosen_letter = "v"
+        events = []
+        runner_for(state, [[2, 2, 2, 2]], events).execute_action(figure)
+        self.assertEqual(figure.position, expected)
+        self.assertEqual(
+            events_of_type(events, "movement")[0]["payload"]["hth_ended"], [4, 3]
+        )
+
+    def test_a_partner_out_of_the_fight_is_not_stepped_from(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 4)
+        in_hand_to_hand(state, 1, 3)
+        state.by_id(4).alive = False
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 3)
+
+    def test_a_held_figure_struggles_free_of_its_captor(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(1)
+        in_hand_to_hand(state, 1, 3)
+        in_hand_to_hand(state, 1, 4)
+        figure.grappled_by, state.by_id(4).grappling = 4, 1
+        self.assertEqual(
+            [
+                captor.combatant_id
+                for captor in movement.left_behind(state, figure, "v")
+            ],
+            [4],
+        )
+        threat = movement.step_away_from(state, figure, "v")
+        assert threat is not None
+        self.assertEqual(threat.combatant_id, 4)
+
+    def test_nobody_to_step_away_from(self):
+        state = pressed_from_two_sides()
+        figure = state.by_id(2)  # nobody beside it, in hand-to-hand with no one
+        for letter in sorted(movement.STEP_OPTIONS):
+            self.assertEqual(movement.left_behind(state, figure, letter), [])
+            self.assertIsNone(movement.step_away_from(state, figure, letter))
+
+    def test_only_the_step_options_have_an_answer(self):
+        state = pressed_from_two_sides()
+        with self.assertRaises(ValueError):
+            movement.step_away_from(state, state.by_id(1), "j")

@@ -100,10 +100,6 @@ PHASES: tuple[tuple[int, str], ...] = (
     (6, "Forced Retreat"),
 )
 
-# movement.md fatigue costs per gait (combat turns).
-RUN_FATIGUE_COST = 1
-SPRINT_FATIGUE_COST = 6
-
 #: Why a Counterspell contest ended (tarmar-engine #31), by the key its
 #: ``contest_ended`` event carries, as the log says it.
 CONTEST_END_REASONS: dict[str, str] = {
@@ -112,13 +108,13 @@ CONTEST_END_REASONS: dict[str, str] = {
     "through": "gets past the counter",
 }
 
-# Gait by movement option, kept under this name for every reader of it; the
-# table lives with the rest of the movement rules (tarmar_engine.movement).
+# Gait by movement option and the Fatigue each gait costs, kept under these
+# names for every reader of them; they live with the rest of the movement
+# rules (tarmar_engine.movement; the costs since tarmar-engine #58).
 MOVEMENT_GAITS = movement.MOVEMENT_GAITS
-GAIT_FATIGUE_COSTS: dict[str, int] = {
-    "run": RUN_FATIGUE_COST,
-    "sprint": SPRINT_FATIGUE_COST,
-}
+RUN_FATIGUE_COST = movement.RUN_FATIGUE_COST
+SPRINT_FATIGUE_COST = movement.SPRINT_FATIGUE_COST
+GAIT_FATIGUE_COSTS = movement.GAIT_FATIGUE_COSTS
 
 # Distance archers/casters try to keep open with their phase-4 adjustment.
 PREFERRED_STANDOFF = 3
@@ -905,8 +901,9 @@ class TurnRunner:
         Walks the chosen option's :func:`movement.default_approach` toward the
         chosen target, the straight line or, when that is blocked, a clear
         path round, stopping the moment the mover becomes engaged
-        (movement.md: figures stop immediately when engaged). Running costs 1
-        Fatigue and sprinting 6 (movement.md); jogging is free in combat. The
+        (movement.md: figures stop immediately when engaged). Running and
+        sprinting cost the Fatigue :data:`movement.GAIT_FATIGUE_COSTS` names
+        (movement.md); jogging is free in combat. The
         gait is the chosen option's (:func:`movement.option_gait`: MOVE runs,
         CHARGE ATTACK jogs).
 
@@ -1305,7 +1302,7 @@ class TurnRunner:
                     "info",
                     f"{combatant.name} looses a second shot this turn "
                     f"(adjDEX {combatant.dexterity}, {weapon.double_shot_dex}+ "
-                    f"for a {weapon.name})",
+                    f"for {combat_math.with_article(weapon.name)})",
                     actor=combatant.name,
                     payload={"second_shot": True},
                 )
@@ -1734,10 +1731,7 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        enemies = self.state.enemies_of(combatant)
-        adjacent = [
-            enemy for enemy in enemies if combat_math.figures_adjacent(combatant, enemy)
-        ]
+        adjacent = movement.left_behind(self.state, combatant, "n")
         if not adjacent:
             return
         threat = adjacent[0]
@@ -2078,12 +2072,7 @@ class TurnRunner:
         even with no clear hex to step to (coordinator's ruling under the
         standing rule; Spencer may overrule).
         """
-        partners = [
-            self.state.by_id(other_id)
-            for other_id in combatant.hth_with
-            if self.state.by_id(other_id).active
-            and combat_math.figures_adjacent(combatant, self.state.by_id(other_id))
-        ]
+        partners = movement.left_behind(self.state, combatant, "v")
         if not partners:
             self.emit(
                 "info",
@@ -2770,7 +2759,8 @@ class TurnRunner:
             tier_payload["debt"] = combatant.debt
         self.emit(
             "status",
-            f"{combatant.name}'s casting of {spell.name} is a {tier.label} "
+            f"{combatant.name}'s casting of {spell.name} is "
+            f"{combat_math.with_article(tier.label)} "
             f"(natural {natural_total}){refund_note}",
             actor=combatant.name,
             payload=tier_payload,

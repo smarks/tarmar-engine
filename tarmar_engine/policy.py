@@ -49,7 +49,7 @@ the step it expects. A player may give any option
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import TypeVar
 
 from . import actions, combat_math, hexes, movement, weapons
@@ -74,7 +74,7 @@ from .magic import (
     casting_success_ceiling,
 )
 from .reactions import TarmarReactions
-from .spells import Spell, get_spell
+from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
 
 #: Whatever an option is aimed with (tarmar-engine #21): its targets, or its
@@ -109,7 +109,8 @@ REARM_SCORE = 1.5
 # level at which a spell needs no gestures (spell-mastery.md).
 HTH_NO_GESTURE_MASTERY = 2
 # Options offered for a player to choose that the AI does not take: Sprint's
-# 6 Fatigue a turn, going prone, drawing a dagger mid-hold.
+# Fatigue a turn (movement.SPRINT_FATIGUE_COST), going prone, drawing a
+# dagger mid-hold.
 PLAYER_ONLY_SCORE = 0.0
 # Anchoring one's own Runaway is the only way to stop it feeding (tarmar-
 # engine #30): flat, above every flat score here, and the AI's choice
@@ -374,10 +375,8 @@ def cast_success_chance(
     Args:
         attribute: The effective attribute the roll is made under: the
             engine rolls under the attribute less the injury band and any
-            owed off-balance penalty. The policy's own menu still passes the
-            raw attribute (tarmar-engine #56), so its estimate matches the
-            engine's verdict only for an unhurt caster with no off-balance
-            owed.
+            owed off-balance penalty (:func:`action_roll_penalties`), and
+            the policy's own menu passes the same (tarmar-engine #56).
         casting_failure: The injected casting failure rules
             (``MagicRules.casting_failure``), or ``None``: the attribute alone.
     """
@@ -397,12 +396,15 @@ def four_d6_at_most(target: int) -> float:
 
 
 def _incoming_melee_threat(state: BattleState, actor: CombatantState) -> float:
-    """Expected melee damage per turn from adjacent enemies, if all swing."""
+    """Expected melee damage per turn from adjacent enemies, if all swing,
+    each roll less the swinging enemy's own penalties (:func:`_rolled_numbers`)."""
     threat = 0.0
     for enemy in state.enemies_of(actor):
         if not combat_math.figures_adjacent(actor, enemy):
             continue
-        numbers = combat_math.attack_numbers(enemy, actor, ranged=False)
+        numbers, _penalties = _rolled_numbers(
+            enemy, combat_math.attack_numbers(enemy, actor, ranged=False)
+        )
         probability = combat.hit_probability(numbers.target_number, numbers.bonus)
         threat += probability * combat_math.expected_attack_damage(enemy, actor)
     return threat
@@ -518,7 +520,11 @@ def _passed_over_note(
 
 
 def _attack_forecast(
-    actor: CombatantState, defender: CombatantState, *, ranged: bool
+    actor: CombatantState,
+    defender: CombatantState,
+    *,
+    ranged: bool,
+    next_turn: bool = False,
 ) -> tuple[Forecast, str]:
     """Forecast one prospective swing or shot, showing every input it used.
 
@@ -534,8 +540,17 @@ def _attack_forecast(
     numbers they printed, which is exactly how melee came to hide the
     distance that missile showed. The figures are the :class:`Forecast`
     returned beside the rationale, which prints them (tarmar-engine #22).
+
+    The bonus is the one the engine rolls with, less the actor's injury band
+    and owed off-balance penalty, which the rationale names (tarmar-engine
+    #56); ``next_turn`` forecasts a swing on the figure's next turn, after
+    this turn's action has spent the off-balance (:func:`_rolled_numbers`).
     """
-    numbers = combat_math.attack_numbers(actor, defender, ranged=ranged)
+    numbers, penalties = _rolled_numbers(
+        actor,
+        combat_math.attack_numbers(actor, defender, ranged=ranged),
+        next_turn=next_turn,
+    )
     stops = combat.applied_armour_stops(
         defender.stops, actor.weapon.weapon_class, defender.armour_tier
     )
@@ -547,7 +562,10 @@ def _attack_forecast(
     )
     range_note = f" (range {numbers.range_penalty:+d})" if ranged else ""
     reach = combat_math.hexes_text(numbers.distance)
-    return forecast, f"{actor.weapon.name} at {reach}{range_note}, {forecast.working()}"
+    return forecast, (
+        f"{actor.weapon.name} at {reach}{range_note}{_to_hit_less(penalties)}, "
+        f"{forecast.working()}"
+    )
 
 
 def _aimed_at(targets: list[Aimed], every_target: bool) -> list[Aimed]:
@@ -628,9 +646,14 @@ def _cast_candidates(
             continue
         if spell.continuing and key in actor.active_spells:
             continue  # already up; renewal happens in phase 2
-        attribute = actor.intelligence if spell.attribute == "INT" else actor.wisdom
-        cast_probability = cast_success_chance(attribute, casting_failure)
         attribute_name = spell.attribute
+        cast_roll = _roll_under(
+            attribute_name,
+            actor.intelligence if attribute_name == "INT" else actor.wisdom,
+            _action_roll_deductions(actor),
+        )
+        attribute = cast_roll.target
+        cast_probability = cast_success_chance(attribute, casting_failure)
         floor_note = ""
         if (
             casting_failure is not None
@@ -638,7 +661,7 @@ def _cast_candidates(
         ):
             floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
         cast_note = (
-            f"3d6 ≤ {attribute_name} {attribute}{floor_note} — P(cast) "
+            f"3d6 ≤ {cast_roll.text}{floor_note} — P(cast) "
             f"{score_text(cast_probability)}"
         )
         if spell.heals:
@@ -669,16 +692,28 @@ def _cast_candidates(
                 )
             )
             continue
-        aim_note = ""
-        probability = cast_probability
-        if spell.targeted:
-            aim_probability = three_d6_at_most(actor.dexterity)
-            probability = probability * aim_probability
-            aim_note = (
-                f" x P(aim) {score_text(aim_probability)} "
-                f"(3d6 ≤ DEX {actor.dexterity})"
-            )
         for enemy in aimed_at:
+            aim_note = ""
+            probability = cast_probability
+            if spell.targeted:
+                # The engine's aim roll: DEX less the penalties and, at a
+                # dodging target, the dodge's re-mapped +4 TN (#56).
+                aim_roll = _roll_under(
+                    "DEX",
+                    actor.dexterity,
+                    [
+                        *_action_roll_deductions(actor),
+                        (
+                            DODGE_DEX_CHECK_PENALTY if enemy.dodging else 0,
+                            "for the target's dodge",
+                        ),
+                    ],
+                )
+                aim_probability = three_d6_at_most(aim_roll.target)
+                probability = probability * aim_probability
+                aim_note = (
+                    f" x P(aim) {score_text(aim_probability)} (3d6 ≤ {aim_roll.text})"
+                )
             stops = 0 if spell.ignores_armour else enemy.stops
             forecast = Forecast(
                 hit_chance=round_score(probability),
@@ -720,10 +755,9 @@ def _grappled_decision(
     grappler_id = actor.grappled_by
     # The step the engine expects to take, for the forecast; the engine works
     # it out when the figure acts, so the candidate names no hex (#20).
+    captor = movement.step_away_from(state, actor, "v")
     escape_to = (
-        None
-        if grappler_id is None
-        else movement.step_away_hex(state, actor, state.by_id(grappler_id))
+        None if captor is None else movement.step_away_hex(state, actor, captor)
     )
     where = f" toward {escape_to}" if escape_to is not None else ""
     candidates = [
@@ -919,13 +953,19 @@ def _hth_targets(state: BattleState, actor: CombatantState) -> list[CombatantSta
     )
 
 
-def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantState]:
-    """The active enemies beside the actor that it is in hand-to-hand with."""
+def _grapple_targets(hth_targets: list[CombatantState]) -> list[CombatantState]:
+    """The HTH targets an ATTEMPT HTH (o) may take a grip on, in their order.
+
+    An enemy already in a hold, as captive or captor, is left out: the
+    engine's grapple refuses it (``target_held``), reading the same
+    :func:`hexes.figure_locked_by_grapple`, so the menu never offers an
+    attempt the engine will turn down (tarmar-engine #60). It stays an HTH
+    strike (t) target, which the engine allows.
+    """
     return [
-        state.by_id(other_id)
-        for other_id in actor.hth_with
-        if state.by_id(other_id).active
-        and combat_math.figures_adjacent(actor, state.by_id(other_id))
+        target
+        for target in hth_targets
+        if not hexes.figure_locked_by_grapple(target.grappled_by, target.grappling)
     ]
 
 
@@ -971,14 +1011,14 @@ def _hth_disengage_candidate(
     of two strikes' worth is never more than one.
     """
     partner = partners[0]
-    injury, off_balance = _action_roll_penalties(actor)
+    injury, off_balance = action_roll_penalties(actor)
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
     held = 1 - probability
-    strike = _hth_strike_forecast(state, actor, partner)[0].score
+    strike = _hth_strike_forecast(state, actor, partner, next_turn=True)[0].score
     if actor.weapon.item_id:
         weapon_forecast, _rationale = _attack_forecast(
-            actor, partner, ranged=actor.weapon.is_missile
+            actor, partner, ranged=actor.weapon.is_missile, next_turn=True
         )
         free = weapon_forecast.score
         once_free = f"the {actor.weapon.name} {score_text(free)}"
@@ -1006,17 +1046,31 @@ def _hth_disengage_candidate(
 
 
 def _hth_strike_forecast(
-    state: BattleState, actor: CombatantState, defender: CombatantState
+    state: BattleState,
+    actor: CombatantState,
+    defender: CombatantState,
+    *,
+    next_turn: bool = False,
 ) -> tuple[Forecast, str]:
-    """Forecast a standalone HTH strike (t): bare hands or a dagger, +4."""
+    """Forecast a standalone HTH strike (t): bare hands or a dagger, +4.
+
+    As :func:`_attack_forecast`: the bonus less the actor's penalties, the
+    rationale naming them, ``next_turn`` without the off-balance this turn
+    spends; and the expected damage takes a natural 20's extra damage roll,
+    which the engine rolls for a strike as for a swing (tarmar-engine #56).
+    """
     dagger = actor.weapon.hth_usable
-    numbers = combat_math.attack_numbers(
+    numbers, penalties = _rolled_numbers(
         actor,
-        defender,
-        ranged=False,
-        weapon_class=None if dagger else "Striking",
-        extra_situational=hexes.HTH_TO_HIT_BONUS,
-        ignore_attacker_skill=not dagger,
+        combat_math.attack_numbers(
+            actor,
+            defender,
+            ranged=False,
+            weapon_class=None if dagger else "Striking",
+            extra_situational=hexes.HTH_TO_HIT_BONUS,
+            ignore_attacker_skill=not dagger,
+        ),
+        next_turn=next_turn,
     )
     damage_expression = (
         actor.weapon.damage if dagger else combat_math.bare_handed_expression(actor)
@@ -1030,11 +1084,14 @@ def _hth_strike_forecast(
         numbers,
         damage_expression,
         stops,
-        combat_math.expected_damage(damage_expression, stops),
+        combat_math.expected_landed_damage(damage_expression, stops),
     )
     reason = combat_math.hth_entry_reason(state, actor, defender)
     held = f"the {actor.weapon.name}" if dagger else "bare hands"
-    return forecast, f"in close ({reason}) with {held}, {forecast.working()}"
+    return forecast, (
+        f"in close ({reason}) with {held}{_to_hit_less(penalties)}, "
+        f"{forecast.working()}"
+    )
 
 
 def choose_option(
@@ -1208,7 +1265,7 @@ def _counter_candidates(
         return []
     bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
-    injury, _off_balance = _action_roll_penalties(actor)
+    injury, _off_balance = action_roll_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
     for caster in state.enemies_of(actor):
         if not _is_mage(caster):
@@ -1306,8 +1363,8 @@ def _anchor_candidates(
 def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
     """An anchor roll as the menu prints it: less the injury band and an
     owed off-balance penalty, as the engine takes them
-    (:func:`_action_roll_penalties`)."""
-    injury, off_balance = _action_roll_penalties(actor)
+    (:func:`action_roll_penalties`)."""
+    injury, off_balance = action_roll_penalties(actor)
     attribute = attribute_score(actor, rule.attribute)
     target = attribute - injury - off_balance
     return (
@@ -1448,7 +1505,7 @@ def _push_note(
     """A pushed cast's Control Roll as the menu prints it.
 
     The target is the one the engine will roll against: less the injury
-    band and an owed off-balance penalty (:func:`_action_roll_penalties`).
+    band and an owed off-balance penalty (:func:`action_roll_penalties`).
     ``channel`` is the actor's Channel for the spell (``None`` with no
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
@@ -1456,7 +1513,7 @@ def _push_note(
     is named with its value. Saying that a ruling allowed it is the caller's,
     from :attr:`Candidate.lifted_bounds` (tarmar-engine #55).
     """
-    injury, off_balance = _action_roll_penalties(actor)
+    injury, off_balance = action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
     invested = push.mana_invested(spell, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
@@ -1585,11 +1642,11 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
 
     The target is the one the engine will roll against, before any refund
     pays some of the debt back: less the injury band and an owed off-balance
-    penalty (:func:`_action_roll_penalties`).
+    penalty (:func:`action_roll_penalties`).
     """
     shortfall = cost - actor.mana
     owed = actor.debt + shortfall
-    injury, off_balance = _action_roll_penalties(actor)
+    injury, off_balance = action_roll_penalties(actor)
     target = borrowing.debt_target(actor, owed) - injury - off_balance
     return (
         f"Borrow {shortfall} mana ({cost} in all, {actor.mana} in the pool, "
@@ -1600,17 +1657,102 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
     )
 
 
-def _action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
+def action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
     """The injury band and owed off-balance penalty a roll the figure makes as
     its action takes, as the engine's ``_action_roll_penalty`` takes them:
     the Tarmar profile's band, the only one this policy and the injected
-    magic rules run under. Read by the hand-to-hand disengage forecast, the
-    anchor, Control Roll and debt notes, and (the injury half only, as the
-    engine's defender side of a counter takes it) the counter candidates
-    (tarmar-engine #43)."""
+    magic rules run under.
+
+    Public so a caller showing a roll's odds subtracts what the engine will
+    (tarmar-engine #56): a spell's chance is :func:`cast_success_chance` of
+    the attribute less both. Read here by the hand-to-hand disengage
+    forecast, the anchor, Control Roll and debt notes, and (the injury half
+    only, as the engine's defender side of a counter takes it) the counter
+    candidates (tarmar-engine #43); and through
+    :func:`_action_roll_deductions` by every d20 forecast, DEFEND's threat,
+    and a cast's casting and aim rolls.
+
+    Args:
+        actor: The figure about to act. Its ``off_balance`` flag is the
+            penalty owed by its next action; the engine spends it when that
+            action begins.
+
+    Returns:
+        ``(injury, off_balance)``, each a positive amount to subtract.
+    """
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     return injury, off_balance
+
+
+#: A penalty a roll takes, as ``(amount, what it is for)``: ``(2, "injury")``.
+_Deduction = tuple[int, str]
+
+
+def _action_roll_deductions(
+    actor: CombatantState, *, next_turn: bool = False
+) -> list[_Deduction]:
+    """:func:`action_roll_penalties` as the deductions a rationale names.
+
+    ``next_turn`` is a roll on the figure's next turn: this turn's action
+    spends the owed off-balance, so only the injury band is left.
+    """
+    injury, off_balance = action_roll_penalties(actor)
+    return [(injury, "injury"), (0 if next_turn else off_balance, "off-balance")]
+
+
+def _deductions_text(deductions: list[_Deduction]) -> str:
+    """The deductions that take something, as a rationale lists them: "2
+    injury and 2 off-balance", "" when none does."""
+    listed = [f"{amount} {reason}" for amount, reason in deductions if amount]
+    if len(listed) <= 1:
+        return "".join(listed)
+    return f"{', '.join(listed[:-1])} and {listed[-1]}"
+
+
+def _rolled_numbers(
+    actor: CombatantState,
+    numbers: combat_math.AttackNumbers,
+    *,
+    next_turn: bool = False,
+) -> tuple[combat_math.AttackNumbers, list[_Deduction]]:
+    """An attack's numbers as the engine rolls them, and what came off.
+
+    :func:`.combat_math.attack_numbers` knows the board, not the figure's
+    state: the engine takes the injury band and an owed off-balance penalty
+    off the bonus when it rolls (its ``_action_roll_penalty``), so every
+    d20 forecast does too (tarmar-engine #56).
+    """
+    deductions = _action_roll_deductions(actor, next_turn=next_turn)
+    taken = sum(amount for amount, _reason in deductions)
+    return replace(numbers, bonus=numbers.bonus - taken), deductions
+
+
+def _to_hit_less(deductions: list[_Deduction]) -> str:
+    """", to hit less 2 injury and 2 off-balance" before a d20 forecast's
+    working, "" when the roll takes nothing off."""
+    listed = _deductions_text(deductions)
+    return f", to hit less {listed}" if listed else ""
+
+
+@dataclass(frozen=True)
+class _RollUnder:
+    """A 3d6 roll-under's target after its deductions, and how it reads."""
+
+    #: The total the roll must not exceed.
+    target: int
+    #: "INT 14", or "INT 14 less 2 injury and 2 off-balance = 10".
+    text: str
+
+
+def _roll_under(name: str, score: int, deductions: list[_Deduction]) -> _RollUnder:
+    """The roll under ``name`` at ``score`` less ``deductions``, as the engine
+    rolls it and the rationale prints it (tarmar-engine #56)."""
+    target = score - sum(amount for amount, _reason in deductions)
+    listed = _deductions_text(deductions)
+    if not listed:
+        return _RollUnder(target, f"{name} {score}")
+    return _RollUnder(target, f"{name} {score} less {listed} = {target}")
 
 
 def _score_options(
@@ -1662,10 +1804,11 @@ def _score_options(
     # grapple, like any HTH, needs one of "Entering Hand-to-Hand"'s
     # conditions against its target (#823).
     hth_targets = [] if actor.is_beast else _hth_targets(state, actor)
+    grapple_targets = _grapple_targets(hth_targets)
     # Inside hand-to-hand the HTH table is the whole menu (tarmar-engine #19).
     in_hth = movement.in_hand_to_hand(state, actor)
-    partners = _hth_partners(state, actor) if in_hth else []
-    can_grapple = engaged and bool(hth_targets)
+    partners = movement.left_behind(state, actor, "v") if in_hth else []
+    can_grapple = engaged and bool(grapple_targets)
     melee_weapon = weapons.has_melee_weapon(actor)
     in_reach = weapons_in_reach(state, actor)
     spares = [spare for spare in actor.spare_weapons if spare.item_id]
@@ -1930,12 +2073,13 @@ def _score_options(
             urgency = 4 if hurt else 1
             score = product_of(DISENGAGE_BASE_SCORE, urgency)
             # The step the engine expects to take with no hex named, straight
-            # back from the first adjacent enemy, then either flank, printed
-            # in the forecast. The engine works it out when the figure acts,
-            # so the candidate names no hex (#20).
+            # back from the figure it steps away from (#62), then either
+            # flank, printed in the forecast. The engine works it out when the
+            # figure acts, so the candidate names no hex (#20).
+            threat = movement.step_away_from(state, actor, letter)
             step = (
-                movement.step_away_hex(state, actor, adjacent_enemies[0])
-                if adjacent_enemies
+                movement.step_away_hex(state, actor, threat)
+                if threat is not None
                 else None
             )
             where = f" toward {step}" if step is not None else ""
@@ -1971,11 +2115,12 @@ def _score_options(
             )
         elif letter == "v" and partners:
             candidates.append(_hth_disengage_candidate(state, actor, partners))
-        elif letter == "o" and hth_targets:
+        elif letter == "o" and grapple_targets:
             # Deterministic target pick (lowest id among the enemies an HTH
-            # entry condition admits, #823) — score is always 0, so this
-            # candidate never wins a comparison against a real attack; it
-            # only exists to show the AI considered and declined it.
+            # entry condition admits, #823, and no hold already has, #60) —
+            # score is always 0, so this candidate never wins a comparison
+            # against a real attack; it only exists to show the AI considered
+            # and declined it.
             candidates.extend(
                 Candidate(
                     letter,
@@ -1984,7 +2129,7 @@ def _score_options(
                     f"Grapple valued at 0 ({GRAPPLE_TACTICS_RATIONALE})",
                     target_id=target.combatant_id,
                 )
-                for target in _aimed_at(hth_targets, every_target)
+                for target in _aimed_at(grapple_targets, every_target)
             )
 
         elif letter == "sprint" and enemy is not None:
@@ -2016,7 +2161,8 @@ def _score_options(
                 passed_over = _passed_over_note(enemy, distance, target)
                 rationale = (
                     f"Sprint up to {actor.move_sprint} hexes toward "
-                    f"{target.name}{passed_over} for 6 Fatigue; {keeps_to_the_run}"
+                    f"{target.name}{passed_over} for "
+                    f"{movement.SPRINT_FATIGUE_COST} Fatigue; {keeps_to_the_run}"
                 )
             candidates.append(
                 Candidate(

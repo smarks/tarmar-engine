@@ -311,3 +311,28 @@ class HexSpanTextTest(TestCase):
         for count, text in cases.items():
             with self.subTest(count=count):
                 self.assertEqual(combat_math.hex_span_text(count), text)
+
+
+class WithArticleTest(TestCase):
+    """#59: the word form of the article, by the word's first letter."""
+
+    def test_an_before_a_vowel_and_a_before_any_other_letter(self):
+        cases = {
+            "axe": "an axe",
+            "Elven bow": "an Elven bow",
+            "elf": "an elf",
+            "orc": "an orc",
+            "Inspired cast": "an Inspired cast",
+            "Unruly surge": "an Unruly surge",
+            "Longbow": "a Longbow",
+            "halfling": "a halfling",
+            "Lucky cast": "a Lucky cast",
+            "Backlash": "a Backlash",
+        }
+        for word, text in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(combat_math.with_article(word), text)
+
+    def test_an_empty_word_has_no_article(self):
+        with self.assertRaises(ValueError):
+            combat_math.with_article("")
