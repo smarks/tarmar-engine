@@ -384,18 +384,31 @@ class LiftedMenuTest(TestCase):
             )
 
         self.assertIn(", Channel 3)", rationale(2))
+        self.assertIn(", past Channel 3)", rationale(3, CHANNEL))
         self.assertIn(
-            f", past Channel 3 {policy.PAST_BY_RULING})", rationale(3, CHANNEL)
-        )
-        self.assertIn(
-            f"past Channel 3 {policy.PAST_BY_RULING}, past the push cap 3 "
-            f"{policy.PAST_BY_RULING})",
+            ", past Channel 3, past the push cap 3)",
             rationale(4, CHANNEL, PUSH_CAP),
         )
 
+    def test_the_ruling_is_left_to_the_caller_s_words(self):
+        # The line names the bound; that a ruling allowed it rides on
+        # lifted_bounds for the caller to word (tarmar-engine #55).
+        self.assertFalse(hasattr(policy, "PAST_BY_RULING"))
+        decision = self.menu(
+            lift(channel_caster({"fire_missile": 2}), CHANNEL, PUSH_CAP)
+        )
+        past = [
+            candidate for candidate in decision.candidates if candidate.lifted_bounds
+        ]
+        self.assertTrue(past)
+        for candidate in past:
+            with self.subTest(candidate=candidate.name):
+                self.assertNotIn("ruling", candidate.rationale)
+                self.assertNotIn("Game Master", candidate.rationale)
+
     def test_an_unpushed_cast_past_a_lifted_channel_says_so(self):
         # Channel 1 for the Bolt (cost 3).
-        note = f"; 3 mana, past Channel 1 {policy.PAST_BY_RULING}"
+        note = "; 3 mana, past Channel 1"
 
         def bolt_lines(state: BattleState, rules: MagicRules) -> list[str]:
             return [
@@ -416,7 +429,7 @@ class LiftedMenuTest(TestCase):
         within = self.menu(lift(channel_caster({"fire_missile": 3}), CHANNEL))
         self.assertFalse(
             any(
-                policy.PAST_BY_RULING in candidate.rationale
+                "past Channel" in candidate.rationale
                 for candidate in within.candidates
                 if candidate.spell_key == "fire_missile" and not candidate.push_mana
             )

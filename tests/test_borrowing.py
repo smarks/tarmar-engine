@@ -164,6 +164,22 @@ class BorrowMenuTest(TestCase):
         self.assertIn(("lightning_bolt", 0), offered)
         self.assertIn(("fire_missile", 0), offered)
 
+    def test_the_borrowing_variant_prices_the_cast_under_the_fumble_floor(self):
+        # The borrowing menu estimates each cast under the injected casting
+        # failure rules too (tarmar-engine #47): INT 18 under the example
+        # floor of 12 succeeds on 3d6 at most 11.
+        state = borrower(mana=0, intelligence=18)
+        floored = with_casting_failure(borrowing_magic_rules())
+        bolt = next(
+            candidate
+            for candidate in self.borrowed(state, floored)
+            if candidate.spell_key == "lightning_bolt" and not candidate.push_mana
+        )
+        self.assertIn(
+            "3d6 ≤ INT 18, under the fumble floor 12 — P(cast) 0.625",
+            bolt.rationale,
+        )
+
     def test_no_borrowing_rules_no_variants_and_no_unaffordable_cast(self):
         state = borrower(mana=0)
         decision = policy.choose_option(

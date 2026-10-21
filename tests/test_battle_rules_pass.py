@@ -801,6 +801,20 @@ class StrikeBackWithADaggerTest(TestCase):
         self.assertEqual(held.weapon.item_id, "dagger")
         self.assertEqual(state.ground_weapons[0].weapon.item_id, "broadsword")
 
+    def test_the_draw_roll_takes_the_band_and_the_off_balance_penalty(self):
+        # The roll reads the one penalty every action roll reads
+        # (tarmar-engine #43): the -2 injury band and the -2 owed off-balance.
+        state, held = self.held()
+        held.spare_weapons = [DAGGER]
+        held.fatigue = 5  # max_fatigue 40: within the 1-5 band, -2.
+        held.off_balance = True
+        held.chosen_letter = "u"
+        events = []
+        runner_for(state, [[2, 2, 2]], events).execute_action(held)
+        draw = events_of_type(events, "roll")[0]
+        self.assertEqual(draw["payload"]["purpose"], "draw dagger")
+        self.assertEqual(draw["payload"]["target_number"], held.dexterity - 4)
+
 
 class HthEntryConditionsTest(TestCase):
     """#823 — hand-to-hand-and-grappling.md: "only if one of these holds: the

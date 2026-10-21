@@ -152,6 +152,13 @@ class UnreachableChargeTest(TestCase):
         self.assertEqual(charge_candidate.score, 0.0)
         self.assertIn("out of charge reach", charge_candidate.rationale)
 
+    def test_the_jog_it_names_takes_an_before_eight(self):
+        state = rim_board(hexes.neighbors(ARCHER_HEX))
+        state.by_id(1).move_jog = 8
+        self.assertIn(
+            "an 8-hex jog along a clear path ends", candidate_for(state, "b").rationale
+        )
+
     def test_a_charge_that_can_go_round_is_still_priced(self):
         state = rim_board(ISSUE_BLOCKERS)
         decision = policy.choose_option(state, state.by_id(1))
@@ -518,3 +525,182 @@ class DefaultApproachTest(TestCase):
                     ),
                     reaches,
                 )
+
+
+def ringed_sprinter_board() -> BattleState:
+    """The tarmar-studio #57 board: a sprinter ringed by six downed figures,
+    an archer three hexes off."""
+    sprinter = make_combatant(1, name="Sprinter", q=0, r=0, move_sprint=18)
+    archer = make_combatant(2, name="Ulfa", q=3, r=0, weapon=SMALL_BOW)
+    ring = [
+        make_combatant(10 + index, q=cell[0], r=cell[1], conscious=False)
+        for index, cell in enumerate(hexes.neighbors((0, 0)))
+    ]
+    return BattleState(arena_radius=8, combatants=[sprinter, archer, *ring])
+
+
+def sprinter_beside_a_ringed_archer() -> BattleState:
+    """A sprinter two hexes from an archer ringed by six downed figures, so
+    no path gets it nearer, and a second enemy, Brin, on clear ground."""
+    sprinter = make_combatant(1, name="Sprinter", q=-2, r=0, move_sprint=18)
+    archer = make_combatant(2, name="Ulfa", q=0, r=0, weapon=SMALL_BOW)
+    brin = make_combatant(3, name="Brin", q=-2, r=6)
+    ring = [
+        make_combatant(10 + index, q=cell[0], r=cell[1], conscious=False)
+        for index, cell in enumerate(hexes.neighbors((0, 0)))
+    ]
+    return BattleState(arena_radius=8, combatants=[sprinter, archer, brin, *ring])
+
+
+def candidate_for(state: BattleState, letter: str) -> policy.Candidate:
+    """Figure 1's menu entry for ``letter``."""
+    decision = policy.choose_option(state, state.by_id(1))
+    return next(
+        candidate for candidate in decision.candidates if candidate.letter == letter
+    )
+
+
+def sprint_candidate(state: BattleState) -> policy.Candidate:
+    """Figure 1's SPRINT on the menu."""
+    return candidate_for(state, "sprint")
+
+
+def sprinter_with_one_gap_away_from_the_archer() -> BattleState:
+    """A sprinter (run 2, sprint 18) ringed by five downed figures, the one gap
+    at (0, -1) on the side away from Ulfa at (4, 0): too short a run to get
+    round the ring nearer to her, a sprint long enough to."""
+    sprinter = make_combatant(1, name="Sprinter", q=0, r=0, move_run=2, move_sprint=18)
+    archer = make_combatant(2, name="Ulfa", q=4, r=0, weapon=SMALL_BOW)
+    ring = [
+        make_combatant(10 + index, q=cell[0], r=cell[1], conscious=False)
+        for index, cell in enumerate(
+            cell for cell in hexes.neighbors((0, 0)) if cell != (0, -1)
+        )
+    ]
+    return BattleState(arena_radius=8, combatants=[sprinter, archer, *ring])
+
+
+class BlockedSprintTest(TestCase):
+    """SPRINT says what the engine will do and goes where MOVE goes
+    (tarmar-engine #51)."""
+
+    def test_the_boards(self):
+        ringed = ringed_sprinter_board()
+        self.assertEqual(
+            combat_math.figure_distance(ringed.by_id(1), ringed.by_id(2)), 3
+        )
+        beside = sprinter_beside_a_ringed_archer()
+        sprinter = beside.by_id(1)
+        self.assertEqual(combat_math.figure_distance(sprinter, beside.by_id(2)), 2)
+        self.assertEqual(combat_math.figure_distance(sprinter, beside.by_id(3)), 6)
+        self.assertEqual(policy.nearest_enemy(beside, sprinter), beside.by_id(2))
+
+    def test_a_ringed_sprinter_says_it_stands(self):
+        sprint = sprint_candidate(ringed_sprinter_board())
+        self.assertTrue(sprint.rationale.startswith("Stand where you are"))
+        self.assertIn("no clear path within an 18-hex sprint", sprint.rationale)
+        self.assertIn("no Fatigue is paid", sprint.rationale)
+        self.assertNotIn("Sprint up to", sprint.rationale)
+        self.assertEqual(sprint.score, 0.0)
+
+    def test_and_the_engine_does_stand_and_pays_nothing(self):
+        state = ringed_sprinter_board()
+        sprinter = state.by_id(1)
+        sprint = sprint_candidate(state)
+        sprinter.chosen_letter = sprint.letter
+        sprinter.chosen_target = sprint.target_id
+        events: list[dict] = []
+        runner_for(state, events=events).move_towards_target(sprinter)
+        self.assertEqual(sprinter.position, (0, 0))
+        self.assertEqual(sprinter.fatigue, sprinter.max_fatigue)
+        self.assertEqual(events_of_type(events, "movement"), [])
+
+    def test_it_sprints_at_the_enemy_move_closes_on(self):
+        state = sprinter_beside_a_ringed_archer()
+        sprint = sprint_candidate(state)
+        move = next(
+            candidate
+            for candidate in policy.choose_option(state, state.by_id(1)).candidates
+            if candidate.letter == "a"
+        )
+        self.assertEqual(move.target_id, 3)
+        self.assertEqual(sprint.target_id, move.target_id)
+        self.assertIn(
+            "Sprint up to 18 hexes toward Brin (Ulfa, 2 hexes off, cannot be "
+            "neared) for 6 Fatigue",
+            sprint.rationale,
+        )
+
+    def test_and_the_engine_sprints_toward_that_enemy(self):
+        state = sprinter_beside_a_ringed_archer()
+        sprinter, brin = state.by_id(1), state.by_id(3)
+        sprint = sprint_candidate(state)
+        sprinter.chosen_letter = sprint.letter
+        sprinter.chosen_target = sprint.target_id
+        runner_for(state).move_towards_target(sprinter)
+        self.assertEqual(combat_math.figure_distance(sprinter, brin), 1)
+        self.assertEqual(
+            sprinter.fatigue, sprinter.max_fatigue - engine.SPRINT_FATIGUE_COST
+        )
+
+    def test_an_adjacent_sprinter_says_it_stands_and_does(self):
+        # Ulfa faces away, so the sprinter beside her is not engaged and may
+        # still choose to sprint.
+        state = BattleState(
+            arena_radius=8,
+            combatants=[
+                make_combatant(1, name="Sprinter", q=0, r=0, move_sprint=18),
+                make_combatant(2, name="Ulfa", q=1, r=0, facing=0),
+            ],
+        )
+        sprinter = state.by_id(1)
+        sprint = sprint_candidate(state)
+        self.assertIn("Stand where you are, already adjacent to Ulfa", sprint.rationale)
+        sprinter.chosen_letter = sprint.letter
+        sprinter.chosen_target = sprint.target_id
+        runner_for(state).move_towards_target(sprinter)
+        self.assertEqual(sprinter.position, (0, 0))
+        self.assertEqual(sprinter.fatigue, sprinter.max_fatigue)
+
+    def test_the_sprint_searches_at_its_own_gait(self):
+        # A run is too short to get round the ring nearer to Ulfa; a sprint
+        # is not, so SPRINT does not stand where MOVE would (the search is at
+        # the sprint gait, not the run's).
+        state = sprinter_with_one_gap_away_from_the_archer()
+        self.assertIn(
+            "no clear path within a 2-hex run gets nearer",
+            candidate_for(state, "a").rationale,
+        )
+        sprint = sprint_candidate(state)
+        self.assertIn(
+            "Sprint up to 18 hexes toward Ulfa for 6 Fatigue", sprint.rationale
+        )
+        sprinter = state.by_id(1)
+        sprinter.chosen_letter = sprint.letter
+        sprinter.chosen_target = sprint.target_id
+        runner_for(state).move_towards_target(sprinter)
+        self.assertEqual(sprinter.position, (4, -1))
+        self.assertEqual(sprinter.max_fatigue, 40)
+        self.assertEqual(sprinter.fatigue, 34)
+
+    def test_a_blocked_run_takes_an_before_eight(self):
+        state = ringed_sprinter_board()
+        state.by_id(1).move_run = 8
+        self.assertIn(
+            "no clear path within an 8-hex run gets nearer",
+            candidate_for(state, "a").rationale,
+        )
+
+    def test_in_the_open_the_sprint_is_unchanged(self):
+        state = BattleState(
+            arena_radius=12,
+            combatants=[
+                make_combatant(1, name="Sprinter", q=-10, r=0, move_sprint=18),
+                make_combatant(2, name="Ulfa", q=10, r=0),
+            ],
+        )
+        self.assertEqual(
+            sprint_candidate(state).rationale,
+            "Sprint up to 18 hexes toward Ulfa for 6 Fatigue; the AI keeps to "
+            "the run = 0.000",
+        )

@@ -60,6 +60,7 @@ from .magic import (
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
+    CastingFailureRules,
     ChannelUnclassifiedSpell,
     CounterspellRules,
     MagicRules,
@@ -69,14 +70,11 @@ from .magic import (
     attribute_score,
     bound_lifted,
     casting_mana,
+    casting_success_ceiling,
 )
 from .reactions import TarmarReactions
 from .spells import Spell, get_spell
 from .state import BattleState, CombatantState, WeaponState
-
-#: How a menu line says a bound was passed on a Game Master's lifting of it
-#: (tarmar-studio #37).
-PAST_BY_RULING = "by a Game Master's ruling"
 
 # Utility knobs. Centralized so tuning the AI is a data change.
 MOVE_BASE_SCORE = 1.0
@@ -245,6 +243,29 @@ def three_d6_at_most(target: int) -> float:
     return outcomes / 216
 
 
+def cast_success_chance(
+    attribute: int, casting_failure: CastingFailureRules | None
+) -> float:
+    """Exact chance a casting roll succeeds, as the engine judges it.
+
+    3d6 at or under the attribute and, with casting failure rules injected,
+    under their fumble floor (:func:`.magic.casting_success_ceiling`). The
+    AI's spell choice is scored by it, and a caller showing a spell's odds
+    calls it with the same rules to show the same number (tarmar-engine #47).
+
+    Args:
+        attribute: The effective attribute the roll is made under: the
+            engine rolls under the attribute less the injury band and any
+            owed off-balance penalty. The policy's own menu still passes the
+            raw attribute (tarmar-engine #56), so its estimate matches the
+            engine's verdict only for an unhurt caster with no off-balance
+            owed.
+        casting_failure: The injected casting failure rules
+            (``MagicRules.casting_failure``), or ``None``: the attribute alone.
+    """
+    return three_d6_at_most(casting_success_ceiling(attribute, casting_failure))
+
+
 def four_d6_at_most(target: int) -> float:
     """Exact P(4d6 <= target): the HTH DISENGAGE and Struggle Free roll."""
     outcomes = 0
@@ -346,6 +367,38 @@ def _approaches(
         )
 
 
+def _nearable_enemy(
+    state: BattleState, actor: CombatantState, option_key: str
+) -> tuple[CombatantState, int] | None:
+    """The nearest enemy the engine's own move for ``option_key`` gets the
+    actor nearer to,
+    with its distance now, or ``None`` when no path gets nearer to any.
+
+    MOVE and SPRINT close on this enemy rather than on a nearer one the
+    engine's own approach could not near, where the figure would stand
+    (tarmar-engine #37, #51).
+    """
+    return next(
+        (
+            (other, now)
+            for other, now, approach in _approaches(state, actor, option_key)
+            if approach.distance < now
+        ),
+        None,
+    )
+
+
+def _passed_over_note(
+    nearest: CombatantState, distance: int, target: CombatantState
+) -> str:
+    """How a MOVE or SPRINT names the nearer enemy it reads past for
+    ``target`` (:func:`_nearable_enemy`), or nothing when it goes for the
+    nearest."""
+    if target is nearest:
+        return ""
+    return f" ({nearest.name}, {distance} hexes off, cannot be neared)"
+
+
 def _attack_forecast(
     actor: CombatantState, defender: CombatantState, *, ranged: bool
 ) -> tuple[float, str]:
@@ -400,11 +453,14 @@ def _cast_candidates(
     actor: CombatantState,
     letter: str,
     beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
     ``beyond_purse`` lists the spells the actor cannot afford too, for the
     borrowing variants to be built from (:func:`_borrow_candidates`).
+    ``casting_failure`` is the injected casting failure rules, whose fumble
+    floor bounds the chance of a cast (:func:`cast_success_chance`).
     """
     candidates = []
     enemy = nearest_enemy(state, actor)
@@ -415,10 +471,16 @@ def _cast_candidates(
         if spell.continuing and key in actor.active_spells:
             continue  # already up; renewal happens in phase 2
         attribute = actor.intelligence if spell.attribute == "INT" else actor.wisdom
-        cast_probability = three_d6_at_most(attribute)
+        cast_probability = cast_success_chance(attribute, casting_failure)
         attribute_name = spell.attribute
+        floor_note = ""
+        if (
+            casting_failure is not None
+            and casting_success_ceiling(attribute, casting_failure) < attribute
+        ):
+            floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
         cast_note = (
-            f"3d6 ≤ {attribute_name} {attribute} — P(cast) "
+            f"3d6 ≤ {attribute_name} {attribute}{floor_note} — P(cast) "
             f"{score_text(cast_probability)}"
         )
         if spell.heals:
@@ -482,7 +544,10 @@ def _cast_candidates(
 
 
 def _grappled_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
@@ -539,12 +604,15 @@ def _grappled_decision(
                 target_id=grappler_id,
             )
         )
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, casting_failure)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
 def _mastery_three_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
     return [
@@ -557,13 +625,18 @@ def _mastery_three_casts(
             target_id=candidate.target_id,
             spell_key=candidate.spell_key,
         )
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure
+        )
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
 
 
 def _grappler_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
@@ -599,7 +672,7 @@ def _grappler_decision(
     ]
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, casting_failure)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
@@ -689,7 +762,10 @@ def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantSt
 
 
 def _hth_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> list[Candidate]:
     """Casts the HTH table allows: "If hands free or no-gesture spell".
 
@@ -700,7 +776,9 @@ def _hth_casts(
     hands_free = actor.weapon.item_id == ""
     return [
         candidate
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, casting_failure
+        )
         if hands_free
         or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
     ]
@@ -724,8 +802,7 @@ def _hth_disengage_candidate(
     of two strikes' worth is never more than one.
     """
     partner = partners[0]
-    injury = TarmarReactions().injury_penalty(actor)
-    off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
+    injury, off_balance = _action_roll_penalties(actor)
     effective_dex = actor.dexterity - injury - off_balance
     probability = four_d6_at_most(effective_dex)
     held = 1 - probability
@@ -821,7 +898,11 @@ def choose_option(
     cast past the Channel, so a menu built without them can offer one it
     will not run.
     """
-    decision = _score_options(state, actor)
+    decision = _score_options(
+        state,
+        actor,
+        casting_failure=None if magic is None else magic.casting_failure,
+    )
     if magic is not None and magic.channel is not None:
         decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
@@ -919,7 +1000,7 @@ def _counter_candidates(
         return []
     bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
-    injury, _off_balance = _casting_penalties(actor)
+    injury, _off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
     for caster in state.enemies_of(actor):
         if not _is_mage(caster):
@@ -1017,8 +1098,8 @@ def _anchor_candidates(
 def _anchor_note(actor: CombatantState, rule: RollUnderRule) -> str:
     """An anchor roll as the menu prints it: less the injury band and an
     owed off-balance penalty, as the engine takes them
-    (:func:`_casting_penalties`)."""
-    injury, off_balance = _casting_penalties(actor)
+    (:func:`_action_roll_penalties`)."""
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, rule.attribute)
     target = attribute - injury - off_balance
     return (
@@ -1036,10 +1117,10 @@ def _within_channel(
     for it (:meth:`.magic.MagicRules.cast_within_channel`, the engine's own
     test; unless a Game Master has lifted Channel for the actor: the cast is
     then kept, carries :data:`~.magic.CHANNEL` in
-    :attr:`Candidate.lifted_bounds` and its rationale says it passes the
-    Channel by ruling), or when the Channel rules give the spell no kind of
-    magic (the engine would refuse either), and :attr:`Decision.withheld`
-    says why, once per spell. The withheld casts
+    :attr:`Candidate.lifted_bounds` and its rationale names the Channel it
+    passes), or when the Channel rules give the spell no kind of magic (the
+    engine would refuse either), and :attr:`Decision.withheld` says why, once
+    per spell. The withheld casts
     leave the player's menu and the AI's choice alike. When the AI had
     chosen one, it takes the best of what remains by the rule it chose with
     (the highest score, the first listed on a tie).
@@ -1160,14 +1241,15 @@ def _push_note(
     """A pushed cast's Control Roll as the menu prints it.
 
     The target is the one the engine will roll against: less the injury
-    band and an owed off-balance penalty (:func:`_casting_penalties`).
+    band and an owed off-balance penalty (:func:`_action_roll_penalties`).
     ``channel`` is the actor's Channel for the spell (``None`` with no
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
     lifted_bounds_passed`), which only a Game Master's lifting allows; each
-    says so (:data:`PAST_BY_RULING`).
+    is named with its value. Saying that a ruling allowed it is the caller's,
+    from :attr:`Candidate.lifted_bounds` (tarmar-engine #55).
     """
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
     invested = push.mana_invested(spell, extra_mana)
     target = attribute - push.penalty_per_mana * invested - injury - off_balance
@@ -1176,7 +1258,7 @@ def _push_note(
     if channel is not None:
         bound_notes.append(_channel_note(channel, passed))
     if PUSH_CAP in passed:
-        bound_notes.append(f"past the push cap {push.max_push_mana} {PAST_BY_RULING}")
+        bound_notes.append(f"past the push cap {push.max_push_mana}")
     channel_note = "".join(f", {note}" for note in bound_notes)
     return (
         f"Push {extra_mana} extra mana ({total} "
@@ -1189,11 +1271,13 @@ def _push_note(
 
 def _channel_note(channel: int, passed: tuple[str, ...]) -> str:
     """The actor's Channel as a menu line names it for a casting that goes
-    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`): past
-    it only on a Game Master's lifting (:data:`PAST_BY_RULING`)."""
+    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`). Past it
+    only on a Game Master's lifting, which the line leaves to the caller to
+    say from :attr:`Candidate.lifted_bounds`, in its own words
+    (tarmar-engine #55)."""
     if CHANNEL not in passed:
         return f"Channel {channel}"
-    return f"past Channel {channel} {PAST_BY_RULING}"
+    return f"past Channel {channel}"
 
 
 def _borrow_candidates(
@@ -1227,7 +1311,9 @@ def _borrow_candidates(
         return []
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
-    menu = _score_options(state, actor, beyond_purse=True)
+    menu = _score_options(
+        state, actor, beyond_purse=True, casting_failure=magic.casting_failure
+    )
     menu = _within_channel(actor, menu, magic)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
     cap_lifted = bound_lifted(actor, PUSH_CAP)
@@ -1286,11 +1372,11 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
 
     The target is the one the engine will roll against, before any refund
     pays some of the debt back: less the injury band and an owed off-balance
-    penalty (:func:`_casting_penalties`).
+    penalty (:func:`_action_roll_penalties`).
     """
     shortfall = cost - actor.mana
     owed = actor.debt + shortfall
-    injury, off_balance = _casting_penalties(actor)
+    injury, off_balance = _action_roll_penalties(actor)
     target = borrowing.debt_target(actor, owed) - injury - off_balance
     return (
         f"Borrow {shortfall} mana ({cost} in all, {actor.mana} in the pool, "
@@ -1301,17 +1387,24 @@ def _borrow_note(actor: CombatantState, borrowing: BorrowingRules, cost: int) ->
     )
 
 
-def _casting_penalties(actor: CombatantState) -> tuple[int, int]:
-    """The injury band and owed off-balance penalty the magic rolls take, as
-    the engine takes them: the Tarmar profile's band, the only one the
-    injected magic rules run under."""
+def _action_roll_penalties(actor: CombatantState) -> tuple[int, int]:
+    """The injury band and owed off-balance penalty a roll the figure makes as
+    its action takes, as the engine's ``_action_roll_penalty`` takes them:
+    the Tarmar profile's band, the only one this policy and the injected
+    magic rules run under. Read by the hand-to-hand disengage forecast, the
+    anchor, Control Roll and debt notes, and (the injury half only, as the
+    engine's defender side of a counter takes it) the counter candidates
+    (tarmar-engine #43)."""
     injury = TarmarReactions().injury_penalty(actor)
     off_balance = combat_math.OFF_BALANCE_PENALTY if actor.off_balance else 0
     return injury, off_balance
 
 
 def _score_options(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    casting_failure: CastingFailureRules | None = None,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -1325,12 +1418,13 @@ def _score_options(
 
     ``beyond_purse`` lists every cast the situation allows, affordable or
     not: the menu :func:`_borrow_candidates` builds its variants from. The
-    AI's own menu never sets it.
+    AI's own menu never sets it. ``casting_failure`` is the injected casting
+    failure rules every cast's chance is estimated under.
     """
     if actor.grappled_by is not None:
-        return _grappled_decision(state, actor, beyond_purse)
+        return _grappled_decision(state, actor, beyond_purse, casting_failure)
     if actor.grappling is not None:
-        return _grappler_decision(state, actor, beyond_purse)
+        return _grappler_decision(state, actor, beyond_purse, casting_failure)
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
     adjacent_enemies = [
@@ -1416,22 +1510,9 @@ def _score_options(
                 # nearer to, not a nearer one it cannot (#37).
                 nearable = None
                 if distance > 1:
-                    nearable = next(
-                        (
-                            (other, now)
-                            for other, now, approach in _approaches(
-                                state, actor, letter
-                            )
-                            if approach.distance < now
-                        ),
-                        None,
-                    )
+                    nearable = _nearable_enemy(state, actor, letter)
                 target, target_distance = nearable or (enemy, distance)
-                passed_over = (
-                    f" ({enemy.name}, {distance} hexes off, cannot be neared)"
-                    if target is not enemy
-                    else ""
-                )
+                passed_over = _passed_over_note(enemy, distance, target)
                 distance = target_distance
                 # Each band says which side of the line the distance fell on,
                 # so a bare 0.5 is no longer an unexplained half (#301).
@@ -1443,19 +1524,19 @@ def _score_options(
                     # make gets no nearer, so it would stand still (#37).
                     score = 0.0
                     band = (
-                        f"no clear path within a {run}-hex run gets nearer "
-                        "to any enemy, so moving gains nothing"
+                        f"no clear path within {combat_math.hex_span_text(run)} run "
+                        "gets nearer to any enemy, so moving gains nothing"
                     )
                 elif distance <= jog:
                     score = round_score(MOVE_BASE_SCORE / 2)
                     band = (
-                        f"within a {jog}-hex jog, so half of "
+                        f"within {combat_math.hex_span_text(jog)} jog, so half of "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 else:
                     score = round_score(MOVE_BASE_SCORE)
                     band = (
-                        f"beyond a {jog}-hex jog, so the full "
+                        f"beyond {combat_math.hex_span_text(jog)} jog, so the full "
                         f"{score_text(MOVE_BASE_SCORE)}"
                     )
                 candidates.append(
@@ -1491,7 +1572,7 @@ def _score_options(
                 score = 0.0
                 rationale = (
                     f"{enemy.name} is {combat_math.hexes_text(distance)} away and "
-                    f"a {jog}-hex jog along a clear path ends "
+                    f"{combat_math.hex_span_text(jog)} jog along a clear path ends "
                     f"{combat_math.hexes_text(arrival)} from it, out of charge "
                     f"reach, as is every other enemy = {score_text(score)}"
                 )
@@ -1638,9 +1719,11 @@ def _score_options(
                 )
             )
         elif letter == "r" and in_hth:
-            candidates.extend(_hth_casts(state, actor, beyond_purse))
+            candidates.extend(_hth_casts(state, actor, beyond_purse, casting_failure))
         elif letter in ("h", "r"):
-            candidates.extend(_cast_candidates(state, actor, letter, beyond_purse))
+            candidates.extend(
+                _cast_candidates(state, actor, letter, beyond_purse, casting_failure)
+            )
         elif letter == "u" and in_hth:
             candidates.append(
                 Candidate(
@@ -1670,15 +1753,43 @@ def _score_options(
             )
 
         elif letter == "sprint" and enemy is not None:
+            # The sprint it says it makes is the one the engine will make: at
+            # the enemy MOVE would pick, the nearest a clear path gets nearer
+            # to, and standing (no Fatigue paid) when none is (#51).
+            distance = combat_math.figure_distance(actor, enemy)
+            nearable = None
+            if distance > 1:
+                nearable = _nearable_enemy(state, actor, letter)
+            keeps_to_the_run = (
+                f"the AI keeps to the run = {score_text(PLAYER_ONLY_SCORE)}"
+            )
+            if nearable is None:
+                target = enemy
+                why = (
+                    f"already adjacent to {enemy.name}"
+                    if distance <= 1
+                    else "no clear path within "
+                    f"{combat_math.hex_span_text(actor.move_sprint)} sprint gets "
+                    "nearer to any enemy"
+                )
+                rationale = (
+                    f"Stand where you are, {why}, so no Fatigue is paid; "
+                    f"{keeps_to_the_run}"
+                )
+            else:
+                target = nearable[0]
+                passed_over = _passed_over_note(enemy, distance, target)
+                rationale = (
+                    f"Sprint up to {actor.move_sprint} hexes toward "
+                    f"{target.name}{passed_over} for 6 Fatigue; {keeps_to_the_run}"
+                )
             candidates.append(
                 Candidate(
                     letter,
                     actions.option_name(letter),
                     PLAYER_ONLY_SCORE,
-                    f"Sprint up to {actor.move_sprint} hexes toward {enemy.name} "
-                    f"for 6 Fatigue; the AI keeps to the run = "
-                    f"{score_text(PLAYER_ONLY_SCORE)}",
-                    target_id=enemy.combatant_id,
+                    rationale,
+                    target_id=target.combatant_id,
                 )
             )
         elif letter == "d":
