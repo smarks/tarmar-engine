@@ -93,6 +93,26 @@ def is_armed(combatant: CombatantState) -> bool:
     return combatant.is_beast or combatant.weapon.item_id != ""
 
 
+def throw_leaves_no_hand_weapon(combatant: CombatantState) -> bool:
+    """Would a MISSILE (f) throw leave the figure with no hand weapon?
+
+    The weapon in hand can be thrown but is no missile weapon (a dagger, a
+    spear, a mace), and no spare hand weapon is carried. The policy keeps
+    such a weapon rather than end the turn bare-handed, offering the throw
+    to a player only (tarmar-studio #812); a consuming game reads the same
+    answer here rather than copying the condition.
+    """
+    weapon = combatant.weapon
+    return (
+        weapon.is_thrown
+        and not weapon.is_missile
+        and not any(
+            spare.item_id and not spare.is_missile
+            for spare in combatant.spare_weapons
+        )
+    )
+
+
 def has_melee_weapon(combatant: CombatantState) -> bool:
     """Can make option j/b's "Melee attack (non-missile)".
 

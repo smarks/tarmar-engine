@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
+from typing import TypeVar
 
 from . import actions, combat_math, hexes, movement, weapons
 from . import resolution as combat
@@ -77,6 +78,10 @@ from .state import BattleState, CombatantState, WeaponState
 #: How a menu line says a bound was passed on a Game Master's lifting of it
 #: (tarmar-studio #37).
 PAST_BY_RULING = "by a Game Master's ruling"
+#: Whatever an option is aimed with (tarmar-engine #21): its targets, or its
+#: candidates at them.
+Aimed = TypeVar("Aimed")
+
 #: The key a candidate's forecast is carried under in its payload
 #: (:class:`Forecast`, tarmar-engine #22).
 FORECAST_KEY = "forecast"
@@ -492,19 +497,75 @@ def _attack_forecast(
     return forecast, f"{actor.weapon.name} at {reach}{range_note}, {forecast.working()}"
 
 
+def _aimed_at(targets: list[Aimed], every_target: bool) -> list[Aimed]:
+    """The first of ``targets``, the AI's, or with ``every_target`` all of
+    them, the AI's first (tarmar-engine #21)."""
+    return targets if every_target else targets[:1]
+
+
+def _best_first(aimed: list[Candidate], every_target: bool) -> list[Candidate]:
+    """The best-scoring of one option's candidates at its targets (the first
+    on a tie), the AI's pick, then with ``every_target`` the rest in their
+    order (tarmar-engine #21)."""
+    best = max(aimed, key=lambda candidate: candidate.score)
+    if not every_target:
+        return [best]
+    return [best, *(candidate for candidate in aimed if candidate is not best)]
+
+
+def _charge_candidate(
+    actor: CombatantState,
+    target: CombatantState,
+    passed_over: CombatantState | None,
+    hurt: bool,
+    letter: str,
+) -> Candidate:
+    """A CHARGE (b) at an enemy its jog ends beside, priced as the swing it
+    ends in; ``passed_over`` is the nearer enemy it cannot reach, if any."""
+    forecast, rationale = _attack_forecast(actor, target, ranged=False)
+    if passed_over is not None:
+        rationale = f"{passed_over.name} is nearer but out of charge reach; {rationale}"
+    score, rationale = _beast_caution(actor, hurt, forecast.score, rationale)
+    return _charge(letter, target, score, rationale, forecast)
+
+
+def _charge(
+    letter: str,
+    target: CombatantState,
+    score: float,
+    rationale: str,
+    forecast: Forecast | None = None,
+) -> Candidate:
+    """A CHARGE (b) candidate at ``target``, reaching it or not."""
+    return Candidate(
+        letter,
+        actions.option_name(letter),
+        score,
+        f"Charge {target.name}: {rationale}",
+        target_id=target.combatant_id,
+        forecast=forecast,
+    )
+
+
 def _cast_candidates(
     state: BattleState,
     actor: CombatantState,
     letter: str,
     beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
     ``beyond_purse`` lists the spells the actor cannot afford too, for the
     borrowing variants to be built from (:func:`_borrow_candidates`).
+
+    The AI aims a damaging spell at the nearest enemy. ``every_target``
+    offers it at every active enemy as well, the nearest first, each priced
+    against its own target (tarmar-engine #21): a spell has no range, and the
+    engine lands a cast on whichever active enemy it names.
     """
     candidates = []
-    enemy = nearest_enemy(state, actor)
+    aimed_at = _aimed_at(enemies_by_distance(state, actor), every_target)
     for key in actor.spells:
         spell = get_spell(key)
         if spell.level > actor.mana and not beyond_purse:
@@ -546,9 +607,6 @@ def _cast_candidates(
                 )
             )
             continue
-        if enemy is None:
-            continue
-        stops = 0 if spell.ignores_armour else enemy.stops
         aim_note = ""
         probability = cast_probability
         if spell.targeted:
@@ -558,30 +616,36 @@ def _cast_candidates(
                 f" x P(aim) {score_text(aim_probability)} "
                 f"(3d6 ≤ DEX {actor.dexterity})"
             )
-        forecast = Forecast(
-            hit_chance=round_score(probability),
-            damage_expression=spell.damage,
-            armour_stops=stops,
-            expected_damage=round_score(
-                combat_math.expected_damage(spell.damage, stops)
-            ),
-        )
-        candidates.append(
-            Candidate(
-                letter,
-                f"CAST SPELL {spell.name}",
-                forecast.score,
-                f"{cast_note}{aim_note} — {forecast.working(f' on {enemy.name}')}",
-                target_id=enemy.combatant_id,
-                spell_key=key,
-                forecast=forecast,
+        for enemy in aimed_at:
+            stops = 0 if spell.ignores_armour else enemy.stops
+            forecast = Forecast(
+                hit_chance=round_score(probability),
+                damage_expression=spell.damage,
+                armour_stops=stops,
+                expected_damage=round_score(
+                    combat_math.expected_damage(spell.damage, stops)
+                ),
             )
-        )
+            working = forecast.working(f" on {enemy.name}")
+            candidates.append(
+                Candidate(
+                    letter,
+                    f"CAST SPELL {spell.name}",
+                    forecast.score,
+                    f"{cast_note}{aim_note} — {working}",
+                    target_id=enemy.combatant_id,
+                    spell_key=key,
+                    forecast=forecast,
+                )
+            )
     return candidates
 
 
 def _grappled_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
@@ -638,12 +702,15 @@ def _grappled_decision(
                 target_id=grappler_id,
             )
         )
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, every_target)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
 def _mastery_three_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
     return [
@@ -657,13 +724,18 @@ def _mastery_three_casts(
             spell_key=candidate.spell_key,
             forecast=candidate.forecast,
         )
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, every_target
+        )
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
 
 
 def _grappler_decision(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
@@ -699,7 +771,7 @@ def _grappler_decision(
     ]
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
-    candidates += _mastery_three_casts(state, actor, beyond_purse)
+    candidates += _mastery_three_casts(state, actor, beyond_purse, every_target)
     return Decision(chosen=candidates[0], candidates=candidates)
 
 
@@ -789,7 +861,10 @@ def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantSt
 
 
 def _hth_casts(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """Casts the HTH table allows: "If hands free or no-gesture spell".
 
@@ -800,7 +875,9 @@ def _hth_casts(
     hands_free = actor.weapon.item_id == ""
     return [
         candidate
-        for candidate in _cast_candidates(state, actor, "r", beyond_purse)
+        for candidate in _cast_candidates(
+            state, actor, "r", beyond_purse, every_target
+        )
         if hands_free
         or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
     ]
@@ -892,7 +969,11 @@ def _hth_strike_forecast(
 
 
 def choose_option(
-    state: BattleState, actor: CombatantState, magic: MagicRules | None = None
+    state: BattleState,
+    actor: CombatantState,
+    magic: MagicRules | None = None,
+    *,
+    every_target: bool = False,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -917,8 +998,21 @@ def choose_option(
     ``functools.partial(choose_option, magic=rules)``: the engine refuses a
     cast past the Channel, so a menu built without them can offer one it
     will not run.
+
+    ``every_target`` is the menu a person aims (tarmar-engine #21). The AI
+    aims each attack and each damaging cast at one enemy; this menu also
+    offers it at every other enemy the option may legally be aimed at, each
+    priced and explained by the code that prices the AI's own (its score,
+    rationale and :attr:`Candidate.forecast`), right after the AI's own
+    target: ATTACK (j) and ONE LAST SHOT (l) at each adjacent enemy, CHARGE
+    (b, and its yielded variant) at each enemy its jog ends beside, MISSILE
+    (f) at each active enemy, an HTH strike (t) and ATTEMPT HTH (o) at each
+    enemy an entry condition admits, and a damaging cast at each active
+    enemy, with its pushed, borrowing and escalated variants. ``chosen`` is
+    the AI's own choice, unchanged, and is one of the candidates. A figure
+    in a grapple keeps its fixed menu, but for its casts.
     """
-    decision = _score_options(state, actor)
+    decision = _score_options(state, actor, every_target=every_target)
     if magic is not None and magic.channel is not None:
         decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
@@ -927,7 +1021,7 @@ def choose_option(
         )
     if magic is not None and magic.borrowing is not None:
         decision.candidates.extend(
-            _borrow_candidates(state, actor, magic, magic.borrowing)
+            _borrow_candidates(state, actor, magic, magic.borrowing, every_target)
         )
     if magic is not None and magic.counterspell is not None:
         _mark_escalations(actor, decision)
@@ -948,7 +1042,31 @@ def choose_option(
         decision.candidates.extend(
             _counter_candidates(state, actor, magic.counterspell)
         )
+    if every_target:
+        # The AI's choice is made on its own menu, so an option it aims
+        # elsewhere can never displace it, whatever it scores.
+        decision.chosen = _the_ais_choice(
+            decision.candidates, choose_option(state, actor, magic).chosen
+        )
     return decision
+
+
+def _the_ais_choice(candidates: list[Candidate], chosen: Candidate) -> Candidate:
+    """The candidate on the every-target menu that is the AI's own choice.
+
+    Both menus are built by the same code, so the AI's choice is on the wider
+    one, field for field, ahead of every option aimed elsewhere.
+
+    Raises:
+        LookupError: the wider menu lacks it, which would be a policy bug.
+    """
+    for candidate in candidates:
+        if candidate == chosen:
+            return candidate
+    raise LookupError(
+        f"the every-target menu lacks the AI's choice {chosen.letter} "
+        f"at {chosen.target_id}"
+    )
 
 
 def _is_mage(actor: CombatantState) -> bool:
@@ -1297,6 +1415,7 @@ def _borrow_candidates(
     actor: CombatantState,
     magic: MagicRules,
     borrowing: BorrowingRules,
+    every_target: bool = False,
 ) -> list[Candidate]:
     """The borrowing variant of each cast, and each pushed cast, the actor
     cannot afford.
@@ -1323,7 +1442,9 @@ def _borrow_candidates(
         return []
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
-    menu = _score_options(state, actor, beyond_purse=True)
+    menu = _score_options(
+        state, actor, beyond_purse=True, every_target=every_target
+    )
     menu = _within_channel(actor, menu, magic)
     no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
     cap_lifted = bound_lifted(actor, PUSH_CAP)
@@ -1408,7 +1529,10 @@ def _casting_penalties(actor: CombatantState) -> tuple[int, int]:
 
 
 def _score_options(
-    state: BattleState, actor: CombatantState, beyond_purse: bool = False
+    state: BattleState,
+    actor: CombatantState,
+    beyond_purse: bool = False,
+    every_target: bool = False,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -1423,11 +1547,15 @@ def _score_options(
     ``beyond_purse`` lists every cast the situation allows, affordable or
     not: the menu :func:`_borrow_candidates` builds its variants from. The
     AI's own menu never sets it.
+
+    ``every_target`` adds each aimed option at every other legal target
+    (:func:`choose_option`), after the AI's own; the choice made here is
+    then not the AI's, and :func:`choose_option` replaces it.
     """
     if actor.grappled_by is not None:
-        return _grappled_decision(state, actor, beyond_purse)
+        return _grappled_decision(state, actor, beyond_purse, every_target)
     if actor.grappling is not None:
-        return _grappler_decision(state, actor, beyond_purse)
+        return _grappler_decision(state, actor, beyond_purse, every_target)
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
     adjacent_enemies = [
@@ -1576,7 +1704,6 @@ def _score_options(
             # (#37).
             target = enemy if distance <= 1 else None
             arrival = distance
-            forecast = None
             if target is None:
                 for index, (other, _now, approach) in enumerate(
                     _approaches(state, actor, jog_gait)
@@ -1595,24 +1722,29 @@ def _score_options(
                     f"{combat_math.hexes_text(arrival)} from it, out of charge "
                     f"reach, as is every other enemy = {score_text(score)}"
                 )
+                score, rationale = _beast_caution(actor, hurt, score, rationale)
+                candidates.append(_charge(letter, target, score, rationale))
             else:
-                forecast, rationale = _attack_forecast(actor, target, ranged=False)
-                score = forecast.score
-                if target is not enemy:
-                    rationale = (
-                        f"{enemy.name} is nearer but out of charge reach; {rationale}"
-                    )
-            score, rationale = _beast_caution(actor, hurt, score, rationale)
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Charge {target.name}: {rationale}",
-                    target_id=target.combatant_id,
-                    forecast=forecast,
+                # The nearest enemy, when the charge passes it over.
+                passed_over = None if target is enemy else enemy
+                candidates.append(
+                    _charge_candidate(actor, target, passed_over, hurt, letter)
                 )
-            )
+                if every_target:
+                    # Every other enemy the jog ends beside, nearest first, by
+                    # the reach test the AI's own pick above makes. Branch
+                    # 41-public-channel-approach-and-charge-helpers (commit
+                    # 8300730, #50) replaces that pick's `approach.distance
+                    # <= 1` with movement.charge_reaches(approach); the batch
+                    # merge makes this test the same call.
+                    candidates.extend(
+                        _charge_candidate(actor, other, passed_over, hurt, letter)
+                        for other, now, approach in _approaches(
+                            state, actor, jog_gait
+                        )
+                        if other is not target
+                        and (now <= 1 or approach.distance <= 1)
+                    )
         elif letter == "c":
             missile_threats = [
                 other for other in state.enemies_of(actor) if other.weapon.is_missile
@@ -1654,50 +1786,49 @@ def _score_options(
                 )
             )
         elif letter == "f" and enemy is not None:
-            forecast, rationale = _attack_forecast(actor, enemy, ranged=True)
-            score = forecast.score
-            if (
-                actor.weapon.is_thrown
-                and not actor.weapon.is_missile
-                and not any(not spare.is_missile for spare in spares)
-            ):
-                # A hand weapon that can be thrown (dagger, spear, mace) is
-                # this figure's only one: the AI keeps it rather than end the
-                # turn bare-handed. Still on the menu for a player (#812).
-                score = PLAYER_ONLY_SCORE
-                rationale = (
-                    f"{rationale}; but the {actor.weapon.name} is the only hand "
-                    f"weapon carried, so the AI keeps it = {score_text(score)}"
+            # A hand weapon that can be thrown (dagger, spear, mace) is this
+            # figure's only one: the AI keeps it rather than end the turn
+            # bare-handed. Still on the menu for a player (#812).
+            keeps_it = weapons.throw_leaves_no_hand_weapon(actor)
+            # The AI shoots the nearest enemy; the every-target menu any.
+            for defender in _aimed_at(enemies_by_distance(state, actor), every_target):
+                forecast, rationale = _attack_forecast(actor, defender, ranged=True)
+                score = forecast.score
+                if keeps_it:
+                    score = PLAYER_ONLY_SCORE
+                    rationale = (
+                        f"{rationale}; but the {actor.weapon.name} is the only "
+                        f"hand weapon carried, so the AI keeps it = "
+                        f"{score_text(score)}"
+                    )
+                candidates.append(
+                    Candidate(
+                        letter,
+                        name,
+                        score,
+                        f"Shoot {defender.name}: {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
                 )
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Shoot {enemy.name}: {rationale}",
-                    target_id=enemy.combatant_id,
-                    forecast=forecast,
-                )
-            )
         elif letter == "j" and adjacent_enemies:
-            best = None
+            strikes = []
             for defender in adjacent_enemies:
                 forecast, rationale = _attack_forecast(actor, defender, ranged=False)
                 score, rationale = _beast_caution(
                     actor, hurt, forecast.score, rationale
                 )
-                candidate = Candidate(
-                    letter,
-                    name,
-                    score,
-                    f"Strike {defender.name}: {rationale}",
-                    target_id=defender.combatant_id,
-                    forecast=forecast,
+                strikes.append(
+                    Candidate(
+                        letter,
+                        name,
+                        score,
+                        f"Strike {defender.name}: {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
                 )
-                if best is None or candidate.score > best.score:
-                    best = candidate
-            if best is not None:
-                candidates.append(best)
+            candidates.extend(_best_first(strikes, every_target))
         elif letter == "k":
             # Scaled by the credible incoming melee threat, and deliberately
             # NOT scaled up when hurt: with no healing or reinforcements,
@@ -1746,9 +1877,11 @@ def _score_options(
                 )
             )
         elif letter == "r" and in_hth:
-            candidates.extend(_hth_casts(state, actor, beyond_purse))
+            candidates.extend(_hth_casts(state, actor, beyond_purse, every_target))
         elif letter in ("h", "r"):
-            candidates.extend(_cast_candidates(state, actor, letter, beyond_purse))
+            candidates.extend(
+                _cast_candidates(state, actor, letter, beyond_purse, every_target)
+            )
         elif letter == "u" and in_hth:
             candidates.append(
                 Candidate(
@@ -1766,8 +1899,7 @@ def _score_options(
             # entry condition admits, #823) — score is always 0, so this
             # candidate never wins a comparison against a real attack; it
             # only exists to show the AI considered and declined it.
-            target = hth_targets[0]
-            candidates.append(
+            candidates.extend(
                 Candidate(
                     letter,
                     name,
@@ -1775,6 +1907,7 @@ def _score_options(
                     f"Grapple valued at 0 ({GRAPPLE_TACTICS_RATIONALE})",
                     target_id=target.combatant_id,
                 )
+                for target in _aimed_at(hth_targets, every_target)
             )
 
         elif letter == "sprint" and enemy is not None:
@@ -1800,38 +1933,42 @@ def _score_options(
                 )
             )
         elif letter == "l" and enemy is not None:
-            shot_target = min(
+            # The AI shoots the adjacent enemy with the lowest id; the
+            # every-target menu each adjacent enemy.
+            shot_targets = sorted(
                 adjacent_enemies or [enemy],
                 key=lambda other: other.combatant_id,
             )
-            forecast, rationale = _attack_forecast(actor, shot_target, ranged=True)
-            candidates.append(
-                Candidate(
-                    letter,
-                    name,
-                    forecast.score,
-                    f"One last shot at {shot_target.name}, the bow ready before "
-                    f"the engagement: {rationale}",
-                    target_id=shot_target.combatant_id,
-                    forecast=forecast,
+            for shot_target in _aimed_at(shot_targets, every_target):
+                forecast, rationale = _attack_forecast(
+                    actor, shot_target, ranged=True
                 )
-            )
+                candidates.append(
+                    Candidate(
+                        letter,
+                        name,
+                        forecast.score,
+                        f"One last shot at {shot_target.name}, the bow ready "
+                        f"before the engagement: {rationale}",
+                        target_id=shot_target.combatant_id,
+                        forecast=forecast,
+                    )
+                )
         elif letter == "t" and hth_targets:
-            best = None
+            strikes = []
             for defender in hth_targets:
                 forecast, rationale = _hth_strike_forecast(state, actor, defender)
-                candidate = Candidate(
-                    letter,
-                    name,
-                    forecast.score,
-                    f"Strike {defender.name} {rationale}",
-                    target_id=defender.combatant_id,
-                    forecast=forecast,
+                strikes.append(
+                    Candidate(
+                        letter,
+                        name,
+                        forecast.score,
+                        f"Strike {defender.name} {rationale}",
+                        target_id=defender.combatant_id,
+                        forecast=forecast,
+                    )
                 )
-                if best is None or candidate.score > best.score:
-                    best = candidate
-            if best is not None:
-                candidates.append(best)
+            candidates.extend(_best_first(strikes, every_target))
         elif letter in ("e", "m", "q"):
             pool = {
                 "e": spares,
@@ -1856,28 +1993,26 @@ def _score_options(
                 )
             )
         elif actions.is_yielded(letter):
-            base = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if candidate.letter == actions.base_option(letter)
-                ),
-                None,
-            )
-            if base is not None:
-                candidates.append(
-                    Candidate(
-                        letter,
-                        actions.option_name(letter),
-                        base.score,
-                        f"As {base.name}, moving in Final Movement instead: "
-                        f"{base.rationale}",
-                        target_id=base.target_id,
-                        spell_key=base.spell_key,
-                        destination=base.destination,
-                        forecast=base.forecast,
-                    )
+            # The yielded copy of the option, at each target it is offered at.
+            bases = [
+                candidate
+                for candidate in candidates
+                if candidate.letter == actions.base_option(letter)
+            ]
+            candidates.extend(
+                Candidate(
+                    letter,
+                    actions.option_name(letter),
+                    base.score,
+                    f"As {base.name}, moving in Final Movement instead: "
+                    f"{base.rationale}",
+                    target_id=base.target_id,
+                    spell_key=base.spell_key,
+                    destination=base.destination,
+                    forecast=base.forecast,
                 )
+                for base in _aimed_at(bases, every_target)
+            )
 
     if not candidates:
         candidates = [Candidate("a", "MOVE", 0.0, "Nothing else is legal")]

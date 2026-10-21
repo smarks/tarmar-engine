@@ -633,6 +633,25 @@ empty.
   than `(score, rationale)` (the score is `Forecast.score`). tarmar-studio's
   `battle/turn_menu.py` imported them to widen the menu itself; it moves to
   the public every-target menu below in the same bump.
+- **Every legal target** (#21). `choose_option(state, actor, magic=...,
+  every_target=True)` returns the same `Decision` with each aimed option
+  also offered at every other enemy it may be aimed at, right after the AI's
+  own target and priced by the same code (score, rationale and
+  `forecast`): ATTACK (j) and ONE LAST SHOT (l) at each adjacent enemy
+  (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
+  each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
+  first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
+  entry condition admits, and each damaging cast at each active enemy,
+  nearest first (a spell has no range), with its pushed, borrowing and
+  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
+  too. `chosen` is the AI's own choice, unchanged, and is one of the
+  candidates (by identity), even where an option aimed elsewhere scores
+  higher. Without the flag the menu is as before. The menu is built twice
+  for it, once for the AI's choice. A player's pick at any target is
+  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
+  is the policy's own test for a MISSILE throw that would leave the figure
+  bare-handed (scored 0 for the AI at every target), for a consumer to read
+  rather than copy.
 
 ## What it sits on
 
