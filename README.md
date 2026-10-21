@@ -780,14 +780,14 @@ loads unlabelled). A label name that is blank or has spaces at an end raises
   entry condition admits (o not at one already held, #60), and each
   damaging cast at each active enemy, nearest first (a spell has no range),
   with its pushed, borrowing and escalated variants; a grappled or
-  grappling mage's Spell Mastery 3 casts too. `chosen` is the AI's own choice, unchanged, and is one of the
-  candidates (by identity), even where an option aimed elsewhere scores
-  higher. Without the flag the menu is as before. The menu is built twice
-  for it, once for the AI's choice. A player's pick at any target is
-  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
-  is the policy's own test for a MISSILE throw that would leave the figure
-  bare-handed (scored 0 for the AI at every target), for a consumer to read
-  rather than copy.
+  grappling mage's Spell Mastery 3 casts too. `chosen` is the AI's own
+  choice, unchanged, and is one of the candidates (by identity), even
+  where an option aimed elsewhere scores higher. Without the flag the menu
+  is as before. The menu is built twice for it, once for the AI's choice.
+  A player's pick at any target is resolved by the engine as always.
+  `weapons.throw_leaves_no_hand_weapon` is the policy's own test for a
+  MISSILE throw that would leave the figure bare-handed (scored 0 for the
+  AI at every target), for a consumer to read rather than copy.
 
 ## What it sits on
 

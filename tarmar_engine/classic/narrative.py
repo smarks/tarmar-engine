@@ -280,16 +280,6 @@ def narrate_ready(figure: Figure, weapon) -> str:
     return _cap(f"{_name(figure)} readies {_article(weapon.name)}.")
 
 
-def narrate_initiative(rolls: dict, winner: str) -> str:
-    """Who won the initiative roll."""
-    detail = ", ".join(f"{side} {value}" for side, value in rolls.items())
-    return f"Initiative ({detail}): {winner} wins."
-
-
-def narrate_move_order(side: str) -> str:
-    return f"{side.capitalize()} will move first."
-
-
 def narrate_retreat(attacker: Figure, target: Figure, advanced: bool) -> str:
     """A forced retreat (and whether the attacker followed up)."""
     line = f"{_name(attacker)} drives {_name(target)} back"
