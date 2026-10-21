@@ -489,8 +489,8 @@ def _nearable_enemy(
     state: BattleState, actor: CombatantState, option_key: str
 ) -> tuple[CombatantState, int] | None:
     """The nearest enemy the engine's own move for ``option_key`` gets the
-    actor nearer to,
-    with its distance now, or ``None`` when no path gets nearer to any.
+    actor nearer to, with its distance now, or ``None`` when no path gets
+    nearer to any.
 
     MOVE and SPRINT close on this enemy rather than on a nearer one the
     engine's own approach could not near, where the figure would stand
@@ -1328,10 +1328,9 @@ def _within_channel(
     :attr:`Candidate.lifted_bounds` and its rationale names the Channel it
     passes), or when the Channel rules give the spell no kind of magic (the
     engine would refuse either), and :attr:`Decision.withheld` says why, once
-    per spell. The withheld casts
-    leave the player's menu and the AI's choice alike. When the AI had
-    chosen one, it takes the best of what remains by the rule it chose with
-    (the highest score, the first listed on a tie).
+    per spell. The withheld casts leave the player's menu and the AI's choice
+    alike. When the AI had chosen one, it takes the best of what remains by
+    the rule it chose with (the highest score, the first listed on a tie).
 
     The MOVE fallback for a menu left empty is defensive: every menu
     :func:`_score_options` builds holds an option that is not a cast (DODGE,

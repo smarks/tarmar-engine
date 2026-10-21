@@ -577,7 +577,10 @@ class CastEstimateTest(TestCase):
             if candidate.spell_key == "fire_missile" and not candidate.push_mana
         )
 
-    def test_every_menu_that_offers_a_cast_prices_it_under_the_floor(self):
+    @staticmethod
+    def cast_situations() -> dict[str, BattleState]:
+        """The four menus that offer a cast: open field, hand-to-hand, held
+        and holding, each with an INT 18 caster."""
         open_field = wizard_state(intelligence=18)
         in_hand_to_hand = wizard_state(
             q=2, intelligence=18, spell_mastery={"fire_missile": 2}
@@ -592,13 +595,16 @@ class CastEstimateTest(TestCase):
         )
         grappling.by_id(1).grappling = 2
         grappling.by_id(2).grappled_by = 1
+        return {
+            "open field": open_field,
+            "hand-to-hand": in_hand_to_hand,
+            "grappled": grappled,
+            "grappling": grappling,
+        }
+
+    def test_every_menu_that_offers_a_cast_prices_it_under_the_floor(self):
         floored = with_casting_failure(example_magic_rules())
-        for name, state in (
-            ("open field", open_field),
-            ("hand-to-hand", in_hand_to_hand),
-            ("grappled", grappled),
-            ("grappling", grappling),
-        ):
+        for name, state in self.cast_situations().items():
             with self.subTest(situation=name):
                 cast = self.fire_missile(state, floored)
                 self.assertIn(
@@ -607,6 +613,29 @@ class CastEstimateTest(TestCase):
                 )
                 plain = self.fire_missile(state, example_magic_rules())
                 self.assertIn("3d6 ≤ INT 18 — P(cast) 1.000", plain.rationale)
+
+    def test_every_target_s_cast_is_priced_under_the_floor_too(self):
+        """The per-target menu (tarmar-engine #21) prices each cast at each
+        enemy under the same floor as the AI's own (#47): the two paths met
+        for the first time in the 0.9.19 batch."""
+        floored = with_casting_failure(example_magic_rules())
+        for name, state in self.cast_situations().items():
+            state.combatants.append(make_combatant(3, q=5, r=1, facing=3))
+            with self.subTest(situation=name):
+                decision = policy.choose_option(
+                    state, state.by_id(1), magic=floored, every_target=True
+                )
+                casts = [
+                    candidate
+                    for candidate in decision.candidates
+                    if candidate.spell_key == "fire_missile" and not candidate.push_mana
+                ]
+                self.assertEqual({cast.target_id for cast in casts}, {2, 3})
+                for cast in casts:
+                    self.assertIn(
+                        "3d6 ≤ INT 18, under the fumble floor 12 — P(cast) 0.625",
+                        cast.rationale,
+                    )
 
     def test_the_floor_lowers_the_ai_s_score_for_the_cast(self):
         state = wizard_state(intelligence=18)
