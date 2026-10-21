@@ -314,6 +314,24 @@ the figure acts, the forecast printing the step it expects. `movement.gait_allow
 by and the policy prices a charge by (#17). `CombatantState` gains
 `chosen_destination`.
 
+**Whom a step away steps from (tarmar-engine #62, unreleased).**
+`movement.step_away_from(state, actor, letter)` is the figure a step away
+(`n` or `v`) with no hex picked steps straight back from, then to either
+flank (`movement.step_away_hex`), or `None` when there is nobody: for `n`
+the first active enemy beside it in the state's order, for a held figure's
+`v` (Struggle Free) its captor, for any other `v` the first active partner
+beside it in `hth_with` order. `movement.left_behind(state, actor, letter)`
+is the whole list, the one stepped from first: the enemies a DISENGAGE
+records in `disengaged_from`, or the partners a break away leaves
+hand-to-hand with. Both raise `ValueError` for any other letter.
+`TurnRunner.disengage_step` and `TurnRunner.hth_disengage` read
+`left_behind` (the list, for `disengaged_from` and `hth_ended`); the
+policy's `n` forecast and a held figure's Struggle Free forecast read
+`step_away_from`, and its `v` break-away forecast reads `left_behind`. The
+engine's `TurnRunner.grapple_struggle_free` still reads the captor from
+`grappled_by` directly, which is what the held branch returns. The policy's
+private `_hth_partners` is gone. No battle's events change.
+
 ## A Game Master's agreement to hand-to-hand (v0.9.10)
 
 "Entering Hand-to-Hand" ends "or they simply agree". The engine reads two

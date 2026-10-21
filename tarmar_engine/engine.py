@@ -1734,10 +1734,7 @@ class TurnRunner:
                 actor=combatant.name,
             )
             return
-        enemies = self.state.enemies_of(combatant)
-        adjacent = [
-            enemy for enemy in enemies if combat_math.figures_adjacent(combatant, enemy)
-        ]
+        adjacent = movement.left_behind(self.state, combatant, "n")
         if not adjacent:
             return
         threat = adjacent[0]
@@ -2078,12 +2075,7 @@ class TurnRunner:
         even with no clear hex to step to (coordinator's ruling under the
         standing rule; Spencer may overrule).
         """
-        partners = [
-            self.state.by_id(other_id)
-            for other_id in combatant.hth_with
-            if self.state.by_id(other_id).active
-            and combat_math.figures_adjacent(combatant, self.state.by_id(other_id))
-        ]
+        partners = movement.left_behind(self.state, combatant, "v")
         if not partners:
             self.emit(
                 "info",

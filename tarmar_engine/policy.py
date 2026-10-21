@@ -720,10 +720,9 @@ def _grappled_decision(
     grappler_id = actor.grappled_by
     # The step the engine expects to take, for the forecast; the engine works
     # it out when the figure acts, so the candidate names no hex (#20).
+    captor = movement.step_away_from(state, actor, "v")
     escape_to = (
-        None
-        if grappler_id is None
-        else movement.step_away_hex(state, actor, state.by_id(grappler_id))
+        None if captor is None else movement.step_away_hex(state, actor, captor)
     )
     where = f" toward {escape_to}" if escape_to is not None else ""
     candidates = [
@@ -932,16 +931,6 @@ def _grapple_targets(hth_targets: list[CombatantState]) -> list[CombatantState]:
         target
         for target in hth_targets
         if not hexes.figure_locked_by_grapple(target.grappled_by, target.grappling)
-    ]
-
-
-def _hth_partners(state: BattleState, actor: CombatantState) -> list[CombatantState]:
-    """The active enemies beside the actor that it is in hand-to-hand with."""
-    return [
-        state.by_id(other_id)
-        for other_id in actor.hth_with
-        if state.by_id(other_id).active
-        and combat_math.figures_adjacent(actor, state.by_id(other_id))
     ]
 
 
@@ -1681,7 +1670,7 @@ def _score_options(
     grapple_targets = _grapple_targets(hth_targets)
     # Inside hand-to-hand the HTH table is the whole menu (tarmar-engine #19).
     in_hth = movement.in_hand_to_hand(state, actor)
-    partners = _hth_partners(state, actor) if in_hth else []
+    partners = movement.left_behind(state, actor, "v") if in_hth else []
     can_grapple = engaged and bool(grapple_targets)
     melee_weapon = weapons.has_melee_weapon(actor)
     in_reach = weapons_in_reach(state, actor)
@@ -1947,12 +1936,13 @@ def _score_options(
             urgency = 4 if hurt else 1
             score = product_of(DISENGAGE_BASE_SCORE, urgency)
             # The step the engine expects to take with no hex named, straight
-            # back from the first adjacent enemy, then either flank, printed
-            # in the forecast. The engine works it out when the figure acts,
-            # so the candidate names no hex (#20).
+            # back from the figure it steps away from (#62), then either
+            # flank, printed in the forecast. The engine works it out when the
+            # figure acts, so the candidate names no hex (#20).
+            threat = movement.step_away_from(state, actor, letter)
             step = (
-                movement.step_away_hex(state, actor, adjacent_enemies[0])
-                if adjacent_enemies
+                movement.step_away_hex(state, actor, threat)
+                if threat is not None
                 else None
             )
             where = f" toward {step}" if step is not None else ""
