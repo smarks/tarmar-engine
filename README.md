@@ -738,6 +738,55 @@ and not others, or two different labels). The label round-trips through
 loads unlabelled). A label name that is blank or has spaces at an end raises
 `ValueError`.
 
+## A menu a person can read (v0.9.19)
+
+- **Forecasts as fields** (#22). A menu option that forecasts damage
+  carries the figures as `Candidate.forecast`, a frozen
+  `policy.Forecast`: `hit_chance` (P(hit) for a d20 attack, P(land) for a
+  cast), `damage_expression` (the dice, e.g. `2d6-1`), `armour_stops`,
+  `expected_damage` per landed hit, and for a d20 attack `target_number`,
+  `bonus` and `winning_faces` (of `resolution.DIE_FACES`; `None` for a cast,
+  whose chance comes from 3d6 roll-unders). ATTACK, a CHARGE that reaches,
+  MISSILE (a throw of the only hand weapon carried included, though the AI
+  scores it 0), ONE LAST SHOT, an HTH strike and a damaging cast carry one,
+  and so do the copies made of them (a yielded CHARGE, a borrowing cast, a
+  cast in a grapple or in hand-to-hand); every other option carries `None`,
+  a pushed cast too. `to_payload()` carries it under `"forecast"`
+  (`policy.FORECAST_KEY`) only when present. Each figure is held at the
+  precision the rationale prints, the rationale's working is
+  `Forecast.working()`, and `Forecast.score` is the product of the printed
+  factors, so the prose and the fields cannot disagree. An option's own
+  score may be adjusted after its forecast, as its rationale says: a wounded
+  beast's caution scales it, and the thrown last hand weapon, a borrowing
+  cast and an escalated cast score 0 with their forecasts kept. The HTH
+  strike's line now names its winning faces, as every other d20 forecast's
+  does.
+- **Breaking for callers of the private helpers.** `policy._melee_score`
+  and `policy._missile_score` are gone, and `policy._attack_forecast` and
+  `policy._hth_strike_forecast` now return `(Forecast, rationale)` rather
+  than `(score, rationale)` (the score is `Forecast.score`). tarmar-studio's
+  `battle/turn_menu.py` imported them to widen the menu itself; it moves to
+  the public every-target menu below in the same bump.
+- **Every legal target** (#21). `choose_option(state, actor, magic=...,
+  every_target=True)` returns the same `Decision` with each aimed option
+  also offered at every other enemy it may be aimed at, right after the AI's
+  own target and priced by the same code (score, rationale and
+  `forecast`): ATTACK (j) and ONE LAST SHOT (l) at each adjacent enemy
+  (j the AI's best first, l lowest id first), CHARGE (b and `b_yield`) at
+  each enemy its jog ends beside, MISSILE (f) at each active enemy, nearest
+  first, an HTH strike (t, best first) and ATTEMPT HTH (o) at each enemy an
+  entry condition admits, and each damaging cast at each active enemy,
+  nearest first (a spell has no range), with its pushed, borrowing and
+  escalated variants; a grappled or grappling mage's Spell Mastery 3 casts
+  too. `chosen` is the AI's own choice, unchanged, and is one of the
+  candidates (by identity), even where an option aimed elsewhere scores
+  higher. Without the flag the menu is as before. The menu is built twice
+  for it, once for the AI's choice. A player's pick at any target is
+  resolved by the engine as always. `weapons.throw_leaves_no_hand_weapon`
+  is the policy's own test for a MISSILE throw that would leave the figure
+  bare-handed (scored 0 for the AI at every target), for a consumer to read
+  rather than copy.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
