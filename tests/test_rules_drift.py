@@ -11,7 +11,12 @@ from unittest import TestCase
 
 import tarmar_engine
 from tarmar_engine import actions, combat_math, engine, hexes, movement
-from tarmar_engine.spells import ELEMENTAL_SCHOOL, ELEMENTS, SPELLS
+from tarmar_engine.spells import (
+    _ELEMENTAL_TIERS,
+    ELEMENTAL_SCHOOL,
+    ELEMENTS,
+    SPELLS,
+)
 from tarmar_engine.state import BARE_HANDED_DAMAGE_TABLE, WeaponState
 
 from .test_state import make_combatant
@@ -370,7 +375,11 @@ class SpellCatalogDriftGuard(TestCase):
     def test_elements_match_the_page(self):
         # schools-of-magic.md: "Elemental (water, fire, lightning, earth, wind)"
         markdown = (RULES / "magic" / "schools-of-magic.md").read_text()
-        self.assertIn(f"- Elemental ({', '.join(ELEMENTS)})", markdown)
+        match = re.search(r"^- Elemental \(([^)]*)\)", markdown, re.MULTILINE)
+        self.assertIsNotNone(match)
+        assert match is not None
+        page_elements = tuple(name.strip() for name in match.group(1).split(","))
+        self.assertEqual(page_elements, ELEMENTS)
 
     def test_catalog_size_is_the_ladders_plus_three_to_seven_others(self):
         # Every element's Missile/Ball/Bolt ladder (#75), beside a small set
@@ -379,7 +388,7 @@ class SpellCatalogDriftGuard(TestCase):
         elemental = [
             spell for spell in SPELLS.values() if spell.school == ELEMENTAL_SCHOOL
         ]
-        self.assertEqual(len(elemental), len(ELEMENTS) * 3)
+        self.assertEqual(len(elemental), len(ELEMENTS) * len(_ELEMENTAL_TIERS))
         others = len(SPELLS) - len(elemental)
         self.assertGreaterEqual(others, 3)
         self.assertLessEqual(others, 7)

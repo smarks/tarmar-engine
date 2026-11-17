@@ -44,15 +44,15 @@ class HouseRuling:
 HOUSE_RULINGS: tuple[HouseRuling, ...] = (
     HouseRuling(
         "spell_magnitudes",
-        "Spell effects: Fire Missile 1d6, Fire Ball 2d6 to one target (the "
-        "description's area is not modelled), Lightning Bolt 3d6, Heal 1d6 "
+        "Spell effects: every element's Missile 1d6, Ball 2d6 to one target "
+        "(the description's area is not modelled) and Bolt 3d6, Heal 1d6 "
         "Fatigue to the caster only, Fatigue 1d6+1, Wound 1d6 to Body, "
         "Shield +1 TN, Blur -2 to hit. schools-of-magic.md names the spells "
         "and levels; no page gives these numbers.",
         {
-            "fire_missile": "1d6",
-            "fire_ball": "2d6",
-            "lightning_bolt": "3d6",
+            "missile": "1d6",
+            "ball": "2d6",
+            "bolt": "3d6",
             "heal": "1d6",
             "fatigue": "1d6+1",
             "wound": "1d6",

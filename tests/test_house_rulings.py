@@ -28,14 +28,16 @@ class HouseRulingsRecordTest(TestCase):
 
     def test_spell_magnitudes(self):
         value = ruling("spell_magnitudes").value
-        for key in (
-            "fire_missile",
-            "fire_ball",
-            "lightning_bolt",
-            "heal",
-            "fatigue",
-            "wound",
-        ):
+        # One magnitude per Elemental tier, held by that tier's spell in
+        # every element (#75).
+        for tier in spells._ELEMENTAL_TIERS:
+            tier_key = tier.name_suffix.lower()
+            for element in spells.ELEMENTS:
+                spell_key = f"{element}_{tier_key}"
+                self.assertEqual(
+                    spells.SPELLS[spell_key].damage, value[tier_key], spell_key
+                )
+        for key in ("heal", "fatigue", "wound"):
             self.assertEqual(spells.SPELLS[key].damage, value[key], key)
         self.assertEqual(spells.SPELLS["shield"].tn_bonus, value["shield_tn_bonus"])
         self.assertEqual(

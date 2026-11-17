@@ -26,6 +26,7 @@ name these spells but publish no combat numbers for them, so conservative
 values are chosen here and kept in one data table for easy revision.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 # The school whose spells are studied element by element.
@@ -62,6 +63,10 @@ class Spell:
 
     def __post_init__(self) -> None:
         if self.element is None:
+            if self.school == ELEMENTAL_SCHOOL:
+                # An Elemental spell outside the ladders would escape the
+                # one-element-at-a-time ruling (#75).
+                raise ValueError(f"Elemental spell {self.key!r} names no element")
             return
         if self.element not in ELEMENTS:
             raise ValueError(
@@ -192,6 +197,46 @@ def get_spell(key: str) -> Spell:
     return SPELLS[key]
 
 
+def _index_ladders(spells: Iterable[Spell]) -> dict[tuple[str, int], Spell]:
+    """Index the spells that name an element by (element, level).
+
+    Args:
+        spells: the spells to index; those with no element are skipped.
+
+    Returns:
+        Each element's spells keyed by (element, level).
+
+    Raises:
+        ValueError: when two spells share an element and level, or when an
+            element's levels do not run 1, 2, ... n without a gap.
+    """
+    index: dict[tuple[str, int], Spell] = {}
+    for spell in spells:
+        if spell.element is None:
+            continue
+        rung = (spell.element, spell.level)
+        if rung in index:
+            raise ValueError(
+                f"{spell.key!r} and {index[rung].key!r} are both the level "
+                f"{spell.level} {spell.element} spell"
+            )
+        index[rung] = spell
+    levels_by_element: dict[str, list[int]] = {}
+    for element, level in index:
+        levels_by_element.setdefault(element, []).append(level)
+    for element, levels in levels_by_element.items():
+        expected_levels = list(range(1, len(levels) + 1))
+        if sorted(levels) != expected_levels:
+            raise ValueError(
+                f"the {element} ladder holds levels {sorted(levels)}, not "
+                f"{expected_levels}"
+            )
+    return index
+
+
+_LADDER_INDEX: dict[tuple[str, int], Spell] = _index_ladders(SPELLS.values())
+
+
 def lower_tier(spell: Spell) -> Spell | None:
     """The spell one rung down the same element's ladder.
 
@@ -199,16 +244,18 @@ def lower_tier(spell: Spell) -> Spell | None:
         spell: the spell whose lower tier is wanted.
 
     Returns:
-        The catalog spell of the same school and element one level below, or
-        None for a tier-1 spell or a spell with no element.
+        The catalog spell of the same element one level below, or None for a
+        tier-1 spell or a spell with no element.
+
+    Raises:
+        KeyError: when the catalog holds no rung below the spell's level, a
+            spell that is not on a catalog ladder.
     """
-    if spell.element is None:
+    if spell.element is None or spell.level == 1:
         return None
-    for candidate in SPELLS.values():
-        if (
-            candidate.school == spell.school
-            and candidate.element == spell.element
-            and candidate.level == spell.level - 1
-        ):
-            return candidate
-    return None
+    rung_below = (spell.element, spell.level - 1)
+    if rung_below not in _LADDER_INDEX:
+        raise KeyError(
+            f"no level {spell.level - 1} {spell.element} spell below {spell.key!r}"
+        )
+    return _LADDER_INDEX[rung_below]
