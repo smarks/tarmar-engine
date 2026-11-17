@@ -454,6 +454,35 @@ class BorrowingRulingsTest(TestCase):
         borrow_cast(pool_only, KEEN_BOLT_FACES, profile=POOL_REFUND_PROFILE)
         self.assertEqual((pool_only.by_id(1).mana, pool_only.by_id(1).debt), (0, 3))
 
+    def test_debt_roll_graded_bands(self):
+        from .test_borrowing import (
+            BOLT_FACES,
+            borrow_cast,
+            borrower,
+            debt_payload,
+        )
+
+        self.assertEqual(
+            ruling("debt_roll_graded_bands").value,
+            ("debt owed at the roll", "automatic total in the last band"),
+        )
+        # A keen natural 7 pays 1 of the 3 borrowed back: 2 owed at the roll,
+        # WIS 12 less 2 x 2 = 8, and an 11 misses by 3, the Backlash band at
+        # 2 fatigue per point owed: 4, not the 6 the cast first borrowed.
+        state = borrower(mana=0)
+        fatigue = state.by_id(1).fatigue
+        events = borrow_cast(state, [[2, 2, 3], [2, 2, 2], [3, 3, 3], [6, 5]])
+        self.assertEqual(debt_payload(events)["target"], 8)
+        self.assertEqual(state.by_id(1).fatigue, fatigue - 4)
+        # The automatic total lands in the last band, whatever the margin.
+        events = borrow_cast(borrower(wisdom=17), [*BOLT_FACES, [8, 8]])
+        failure = next(
+            event["payload"]
+            for event in events
+            if "debt_failure" in event.get("payload", {})
+        )
+        self.assertEqual(failure["debt_failure"], "surge")
+
 
 class HandToHandAndDestinationRulingsTest(TestCase):
     """The hand-to-hand menu (tarmar-engine #19) and the AI's hexes (#20)."""

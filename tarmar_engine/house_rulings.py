@@ -483,8 +483,9 @@ HOUSE_RULINGS += (
         "every cast that borrowed, whatever became of the spell: a failed "
         "casting roll that paid, a Control Roll that stopped the spell and "
         "an aim that missed all still owe. A failure cannot take the spell "
-        "back; it is narrated, and flagged a Runaway when the injected "
-        "failure is one. It is made even when a tier's refund has paid the "
+        "back; it lands in an injected band, which is narrated, takes its "
+        "cost and starts a Runaway when it is one (debt_roll_graded_bands). "
+        "It is made even when a tier's refund has paid the "
         "whole debt back, since the caster borrowed on this cast. The target "
         "is the injected attributes summed less the injected penalty per "
         "point owed, and less the casting roll's injury band and off-balance "
@@ -550,6 +551,21 @@ HOUSE_RULINGS += (
         "tarmar_engine/engine.py _regain_mana",
         RULING,
         "#825 (tarmar-engine #28)",
+    ),
+    HouseRuling(
+        "debt_roll_graded_bands",
+        "A failed debt roll is graded as the Control Roll is: its margin "
+        "picks an injected band, and a natural total on the automatic list "
+        "lands in the last, open-ended band whatever the margin. A band's "
+        "cost is its injected cost per point of debt times the debt owed at "
+        "the roll, after any refund has paid some back (the debt the roll's "
+        "penalty counts), taken from the band's pool by the engine's one "
+        "cost path, so unconsciousness and the survival saves apply as for "
+        "any other loss; a band with no pool, or a cost of 0, takes nothing.",
+        ("debt owed at the roll", "automatic total in the last band"),
+        "tarmar_engine/engine.py _debt_roll, apply_pool_cost",
+        "Spencer's ruling of 2026-11-17 on tarmar-engine #74 (" + RULING + ")",
+        "#825 (tarmar-engine #74)",
     ),
 )
 

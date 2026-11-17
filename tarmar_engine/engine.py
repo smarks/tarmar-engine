@@ -61,6 +61,7 @@ from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
     COUNTER_BOUNDS,
+    FATIGUE_POOL,
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
@@ -871,8 +872,11 @@ class TurnRunner:
         )
         cost = GAIT_FATIGUE_COSTS.get(gait, 0)
         if cost:
-            self.apply_fatigue_cost(
-                combatant, cost, "running" if gait == "run" else "sprinting"
+            self.apply_pool_cost(
+                combatant,
+                FATIGUE_POOL,
+                cost,
+                "running" if gait == "run" else "sprinting",
             )
 
     def shift_to(self, combatant: CombatantState) -> None:
@@ -945,8 +949,11 @@ class TurnRunner:
         )
         cost = GAIT_FATIGUE_COSTS.get(gait, 0)
         if cost:
-            self.apply_fatigue_cost(
-                combatant, cost, "running" if gait == "run" else "sprinting"
+            self.apply_pool_cost(
+                combatant,
+                FATIGUE_POOL,
+                cost,
+                "running" if gait == "run" else "sprinting",
             )
 
     def kite_step(self, combatant: CombatantState) -> None:
@@ -1003,18 +1010,41 @@ class TurnRunner:
                 },
             )
 
-    def apply_fatigue_cost(
-        self, combatant: CombatantState, cost: int, reason: str
+    def apply_pool_cost(
+        self,
+        combatant: CombatantState,
+        pool: str,
+        cost: int,
+        reason: str,
+        chain: list[int] | None = None,
     ) -> None:
-        combatant.fatigue -= cost
+        """Take a cost from one of a combatant's own pools: a gait's Fatigue,
+        a failed debt roll's band.
+
+        The engine's one path for a cost the combatant pays, as
+        :meth:`apply_damage` is for a blow: the pool falls, the event names
+        what is left, and the reactions seam's unconsciousness applies (and,
+        through :meth:`survival_saves`, its death line) as for any other
+        loss.
+
+        Args:
+            combatant: Who pays.
+            pool: The pool, one of :data:`magic.CASTER_POOLS`.
+            cost: How much; positive.
+            reason: The narration's reason ("running", "on the failed debt
+                for Fire Missile").
+            chain: The roll sequence numbers behind the cost, for a fall
+                into unconsciousness to cite; ``None`` for none.
+        """
+        setattr(combatant, pool, getattr(combatant, pool) - cost)
+        left = getattr(combatant, pool)
         self.emit(
             "status",
-            f"{combatant.name} spends {cost} fatigue {reason} "
-            f"({combatant.fatigue} left)",
+            f"{combatant.name} spends {cost} {pool} {reason} ({left} left)",
             actor=combatant.name,
-            payload={"fatigue": combatant.fatigue, "cost": cost, "reason": reason},
+            payload={pool: left, "cost": cost, "reason": reason},
         )
-        self.check_unconsciousness(combatant, [])
+        self.check_unconsciousness(combatant, [] if chain is None else chain)
 
     # ------------------------------------------------------------ action phase
     def execute_action(self, combatant: CombatantState) -> None:
@@ -2893,11 +2923,15 @@ class TurnRunner:
         now (any refund already applied) and the casting roll's injury band
         and off-balance penalty, as the Control Roll takes them. It is made
         even when a refund has paid the whole debt back: the caster borrowed
-        on this cast. A natural total on the injected
-        automatic list fails whatever the target. A failure is narrated by
-        its injected label, in a second event, and flagged a Runaway when the
-        rules make it one, which with injected Runaway rules begins
-        (:meth:`_begin_runaway`); the spell has already resolved and stands.
+        on this cast. A failure's margin picks its injected band; a natural
+        total on the injected automatic list fails whatever the target and
+        lands in the last, open-ended band whatever the margin. The failure
+        is narrated by its band's label, in a second event; the band's cost,
+        its cost per point of debt times the debt owed at the roll, is taken
+        from its pool by the engine's one cost path (:meth:`apply_pool_cost`),
+        so unconsciousness and death apply as for any other loss; and a
+        Runaway band, with injected Runaway rules, begins one
+        (:meth:`_begin_runaway`). The spell has already resolved and stands.
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
@@ -2935,19 +2969,38 @@ class TurnRunner:
         )
         if held:
             return
-        failure = borrowing.failure
+        band = (
+            borrowing.automatic_band()
+            if debt.automatic
+            else borrowing.band_for_margin(debt.margin)
+        )
+        cost = band.cost(combatant.debt)
+        cost_pool = band.cost_pool if cost else None
+        message = f"{combatant.name}'s failed debt for {spell.name}: {band.label}"
+        if cost_pool is not None:
+            message += f", costing {cost} {cost_pool}"
         self.emit(
             "status",
-            f"{combatant.name}'s failed debt for {spell.name}: {failure.label}",
+            message,
             actor=combatant.name,
             payload={
                 "spell": spell.key,
-                "debt_failure": failure.key,
-                "label": failure.label,
-                "runaway": failure.is_runaway,
+                "debt_failure": band.key,
+                "label": band.label,
+                "runaway": band.is_runaway,
+                "cost_pool": cost_pool,
+                "cost": cost,
             },
         )
-        if failure.is_runaway:
+        if cost_pool is not None:
+            self.apply_pool_cost(
+                combatant,
+                cost_pool,
+                cost,
+                f"on the failed debt for {spell.name}",
+                chain=[debt_sequence],
+            )
+        if band.is_runaway:
             self._begin_runaway(
                 combatant,
                 spell,
