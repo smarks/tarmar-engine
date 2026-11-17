@@ -18,6 +18,7 @@ from tarmar_engine.spells import (
     get_spell,
     lower_tier,
 )
+from tarmar_engine.state import CASTER_POOLS
 
 TIER_NAMES_BY_LEVEL = {1: "missile", 2: "ball", 3: "bolt"}
 
@@ -120,6 +121,18 @@ class ElementValidationTests(TestCase):
 
     def test_a_spell_without_an_element_is_accepted(self) -> None:
         self.assertIsNone(replace(get_spell("heal"), key="other_heal").element)
+
+
+class DamagePoolValidationTests(TestCase):
+    def test_an_unknown_damage_pool_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "'fire_missile''s damage_pool"):
+            replace(get_spell("fire_missile"), damage_pool="mana")
+
+    def test_every_caster_pool_is_accepted(self) -> None:
+        for pool in CASTER_POOLS:
+            with self.subTest(pool=pool):
+                spell = replace(get_spell("wound"), damage_pool=pool)
+                self.assertEqual(spell.damage_pool, pool)
 
 
 class LowerTierTests(TestCase):

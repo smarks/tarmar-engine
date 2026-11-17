@@ -54,18 +54,33 @@ MOVEMENT_GAITS: dict[str, str] = {
 #: movement.md's Speed table: the Fatigue a combat turn at each gait costs.
 RUN_FATIGUE_COST = 1
 SPRINT_FATIGUE_COST = 6
-#: The Fatigue a turn moving at each gait costs, by gait; a gait not named
-#: (walk, jog) is free in combat. The engine charges it and the policy's
-#: SPRINT rationale names it (tarmar-engine #58).
-GAIT_FATIGUE_COSTS: dict[str, int] = {
-    "run": RUN_FATIGUE_COST,
-    "sprint": SPRINT_FATIGUE_COST,
+
+
+@dataclass(frozen=True)
+class GaitFatigue:
+    """What a combat turn at a gait that costs Fatigue charges.
+
+    Attributes:
+        cost: The Fatigue the turn costs.
+        reason: How the narration names the gait ("spends 1 fatigue
+            running").
+    """
+
+    cost: int
+    reason: str
+
+
+#: The gaits that cost Fatigue in combat, each with its cost and its
+#: narration; a gait not named (walk, jog) is free. The engine charges it.
+GAIT_FATIGUE: dict[str, GaitFatigue] = {
+    "run": GaitFatigue(RUN_FATIGUE_COST, "running"),
+    "sprint": GaitFatigue(SPRINT_FATIGUE_COST, "sprinting"),
 }
-#: How the narration names each gait that costs Fatigue ("spends 1 fatigue
-#: running"); the same gaits as :data:`GAIT_FATIGUE_COSTS`.
-GAIT_FATIGUE_REASONS: dict[str, str] = {
-    "run": "running",
-    "sprint": "sprinting",
+#: The Fatigue a turn moving at each gait costs, by gait, read off
+#: :data:`GAIT_FATIGUE`; the policy's SPRINT rationale and the drift test
+#: name it (tarmar-engine #58).
+GAIT_FATIGUE_COSTS: dict[str, int] = {
+    gait: charge.cost for gait, charge in GAIT_FATIGUE.items()
 }
 
 #: Options whose move may end at a placed hex, and the gait that bounds it:

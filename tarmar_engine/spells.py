@@ -29,7 +29,7 @@ values are chosen here and kept in one data table for easy revision.
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .state import BODY_POOL, FATIGUE_POOL
+from .state import BODY_POOL, FATIGUE_POOL, check_caster_pool
 
 # The school whose spells are studied element by element.
 ELEMENTAL_SCHOOL = "Elemental"
@@ -64,6 +64,7 @@ class Spell:
     element: str | None = None  # an Elemental spell's element, else None
 
     def __post_init__(self) -> None:
+        check_caster_pool(f"spell {self.key!r}'s damage_pool", self.damage_pool)
         if self.element is None:
             if self.school == ELEMENTAL_SCHOOL:
                 # An Elemental spell outside the ladders would escape the

@@ -999,15 +999,10 @@ class TurnRunner:
 
     def _pay_gait_fatigue(self, combatant: CombatantState, gait: str) -> None:
         """Charge a turn's movement at ``gait`` its Fatigue, if it costs any
-        (:data:`movement.GAIT_FATIGUE_COSTS`)."""
-        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
-        if cost:
-            self.apply_pool_cost(
-                combatant,
-                FATIGUE_POOL,
-                cost,
-                movement.GAIT_FATIGUE_REASONS[gait],
-            )
+        (:data:`movement.GAIT_FATIGUE`)."""
+        charge = movement.GAIT_FATIGUE.get(gait)
+        if charge is not None and charge.cost:
+            self.apply_pool_cost(combatant, FATIGUE_POOL, charge.cost, charge.reason)
 
     def apply_pool_cost(
         self,
