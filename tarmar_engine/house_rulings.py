@@ -559,9 +559,10 @@ HOUSE_RULINGS += (
         "lands in the last, open-ended band whatever the margin. A band's "
         "cost is its injected cost per point of debt times the debt owed at "
         "the roll, after any refund has paid some back (the debt the roll's "
-        "penalty counts), taken from the band's pool by the engine's one "
-        "cost path, so unconsciousness and the survival saves apply as for "
-        "any other loss; a band with no pool, or a cost of 0, takes nothing.",
+        "penalty counts), taken from the band's pool by the path a gait's "
+        "Fatigue cost takes, so unconsciousness and the survival saves apply "
+        "as for any other loss and a death cites the debt roll; a band with "
+        "no pool, or a cost of 0, takes nothing.",
         ("debt owed at the roll", "automatic total in the last band"),
         "tarmar_engine/engine.py _debt_roll, apply_pool_cost",
         "Spencer's ruling of 2026-11-17 on tarmar-engine #74 (" + RULING + ")",

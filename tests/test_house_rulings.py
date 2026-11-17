@@ -308,21 +308,6 @@ class ChannelRulingsTest(TestCase):
         self.assertEqual(state.by_id(1).mana, 10 - 1)
 
 
-def _whole_debt_refund_profile():
-    """The Borrowing profile with a keen refund of 3: enough to pay a
-    borrowed Lightning Bolt's whole debt back."""
-    from tarmar_engine.profile import TarmarProfile
-
-    from .test_borrowing import borrowing_magic_rules
-
-    rules = borrowing_magic_rules()
-    radiant, keen, tidy = rules.casting_success_tiers
-    generous = replace(keen, mana_refund=3)
-    return TarmarProfile(
-        magic=replace(rules, casting_success_tiers=(radiant, generous, tidy))
-    )
-
-
 class BorrowingRulingsTest(TestCase):
     """The Borrowing readings, pinned by probe (tarmar-engine #28)."""
 
@@ -333,6 +318,7 @@ class BorrowingRulingsTest(TestCase):
             borrow_cast,
             borrower,
             debt_payload,
+            whole_debt_refund_profile,
         )
         from .test_engine import events_of_type
         from .test_magic import control_payload, roll_purposes
@@ -366,7 +352,7 @@ class BorrowingRulingsTest(TestCase):
         # A refund that pays the whole debt back leaves the roll to be made.
         cleared_state = borrower(mana=0)
         cleared = borrow_cast(
-            cleared_state, KEEN_BOLT_FACES, profile=_whole_debt_refund_profile()
+            cleared_state, KEEN_BOLT_FACES, profile=whole_debt_refund_profile()
         )
         self.assertEqual(cleared_state.by_id(1).debt, 0)
         self.assertEqual(debt_payload(cleared)["debt"], 0)

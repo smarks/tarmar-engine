@@ -29,6 +29,8 @@ values are chosen here and kept in one data table for easy revision.
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from .state import BODY_POOL, FATIGUE_POOL
+
 # The school whose spells are studied element by element.
 ELEMENTAL_SCHOOL = "Elemental"
 
@@ -53,7 +55,7 @@ class Spell:
     attribute: str  # "INT" or "WIS" — the 3d6 casting roll's target
     targeted: bool  # needs the additional DEX roll
     damage: str | None = None  # dice expression, or None
-    damage_pool: str = "fatigue"  # which pool the damage hits
+    damage_pool: str = FATIGUE_POOL  # which pool the damage hits
     ignores_armour: bool = False  # mental/direct effects skip stops
     heals: bool = False  # damage expression restores instead
     continuing: bool = False  # renewed each turn in Phase 2 or ends
@@ -170,7 +172,7 @@ SPELLS: dict[str, Spell] = {
             attribute="INT",
             targeted=False,
             damage="1d6",
-            damage_pool="body",
+            damage_pool=BODY_POOL,
             ignores_armour=True,
         ),
         Spell(

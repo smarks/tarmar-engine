@@ -61,7 +61,6 @@ from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
     COUNTER_BOUNDS,
-    FATIGUE_POOL,
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
@@ -80,6 +79,8 @@ from .magic import (
 from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
+    BODY_POOL,
+    FATIGUE_POOL,
     BattleState,
     CombatantState,
     ContestState,
@@ -870,14 +871,7 @@ class TurnRunner:
                 "destination": list(destination),
             },
         )
-        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
-        if cost:
-            self.apply_pool_cost(
-                combatant,
-                FATIGUE_POOL,
-                cost,
-                "running" if gait == "run" else "sprinting",
-            )
+        self._pay_gait_fatigue(combatant, gait)
 
     def shift_to(self, combatant: CombatantState) -> None:
         """An engaged option's one-hex Shift to its chosen hex (#20).
@@ -947,14 +941,7 @@ class TurnRunner:
                 "net_hexes": hexes.distance(start, combatant.position),
             },
         )
-        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
-        if cost:
-            self.apply_pool_cost(
-                combatant,
-                FATIGUE_POOL,
-                cost,
-                "running" if gait == "run" else "sprinting",
-            )
+        self._pay_gait_fatigue(combatant, gait)
 
     def kite_step(self, combatant: CombatantState) -> None:
         """Phase-4 walk-slow adjustment: open distance to the nearest enemy."""
@@ -1010,6 +997,18 @@ class TurnRunner:
                 },
             )
 
+    def _pay_gait_fatigue(self, combatant: CombatantState, gait: str) -> None:
+        """Charge a turn's movement at ``gait`` its Fatigue, if it costs any
+        (:data:`movement.GAIT_FATIGUE_COSTS`)."""
+        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
+        if cost:
+            self.apply_pool_cost(
+                combatant,
+                FATIGUE_POOL,
+                cost,
+                movement.GAIT_FATIGUE_REASONS[gait],
+            )
+
     def apply_pool_cost(
         self,
         combatant: CombatantState,
@@ -1018,23 +1017,25 @@ class TurnRunner:
         reason: str,
         chain: list[int] | None = None,
     ) -> None:
-        """Take a cost from one of a combatant's own pools: a gait's Fatigue,
-        a failed debt roll's band.
+        """Take a gait's or a debt band's cost from one of a combatant's own
+        pools.
 
-        The engine's one path for a cost the combatant pays, as
-        :meth:`apply_damage` is for a blow: the pool falls, the event names
-        what is left, and the reactions seam's unconsciousness applies (and,
-        through :meth:`survival_saves`, its death line) as for any other
-        loss.
+        The pool falls, the event names what is left, and the reactions
+        seam's unconsciousness applies (and, through :meth:`survival_saves`,
+        its death line) as for any other loss. With a ``chain``, the cost's
+        rolls become the combatant's fatal chain, as :meth:`apply_damage`
+        makes a blow's, so a later death cites them even when the combatant
+        was already down.
 
         Args:
             combatant: Who pays.
-            pool: The pool, one of :data:`magic.CASTER_POOLS`.
+            pool: The pool, one of :data:`state.CASTER_POOLS`.
             cost: How much; positive.
             reason: The narration's reason ("running", "on the failed debt
                 for Fire Missile").
             chain: The roll sequence numbers behind the cost, for a fall
-                into unconsciousness to cite; ``None`` for none.
+                into unconsciousness or a death to cite; ``None`` for none,
+                which leaves the fatal chain as it was.
         """
         setattr(combatant, pool, getattr(combatant, pool) - cost)
         left = getattr(combatant, pool)
@@ -1044,6 +1045,8 @@ class TurnRunner:
             actor=combatant.name,
             payload={pool: left, "cost": cost, "reason": reason},
         )
+        if chain is not None:
+            combatant.fatal_chain = list(chain)
         self.check_unconsciousness(combatant, [] if chain is None else chain)
 
     # ------------------------------------------------------------ action phase
@@ -2693,7 +2696,7 @@ class TurnRunner:
                 f"{combatant.name} heals {healed} fatigue "
                 f"({combatant.fatigue}/{combatant.max_fatigue})",
                 actor=combatant.name,
-                payload={"healed": healed, "fatigue": combatant.fatigue},
+                payload={"healed": healed, FATIGUE_POOL: combatant.fatigue},
             )
             return
         target = self._living_target(combatant)
@@ -2735,9 +2738,9 @@ class TurnRunner:
             target,
             net,
             raw=raw,
-            reaches_body=spell.damage_pool == "body",
+            reaches_body=spell.damage_pool == BODY_POOL,
             chain=[cast_sequence, damage_sequence],
-            body_only=spell.damage_pool == "body",
+            body_only=spell.damage_pool == BODY_POOL,
         )
 
     def _casting_success_tier(
@@ -2928,7 +2931,7 @@ class TurnRunner:
         lands in the last, open-ended band whatever the margin. The failure
         is narrated by its band's label, in a second event; the band's cost,
         its cost per point of debt times the debt owed at the roll, is taken
-        from its pool by the engine's one cost path (:meth:`apply_pool_cost`),
+        from its pool by :meth:`apply_pool_cost`,
         so unconsciousness and death apply as for any other loss; and a
         Runaway band, with injected Runaway rules, begins one
         (:meth:`_begin_runaway`). The spell has already resolved and stands.
@@ -3599,8 +3602,8 @@ class TurnRunner:
                 "net": net,
                 "raw": raw,
                 "stopped": stopped,
-                "fatigue": defender.fatigue,
-                "body": defender.body,
+                FATIGUE_POOL: defender.fatigue,
+                BODY_POOL: defender.body,
                 "chain": list(chain),
             },
         )

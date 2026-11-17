@@ -17,12 +17,16 @@ from functools import partial
 from unittest import TestCase
 
 from tarmar_engine import engine, policy
-from tarmar_engine.magic import MagicRules, RollUnderRule, RunawayRules
+from tarmar_engine.magic import BODY_POOL, MagicRules, RollUnderRule, RunawayRules
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState, RunawayState
 
 from .test_borrowing import (
+    BACKLASH,
     BOLT_FACES,
+    BRUISE,
+    FLICKER,
+    SURGE,
     borrow_cast,
     borrower,
     borrowing_magic_rules,
@@ -214,6 +218,42 @@ class RunawayBeginsTest(TestCase):
         self.assertEqual((failure["debt_failure"], failure["runaway"]), ("surge", True))
         self.assertEqual(state.by_id(1).runaway, RunawayState("lightning_bolt", 3))
         self.assertEqual(len(self.begins(events)), 1)
+
+    def test_a_debt_runaway_band_keeps_a_runaway_already_running(self):
+        # Owing 3: a 13 misses by 7, the Surge band, while Fire Missile runs.
+        state = borrower(debt=2)
+        state.by_id(1).runaway = RunawayState("fire_missile", 2)
+        events = borrow_cast(state, [*BOLT_FACES, [7, 6]], profile=SURGE_PROFILE)
+        self.assertTrue(status_payloads(events, "debt_failure")[0]["runaway"])
+        self.assertEqual(state.by_id(1).runaway, RunawayState("fire_missile", 2))
+        self.assertEqual(self.begins(events), [])
+        self.assertEqual(
+            events_of_type(events, "info")[-1]["payload"],
+            {"spell": "lightning_bolt", "runaway_kept": "fire_missile"},
+        )
+
+    def test_a_costed_runaway_band_takes_its_cost_before_the_runaway(self):
+        costly_surge = replace(SURGE, cost_pool=BODY_POOL, cost_per_debt=1)
+        profile = TarmarProfile(
+            magic=replace(
+                borrowing_magic_rules(
+                    failure_bands=(FLICKER, BACKLASH, BRUISE, costly_surge)
+                ),
+                runaway=example_runaway_rules(),
+            )
+        )
+        state = borrower(debt=2)
+        events = borrow_cast(state, [*BOLT_FACES, [7, 6]], profile=profile)
+        statuses = events_of_type(events, "status")
+        kinds = [
+            key
+            for event in statuses
+            for key in ("debt_failure", "reason", "runaway_begins")
+            if key in event["payload"]
+        ]
+        self.assertEqual(kinds, ["debt_failure", "reason", "runaway_begins"])
+        self.assertEqual(state.by_id(1).body, 27 - 3)
+        self.assertEqual(state.by_id(1).runaway, RunawayState("lightning_bolt", 3))
 
     def test_the_casting_rolls_runaway_total(self):
         state = wizard_state()

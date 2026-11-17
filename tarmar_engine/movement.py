@@ -61,6 +61,12 @@ GAIT_FATIGUE_COSTS: dict[str, int] = {
     "run": RUN_FATIGUE_COST,
     "sprint": SPRINT_FATIGUE_COST,
 }
+#: How the narration names each gait that costs Fatigue ("spends 1 fatigue
+#: running"); the same gaits as :data:`GAIT_FATIGUE_COSTS`.
+GAIT_FATIGUE_REASONS: dict[str, str] = {
+    "run": "running",
+    "sprint": "sprinting",
+}
 
 #: Options whose move may end at a placed hex, and the gait that bounds it:
 #: the target-derived movers less the CHARGE, plus DROP ("Jog or less").

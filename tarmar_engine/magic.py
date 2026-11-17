@@ -92,22 +92,18 @@ from typing import TYPE_CHECKING, TypeVar
 from .dice import parse_dice_expression
 from .spells import Spell
 
+# The combatant's pools are declared in .state; magic re-exports them so
+# ``tarmar_engine.magic`` keeps naming them.
+from .state import BODY_POOL as BODY_POOL
+from .state import CASTER_POOLS as CASTER_POOLS
+from .state import FATIGUE_POOL as FATIGUE_POOL
+from .state import check_caster_pool
+
 if TYPE_CHECKING:
     from .state import CombatantState
 
 #: The attributes a roll in this module may be made against.
 MAGIC_ATTRIBUTES: frozenset[str] = frozenset({"INT", "WIS"})
-
-#: A combatant's Fatigue pool, as its :class:`CombatantState` field names it.
-FATIGUE_POOL = "fatigue"
-#: A combatant's Body pool, likewise.
-BODY_POOL = "body"
-#: The combatant's own pools a magic rule may take from (a Runaway's
-#: overflow, a debt band's cost), each with its maximum's field.
-CASTER_POOLS: Mapping[str, str] = {
-    BODY_POOL: "max_body",
-    FATIGUE_POOL: "max_fatigue",
-}
 
 #: The bounds a Game Master may lift for one figure (tarmar-studio #37), as
 #: ``CombatantState.lifted_magic_bounds`` lists them: the caster's Channel...
@@ -407,11 +403,7 @@ class DebtBand(MarginBand):
     cost_per_debt: int
 
     def __post_init__(self) -> None:
-        if self.cost_pool is not None and self.cost_pool not in CASTER_POOLS:
-            raise ValueError(
-                f"cost_pool must be one of {sorted(CASTER_POOLS)} or None, "
-                f"not {self.cost_pool!r}"
-            )
+        check_caster_pool("cost_pool", self.cost_pool, allow_none=True)
         if self.cost_per_debt < 0:
             raise ValueError("a debt band's cost must not be negative")
         if self.cost_pool is None and self.cost_per_debt:
@@ -844,11 +836,7 @@ class RunawayRules:
     effect_bonus_per_turn: int
 
     def __post_init__(self) -> None:
-        if self.overflow_pool not in CASTER_POOLS:
-            raise ValueError(
-                f"overflow_pool must be one of {sorted(CASTER_POOLS)}, "
-                f"not {self.overflow_pool!r}"
-            )
+        check_caster_pool("overflow_pool", self.overflow_pool)
         multipliers = {
             "drain_multiplier_of_cost": self.drain_multiplier_of_cost,
             "drain_flat": self.drain_flat,

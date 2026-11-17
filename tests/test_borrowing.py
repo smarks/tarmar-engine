@@ -32,7 +32,7 @@ from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState
 
 from .test_channel import channel_caster, example_channel_rules
-from .test_engine import events_of_type
+from .test_engine import ScriptedRoller, events_of_type
 from .test_magic import (
     MAGIC_PROFILE,
     SPUTTER,
@@ -170,6 +170,17 @@ KEEN_BOLT_FACES = [[2, 2, 3], [2, 2, 2], [3, 3, 3], [1, 1]]
 POOL_REFUND_PROFILE = TarmarProfile(
     magic=borrowing_magic_rules(refunds_pay_debt_first=False)
 )
+
+
+def whole_debt_refund_profile(**changes) -> TarmarProfile:
+    """The Borrowing profile, some of its fields changed, with a keen refund
+    of 3: enough to pay a borrowed Lightning Bolt's whole debt back."""
+    rules = borrowing_magic_rules(**changes)
+    radiant, keen, tidy = rules.casting_success_tiers
+    generous = replace(keen, mana_refund=3)
+    return TarmarProfile(
+        magic=replace(rules, casting_success_tiers=(radiant, generous, tidy))
+    )
 
 
 class BorrowingRulesValidationTest(TestCase):
@@ -388,6 +399,67 @@ class DebtBandCostTest(TestCase):
         self.assertFalse(caster.conscious)
         fallen = status_payloads(events, "unconscious")[0]
         self.assertEqual(fallen["chain"], [debt_payload(events)["debt_roll"]])
+
+    def test_no_debt_at_the_roll_takes_nothing_from_a_costed_band(self):
+        # A keen refund of 3 pays all 3 borrowed back: 0 owed, WIS 12 less
+        # 0 = 12, and a 15 misses by 3, the Backlash band at 2 per point owed.
+        state = borrower(mana=0)
+        fatigue = state.by_id(1).fatigue
+        events = borrow_cast(
+            state,
+            [[2, 2, 3], [2, 2, 2], [3, 3, 3], [8, 7]],
+            profile=whole_debt_refund_profile(),
+        )
+        self.assertEqual((debt_payload(events)["debt"], state.by_id(1).debt), (0, 0))
+        payload = failure_event(events)["payload"]
+        self.assertEqual(
+            (payload["debt_failure"], payload["cost_pool"], payload["cost"]),
+            ("backlash", None, 0),
+        )
+        self.assertEqual(state.by_id(1).fatigue, fatigue)
+        self.assertEqual(self.cost_events(events), [])
+
+    def test_death_from_a_body_cost_cites_the_debt_roll(self):
+        # 15 body per point owed, 3 owed: 45 off 27 leaves -18, past the save
+        # line, and an 18 fails the survival save against CON 12.
+        heavy = replace(BRUISE, lowest_margin=1, highest_margin=None, cost_per_debt=15)
+        profile = TarmarProfile(magic=borrowing_magic_rules(failure_bands=(heavy,)))
+        state = borrower(debt=2)
+        caster = state.by_id(1)
+        caster.chosen_spell, caster.chosen_target, caster.chosen_borrow = (
+            "lightning_bolt",
+            2,
+            True,
+        )
+        events: list[dict] = []
+        runner = engine.TurnRunner(
+            state,
+            ScriptedRoller([*BOLT_FACES, [8, 7], [6, 6, 6]]),
+            events.append,
+            profile=profile,
+        )
+        runner.cast_spell(caster)
+        runner.survival_saves()
+        self.assertEqual(caster.body, 27 - 45)
+        self.assertFalse(caster.alive)
+        debt_roll = debt_payload(events)["debt_roll"]
+        survival = next(
+            event["sequence"]
+            for event in events_of_type(events, "roll")
+            if event["payload"]["purpose"] == "survival"
+        )
+        [death] = events_of_type(events, "death")
+        self.assertEqual(death["payload"]["fatal_chain"], [debt_roll, survival])
+
+    def test_a_cost_on_a_caster_already_down_sets_the_fatal_chain(self):
+        state = borrower(conscious=False, fatal_chain=[1, 2])
+        caster = state.by_id(1)
+        runner = engine.TurnRunner(state, ScriptedRoller(), [].append)
+        runner.apply_pool_cost(caster, BODY_POOL, 3, "on a test", chain=[9])
+        self.assertEqual((caster.body, caster.fatal_chain), (27 - 3, [9]))
+        # A gait's cost names no chain and leaves the fatal chain alone.
+        runner.apply_pool_cost(caster, FATIGUE_POOL, 1, "running")
+        self.assertEqual(caster.fatal_chain, [9])
 
     def test_an_automatic_total_lands_in_the_last_band(self):
         # WIS 17 less 2 x 1 = 15: a 16 misses by 1, Flicker's margin, but the

@@ -358,9 +358,10 @@ hex. The option catalog's cap for `r` is "none".
 A caster short of mana may borrow the rest (tarmar-engine #28).
 `MagicRules.borrowing` takes a `BorrowingRules`: `debt_dice`,
 `debt_attributes` (summed, each `INT` or `WIS`), `penalty_per_debt`,
-`failure` (a `BorrowingFailure`: `key`, `label`, `is_runaway`; graded in
-bands since v0.9.21, below), `automatic_failure_totals`, `max_debt` (`None`: Channel alone bounds the
-casting, so Channel rules must be injected too) and `refunds_pay_debt_first`.
+`failure` (a `BorrowingFailure`: `key`, `label`, `is_runaway`; replaced by
+`failure_bands` in v0.9.21, below), `automatic_failure_totals`, `max_debt`
+(`None`: Channel alone bounds the casting, so Channel rules must be injected
+too) and `refunds_pay_debt_first`.
 As with the rest of `tarmar_engine.magic`, every number and label is the
 caller's; the tests use invented ones.
 
@@ -888,6 +889,11 @@ Roll's failures do (tarmar-engine #74, Spencer's ruling of 2026-11-17).
 `is_runaway`, `lowest_margin`, `highest_margin`, `cost_pool`,
 `cost_per_debt`). Every number and label is still the caller's.
 
+**tarmar-studio must move with this release.** It imports
+`BorrowingFailure` and builds `BorrowingRules(failure=...)` from its canon,
+so this engine's pin bump has to land together with the studio's loader
+change and the canon's bands (smarks/tarmar-studio#190), not before them.
+
 - **One band shape, one validator.** `MarginBand` holds what the two rolls'
   bands share (`key`, `label`, `is_runaway`, the margins, `covers`);
   `ControlBand` and `DebtBand` extend it. `magic.validate_margin_bands`
@@ -896,12 +902,15 @@ Roll's failures do (tarmar-engine #74, Spencer's ruling of 2026-11-17).
   the two cannot drift. Push behaves exactly as before; one message changes,
   "band ... ends before it starts" now naming the band's `key`.
 - **The cost.** A band's `cost_pool` is `"fatigue"`, `"body"` or `None`
-  (`magic.CASTER_POOLS`, which replaces `RUNAWAY_OVERFLOW_POOLS`), and it
-  takes `cost_per_debt` times the debt owed at the roll, any refund already
-  applied. It comes off through `TurnRunner.apply_pool_cost`, which replaces
-  `apply_fatigue_cost` and is now the engine's one path for a cost a
-  combatant pays (a gait's Fatigue too, whose events are unchanged), so
-  unconsciousness and the survival saves apply as for any other loss.
+  (`CASTER_POOLS`, with `FATIGUE_POOL` and `BODY_POOL`, now declared in
+  `tarmar_engine.state` and still importable from `tarmar_engine.magic`; it
+  replaces `RUNAWAY_OVERFLOW_POOLS`), and it takes `cost_per_debt` times the
+  debt owed at the roll, any refund already applied. It comes off through
+  `TurnRunner.apply_pool_cost`, which replaces `apply_fatigue_cost` and
+  takes a gait's or a debt band's cost (a gait's events are unchanged), so
+  unconsciousness and the survival saves apply as for any other loss. A
+  debt cost's roll becomes the caster's fatal chain, so a death that
+  follows, even of a caster already down, cites the debt roll.
 - **Automatic totals.** A natural total on `automatic_failure_totals` lands
   in the last, open-ended band whatever the margin.
 - **Events.** The roll and the `debt_roll` status event are unchanged. A
