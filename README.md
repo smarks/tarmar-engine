@@ -922,6 +922,23 @@ change and the canon's bands (smarks/tarmar-studio#190), not before them.
 
 The reading is recorded as `house_rulings` `debt_roll_graded_bands`.
 
+## Every element has a Missile, Ball and Bolt (v0.9.21)
+
+Every Elemental element (water, fire, lightning, earth, wind) now has a
+Missile, Ball and Bolt in the spell catalog, built from one per-tier table
+(tarmar-engine #75, Spencer's ruling of 2026-11-17 that an element is
+learned tier by tier). The three spells that were already there keep their
+keys and stats.
+
+- `spells.ELEMENTS` names the five; `Spell.element` names a spell's element,
+  and an Elemental spell must name one while no other spell may.
+- `spells.lower_tier(spell)` returns the rung below: `None` at tier 1 or for
+  a spell with no element. A ladder with a missing or doubled rung is refused
+  when the catalog is built.
+- A spell's `damage_pool` is checked against `CASTER_POOLS`.
+- `house_rulings` `spell_magnitudes` is stated per tier, and its value keys
+  are now `missile`, `ball` and `bolt`.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,
