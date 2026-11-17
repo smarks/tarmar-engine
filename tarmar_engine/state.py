@@ -8,6 +8,7 @@ battle lives entirely in these dataclasses, round-tripped through
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import MISSING, asdict, dataclass, field, fields
 
 from tarmar_rules import dex_modifier
@@ -35,6 +36,35 @@ BARE_HANDED_DAMAGE_TABLE: tuple[tuple[int, str], ...] = (
 # a grappled figure's Strike Back, a grappler's Squeeze, and a standalone
 # strike once an HTH entry condition holds (tarmar-studio #815/#823).
 UNARMED_WEAPON_CLASS = "Striking"
+
+#: A combatant's Fatigue pool, as its :class:`CombatantState` field names it.
+FATIGUE_POOL = "fatigue"
+#: A combatant's Body pool, likewise.
+BODY_POOL = "body"
+#: The combatant's own pools a rule may take from (a spell's damage, a
+#: Runaway's overflow, a debt band's cost), each with its maximum's field.
+CASTER_POOLS: Mapping[str, str] = {
+    BODY_POOL: "max_body",
+    FATIGUE_POOL: "max_fatigue",
+}
+
+
+def check_caster_pool(name: str, pool: str | None, *, allow_none: bool = False) -> None:
+    """Refuse a pool name that is not one of :data:`CASTER_POOLS`.
+
+    Args:
+        name: The field being checked, for the message.
+        pool: The pool name, or ``None`` where ``allow_none`` permits it.
+        allow_none: May the field be ``None`` (no pool)?
+
+    Raises:
+        ValueError: for any other name.
+    """
+    if allow_none and pool is None:
+        return
+    if pool not in CASTER_POOLS:
+        choices = f"one of {sorted(CASTER_POOLS)}" + (" or None" if allow_none else "")
+        raise ValueError(f"{name} must be {choices}, not {pool!r}")
 
 
 def bare_handed_damage(strength: int) -> str:

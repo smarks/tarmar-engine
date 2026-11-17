@@ -3,8 +3,10 @@ tarmar-studio #825).
 
 Every number and name here is invented, as in ``test_magic`` and
 ``test_channel``: a 2d8 debt roll against WIS alone, a penalty of 2 per point
-owed, a cap of 4, an automatic failure on a natural 16, and failures named
-"Backlash" and "Surge". The tests check the engine's *structure*: a cast the
+owed, a cap of 4, an automatic failure on a natural 16, and failure bands
+named "Flicker" (margins 1-2, no cost), "Backlash" (3-4, 2 fatigue per point
+owed), "Bruise" (5-6, 1 body per point owed) and "Surge" (7 up, a Runaway,
+no cost). The tests check the engine's *structure*: a cast the
 caster cannot afford is offered as a borrowing variant, borrowing empties
 the pool and records the debt, the spell resolves, and the debt roll after
 it is made against the injected target less what is owed.
@@ -15,25 +17,74 @@ from dataclasses import replace
 from unittest import TestCase
 
 from tarmar_engine import combat_math, engine, policy
-from tarmar_engine.magic import BorrowingFailure, BorrowingRules, MagicRules
+from tarmar_engine.magic import (
+    BODY_POOL,
+    FATIGUE_POOL,
+    BorrowingRules,
+    ControlBand,
+    DebtBand,
+    MagicRules,
+    MarginBand,
+    PushRules,
+    band_for_margin,
+)
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState
 
 from .test_channel import channel_caster, example_channel_rules
-from .test_engine import events_of_type
+from .test_engine import ScriptedRoller, events_of_type
 from .test_magic import (
     MAGIC_PROFILE,
+    SPUTTER,
+    TORRENT,
+    WOBBLE,
     PurposeRoller,
     cast,
     example_magic_rules,
+    example_push_rules,
     roll_purposes,
     status_payloads,
     with_casting_failure,
     wizard_state,
 )
 
-BACKLASH = BorrowingFailure(key="backlash", label="Backlash", is_runaway=False)
-SURGE = BorrowingFailure(key="surge", label="Surge", is_runaway=True)
+FLICKER = DebtBand(
+    key="flicker",
+    label="Flicker",
+    is_runaway=False,
+    lowest_margin=1,
+    highest_margin=2,
+    cost_pool=None,
+    cost_per_debt=0,
+)
+BACKLASH = DebtBand(
+    key="backlash",
+    label="Backlash",
+    is_runaway=False,
+    lowest_margin=3,
+    highest_margin=4,
+    cost_pool=FATIGUE_POOL,
+    cost_per_debt=2,
+)
+BRUISE = DebtBand(
+    key="bruise",
+    label="Bruise",
+    is_runaway=False,
+    lowest_margin=5,
+    highest_margin=6,
+    cost_pool=BODY_POOL,
+    cost_per_debt=1,
+)
+SURGE = DebtBand(
+    key="surge",
+    label="Surge",
+    is_runaway=True,
+    lowest_margin=7,
+    highest_margin=None,
+    cost_pool=None,
+    cost_per_debt=0,
+)
+DEBT_BANDS = (FLICKER, BACKLASH, BRUISE, SURGE)
 
 
 def example_borrowing_rules(**changes) -> BorrowingRules:
@@ -42,7 +93,7 @@ def example_borrowing_rules(**changes) -> BorrowingRules:
         debt_dice="2d8",
         debt_attributes=("WIS",),
         penalty_per_debt=2,
-        failure=BACKLASH,
+        failure_bands=DEBT_BANDS,
         automatic_failure_totals=frozenset({16}),
         max_debt=4,
     )
@@ -96,6 +147,14 @@ def debt_payload(events) -> dict:
     return status_payloads(events, "debt_roll")[0]
 
 
+def failure_event(events) -> dict:
+    return next(
+        event
+        for event in events_of_type(events, "status")
+        if "debt_failure" in event["payload"]
+    )
+
+
 def debt_roll_event(events) -> dict:
     return next(
         event
@@ -111,6 +170,17 @@ KEEN_BOLT_FACES = [[2, 2, 3], [2, 2, 2], [3, 3, 3], [1, 1]]
 POOL_REFUND_PROFILE = TarmarProfile(
     magic=borrowing_magic_rules(refunds_pay_debt_first=False)
 )
+
+
+def whole_debt_refund_profile(**changes) -> TarmarProfile:
+    """The Borrowing profile, some of its fields changed, with a keen refund
+    of 3: enough to pay a borrowed Lightning Bolt's whole debt back."""
+    rules = borrowing_magic_rules(**changes)
+    radiant, keen, tidy = rules.casting_success_tiers
+    generous = replace(keen, mana_refund=3)
+    return TarmarProfile(
+        magic=replace(rules, casting_success_tiers=(radiant, generous, tidy))
+    )
 
 
 class BorrowingRulesValidationTest(TestCase):
@@ -142,6 +212,264 @@ class BorrowingRulesValidationTest(TestCase):
 
     def test_the_default_profile_injects_no_borrowing(self):
         self.assertIsNone(example_magic_rules().borrowing)
+
+
+class FailureBandValidationTest(TestCase):
+    """The debt roll's bands are validated as the Control Roll's are, by the
+    one shared validator (tarmar-engine #74)."""
+
+    def assert_both_refuse(self, shape: tuple[int, int | None], *more) -> None:
+        """Bands with these (lowest, highest) margins are refused, with the
+        same message, by both Push and Borrowing."""
+        shapes = (shape, *more)
+        control = tuple(
+            replace(WOBBLE, key="shaped", lowest_margin=low, highest_margin=high)
+            for low, high in shapes
+        )
+        debt = tuple(
+            replace(FLICKER, key="shaped", lowest_margin=low, highest_margin=high)
+            for low, high in shapes
+        )
+        with self.assertRaises(ValueError) as push_refusal:
+            replace(
+                example_push_rules(),
+                failure_bands=control,
+                automatic_runaway_totals=frozenset(),
+            )
+        with self.assertRaises(ValueError) as borrowing_refusal:
+            example_borrowing_rules(failure_bands=debt)
+        self.assertEqual(str(push_refusal.exception), str(borrowing_refusal.exception))
+
+    def test_malformed_bands_are_refused_alike(self):
+        cases = {
+            "not from margin 1": ((2, None),),
+            "a gap": ((1, 2), (4, None)),
+            "an overlap": ((1, 3), (3, None)),
+            "no open-ended last band": ((1, 2), (3, 4)),
+            "an open band before the last": ((1, None), (2, None)),
+            "a band that ends before it starts": ((1, 0), (1, None)),
+        }
+        for name, shapes in cases.items():
+            with self.subTest(name):
+                self.assert_both_refuse(*shapes)
+        with self.assertRaises(ValueError):
+            example_borrowing_rules(failure_bands=())
+
+    def test_one_open_band_is_enough(self):
+        rules = example_borrowing_rules(
+            failure_bands=(replace(FLICKER, highest_margin=None),)
+        )
+        self.assertEqual(rules.band_for_margin(9).key, "flicker")
+
+    def test_a_debt_band_s_pool_and_cost_are_checked(self):
+        for changes in (
+            {"cost_pool": "mana"},
+            {"cost_per_debt": -1},
+            {"cost_pool": None, "cost_per_debt": 1},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(BACKLASH, **changes)
+        free = replace(BACKLASH, cost_per_debt=0)
+        self.assertEqual(free.cost(5), 0)
+
+    def test_both_rules_match_margins_by_one_function(self):
+        borrowing = example_borrowing_rules()
+        push = example_push_rules()
+        for margin, debt_key, control_key in (
+            (1, "flicker", "wobble"),
+            (3, "backlash", "sputter"),
+            (5, "bruise", "torrent"),
+            (7, "surge", "torrent"),
+            (99, "surge", "torrent"),
+        ):
+            with self.subTest(margin=margin):
+                self.assertEqual(borrowing.band_for_margin(margin).key, debt_key)
+                self.assertEqual(push.band_for_margin(margin).key, control_key)
+                self.assertIs(
+                    band_for_margin(borrowing.failure_bands, margin),
+                    borrowing.band_for_margin(margin),
+                )
+        with self.assertRaises(ValueError):
+            borrowing.band_for_margin(0)
+        self.assertIs(borrowing.automatic_band(), SURGE)
+        for band in (WOBBLE, SPUTTER, TORRENT, *DEBT_BANDS):
+            self.assertIsInstance(band, MarginBand)
+        self.assertIsInstance(WOBBLE, ControlBand)
+        self.assertIsInstance(push, PushRules)
+
+
+class DebtBandCostTest(TestCase):
+    """Each band's cost, taken from its pool by the engine's cost path."""
+
+    # Owing 3 at the roll (2 owed, 1 more borrowed): WIS 12 less 2 x 3 = 6.
+    def fail_by(self, faces, **overrides):
+        state = borrower(debt=2, **overrides)
+        caster = state.by_id(1)
+        before = (caster.fatigue, caster.body)
+        events = borrow_cast(state, [*BOLT_FACES, faces])
+        self.assertEqual(debt_payload(events)["target"], 6)
+        return state, before, events
+
+    def cost_events(self, events) -> list[dict]:
+        return [
+            event
+            for event in events_of_type(events, "status")
+            if "on the failed debt" in event["payload"].get("reason", "")
+        ]
+
+    def test_a_band_with_no_cost_takes_nothing(self):
+        # A 7 misses by 1: Flicker.
+        state, before, events = self.fail_by([4, 3])
+        caster = state.by_id(1)
+        failure = failure_event(events)
+        self.assertEqual(
+            failure["payload"],
+            {
+                "spell": "lightning_bolt",
+                "debt_failure": "flicker",
+                "label": "Flicker",
+                "runaway": False,
+                "cost_pool": None,
+                "cost": 0,
+            },
+        )
+        self.assertEqual(
+            failure["message"],
+            f"{caster.name}'s failed debt for Lightning Bolt: Flicker",
+        )
+        self.assertEqual((caster.fatigue, caster.body), before)
+        self.assertEqual(self.cost_events(events), [])
+
+    def test_a_fatigue_band_takes_its_cost_per_point_owed(self):
+        # A 9 misses by 3: Backlash, 2 fatigue x 3 owed.
+        state, (fatigue, body), events = self.fail_by([5, 4])
+        caster = state.by_id(1)
+        self.assertEqual((caster.fatigue, caster.body), (fatigue - 6, body))
+        failure = failure_event(events)
+        self.assertEqual(
+            (failure["payload"]["cost_pool"], failure["payload"]["cost"]),
+            (FATIGUE_POOL, 6),
+        )
+        self.assertIn("Backlash, costing 6 fatigue", failure["message"])
+        [spent] = self.cost_events(events)
+        self.assertEqual(
+            spent["payload"],
+            {
+                FATIGUE_POOL: fatigue - 6,
+                "cost": 6,
+                "reason": "on the failed debt for Lightning Bolt",
+            },
+        )
+        self.assertGreater(spent["sequence"], failure["sequence"])
+
+    def test_a_body_band_takes_its_cost_from_body(self):
+        # An 11 misses by 5: Bruise, 1 body x 3 owed.
+        state, (fatigue, body), events = self.fail_by([6, 5])
+        caster = state.by_id(1)
+        self.assertEqual((caster.fatigue, caster.body), (fatigue, body - 3))
+        [spent] = self.cost_events(events)
+        self.assertEqual(spent["payload"][BODY_POOL], body - 3)
+        self.assertIn("spends 3 body", spent["message"])
+
+    def test_a_pool_band_with_no_cost_per_point_takes_nothing(self):
+        free = replace(BACKLASH, cost_per_debt=0)
+        profile = TarmarProfile(
+            magic=borrowing_magic_rules(failure_bands=(FLICKER, free, BRUISE, SURGE))
+        )
+        state = borrower(debt=2)
+        fatigue = state.by_id(1).fatigue
+        events = borrow_cast(state, [*BOLT_FACES, [5, 4]], profile=profile)
+        payload = failure_event(events)["payload"]
+        self.assertEqual((payload["cost_pool"], payload["cost"]), (None, 0))
+        self.assertEqual(state.by_id(1).fatigue, fatigue)
+        self.assertEqual(self.cost_events(events), [])
+
+    def test_a_cost_that_empties_the_pool_fells_the_caster(self):
+        # One band for every failure, so the hurt caster's lower target
+        # cannot move the roll into another.
+        bruise_only = replace(BRUISE, lowest_margin=1, highest_margin=None)
+        profile = TarmarProfile(
+            magic=borrowing_magic_rules(failure_bands=(bruise_only,))
+        )
+        state = borrower(debt=2, body=2)
+        events = borrow_cast(state, [*BOLT_FACES, [8, 7]], profile=profile)
+        caster = state.by_id(1)
+        self.assertEqual(status_payloads(events, "debt_failure")[0]["cost"], 3)
+        self.assertLessEqual(caster.body, 0)
+        self.assertFalse(caster.conscious)
+        fallen = status_payloads(events, "unconscious")[0]
+        self.assertEqual(fallen["chain"], [debt_payload(events)["debt_roll"]])
+
+    def test_no_debt_at_the_roll_takes_nothing_from_a_costed_band(self):
+        # A keen refund of 3 pays all 3 borrowed back: 0 owed, WIS 12 less
+        # 0 = 12, and a 15 misses by 3, the Backlash band at 2 per point owed.
+        state = borrower(mana=0)
+        fatigue = state.by_id(1).fatigue
+        events = borrow_cast(
+            state,
+            [[2, 2, 3], [2, 2, 2], [3, 3, 3], [8, 7]],
+            profile=whole_debt_refund_profile(),
+        )
+        self.assertEqual((debt_payload(events)["debt"], state.by_id(1).debt), (0, 0))
+        payload = failure_event(events)["payload"]
+        self.assertEqual(
+            (payload["debt_failure"], payload["cost_pool"], payload["cost"]),
+            ("backlash", None, 0),
+        )
+        self.assertEqual(state.by_id(1).fatigue, fatigue)
+        self.assertEqual(self.cost_events(events), [])
+
+    def test_death_from_a_body_cost_cites_the_debt_roll(self):
+        # 15 body per point owed, 3 owed: 45 off 27 leaves -18, past the save
+        # line, and an 18 fails the survival save against CON 12.
+        heavy = replace(BRUISE, lowest_margin=1, highest_margin=None, cost_per_debt=15)
+        profile = TarmarProfile(magic=borrowing_magic_rules(failure_bands=(heavy,)))
+        state = borrower(debt=2)
+        caster = state.by_id(1)
+        caster.chosen_spell, caster.chosen_target, caster.chosen_borrow = (
+            "lightning_bolt",
+            2,
+            True,
+        )
+        events: list[dict] = []
+        runner = engine.TurnRunner(
+            state,
+            ScriptedRoller([*BOLT_FACES, [8, 7], [6, 6, 6]]),
+            events.append,
+            profile=profile,
+        )
+        runner.cast_spell(caster)
+        runner.survival_saves()
+        self.assertEqual(caster.body, 27 - 45)
+        self.assertFalse(caster.alive)
+        debt_roll = debt_payload(events)["debt_roll"]
+        survival = next(
+            event["sequence"]
+            for event in events_of_type(events, "roll")
+            if event["payload"]["purpose"] == "survival"
+        )
+        [death] = events_of_type(events, "death")
+        self.assertEqual(death["payload"]["fatal_chain"], [debt_roll, survival])
+
+    def test_a_cost_on_a_caster_already_down_sets_the_fatal_chain(self):
+        state = borrower(conscious=False, fatal_chain=[1, 2])
+        caster = state.by_id(1)
+        runner = engine.TurnRunner(state, ScriptedRoller(), [].append)
+        runner.apply_pool_cost(caster, BODY_POOL, 3, "on a test", chain=[9])
+        self.assertEqual((caster.body, caster.fatal_chain), (27 - 3, [9]))
+        # A gait's cost names no chain and leaves the fatal chain alone.
+        runner.apply_pool_cost(caster, FATIGUE_POOL, 1, "running")
+        self.assertEqual(caster.fatal_chain, [9])
+
+    def test_an_automatic_total_lands_in_the_last_band(self):
+        # WIS 17 less 2 x 1 = 15: a 16 misses by 1, Flicker's margin, but the
+        # automatic total lands in Surge.
+        events = borrow_cast(borrower(wisdom=17), [*BOLT_FACES, [8, 8]])
+        payload = debt_payload(events)
+        self.assertEqual((payload["natural"], payload["target"]), (16, 15))
+        self.assertTrue(payload["automatic"])
+        failure = status_payloads(events, "debt_failure")[0]
+        self.assertEqual((failure["debt_failure"], failure["runaway"]), ("surge", True))
 
 
 class BorrowMenuTest(TestCase):
@@ -352,32 +680,30 @@ class BorrowingCastTest(TestCase):
         self.assertEqual(status_payloads(events, "debt_failure"), [])
 
     def test_a_failure_narrates_the_injected_label(self):
-        # 15 against WIS 12 less 2 x 1 = 10.
+        # 15 against WIS 12 less 2 x 1 = 10: a margin of 5, the Bruise band.
         state = borrower()
         events = borrow_cast(state, [*BOLT_FACES, [8, 7]])
         self.assertFalse(debt_payload(events)["held"])
         self.assertEqual(debt_roll_event(events)["payload"]["outcome"], "failed")
-        failure = next(
-            event
-            for event in events_of_type(events, "status")
-            if "debt_failure" in event["payload"]
-        )
+        failure = failure_event(events)
         self.assertEqual(
             failure["payload"],
             {
                 "spell": "lightning_bolt",
-                "debt_failure": "backlash",
-                "label": "Backlash",
+                "debt_failure": "bruise",
+                "label": "Bruise",
                 "runaway": False,
+                "cost_pool": BODY_POOL,
+                "cost": 1,
             },
         )
-        self.assertIn("Backlash", failure["message"])
+        self.assertIn("Bruise", failure["message"])
         # The spell already resolved, and stands.
         self.assertEqual(state.by_id(2).fatigue, state.by_id(2).max_fatigue - 9)
 
     def test_a_failure_sets_the_runaway_flag_when_injected_so(self):
-        surge = TarmarProfile(magic=borrowing_magic_rules(failure=SURGE))
-        events = borrow_cast(borrower(), [*BOLT_FACES, [8, 7]], profile=surge)
+        # Owing 3: WIS 12 less 2 x 3 = 6, and a 13 misses by 7, the Surge band.
+        events = borrow_cast(borrower(debt=2), [*BOLT_FACES, [7, 6]])
         failure = status_payloads(events, "debt_failure")[0]
         self.assertEqual((failure["label"], failure["runaway"]), ("Surge", True))
 
@@ -388,6 +714,7 @@ class BorrowingCastTest(TestCase):
         self.assertTrue(payload["automatic"])
         self.assertFalse(payload["held"])
         self.assertEqual(len(status_payloads(events, "debt_failure")), 1)
+        self.assertEqual(status_payloads(events, "debt_failure")[0]["label"], "Surge")
 
     def test_a_tier_refund_pays_the_debt_first_when_injected_so(self):
         # A keen natural 7 hands 1 back; the Bolt borrowed all 3 of its cost.

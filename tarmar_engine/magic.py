@@ -47,8 +47,10 @@ Seven mechanics are modelled so far:
   (:class:`BorrowingRules`): the cast empties the pool and the shortfall is
   recorded as debt on the combatant, which persists across turns. After the
   spell has resolved the caster makes a debt roll, roll-under, against the
-  injected attributes less a penalty per point owed; a failure does what the
-  injected :class:`BorrowingFailure` says. Channel still bounds the whole
+  injected attributes less a penalty per point owed; a failure's margin is
+  looked up in :attr:`BorrowingRules.failure_bands` (a :class:`DebtBand`
+  says what it costs and whether it is a Runaway), and certain natural
+  totals land in the last band regardless. Channel still bounds the whole
   casting, borrowed or not.
 * **Runaway.** A spell whose control is lost (:class:`RunawayRules`) feeds on
   its caster every later turn, in the Renew Spells phase: mana first, and
@@ -85,10 +87,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from .dice import parse_dice_expression
 from .spells import Spell
+
+# The combatant's pools are declared in .state; magic re-exports them so
+# ``tarmar_engine.magic`` keeps naming them.
+from .state import BODY_POOL as BODY_POOL
+from .state import CASTER_POOLS as CASTER_POOLS
+from .state import FATIGUE_POOL as FATIGUE_POOL
+from .state import check_caster_pool
 
 if TYPE_CHECKING:
     from .state import CombatantState
@@ -285,8 +294,9 @@ def casting_success_ceiling(
 
 
 @dataclass(frozen=True)
-class ControlBand:
-    """A band of failure margins on the Control Roll, and what it does.
+class MarginBand:
+    """A band of failure margins on a roll-under roll: the base of the
+    Control Roll's and the debt roll's bands.
 
     The margin is how far the roll exceeded its target (1 = missed by one).
 
@@ -296,8 +306,6 @@ class ControlBand:
         is_runaway: Does landing here start a Runaway?
         lowest_margin: The smallest failure margin in the band.
         highest_margin: The largest, or ``None`` for an open-ended band.
-        spell_takes_effect: Does the spell still go off?
-        push_bonus_applies: Does the pushed mana's effect bonus still apply?
     """
 
     key: str
@@ -305,14 +313,105 @@ class ControlBand:
     is_runaway: bool
     lowest_margin: int
     highest_margin: int | None
-    spell_takes_effect: bool
-    push_bonus_applies: bool
 
     def covers(self, margin: int) -> bool:
         """Is this failure margin inside the band?"""
         if margin < self.lowest_margin:
             return False
         return self.highest_margin is None or margin <= self.highest_margin
+
+
+BandType = TypeVar("BandType", bound=MarginBand)
+
+
+def validate_margin_bands(bands: tuple[MarginBand, ...]) -> None:
+    """Check a roll's failure bands: contiguous from margin 1, no gaps or
+    overlaps, and the last, and only the last, open-ended, so every failure
+    lands in exactly one.
+
+    Args:
+        bands: The bands, in order of their margins.
+
+    Raises:
+        ValueError: for bands that break any of those.
+    """
+    if not bands or bands[-1].highest_margin is not None:
+        raise ValueError("the last failure band must be open-ended")
+    expected_lowest = 1
+    last_index = len(bands) - 1
+    for index, band in enumerate(bands):
+        if band.lowest_margin != expected_lowest:
+            raise ValueError(
+                f"failure bands must be contiguous from margin 1; "
+                f"expected a band from {expected_lowest}, "
+                f"got {band.lowest_margin}"
+            )
+        if band.highest_margin is None:
+            if index != last_index:
+                raise ValueError("only the last failure band may be open-ended")
+            break
+        if band.highest_margin < band.lowest_margin:
+            raise ValueError(f"band {band.key!r} ends before it starts")
+        expected_lowest = band.highest_margin + 1
+
+
+def band_for_margin(bands: tuple[BandType, ...], margin: int) -> BandType:
+    """The failure band a positive margin lands in.
+
+    Args:
+        bands: Bands that passed :func:`validate_margin_bands`.
+        margin: How far the roll exceeded its target, at least 1.
+
+    Raises:
+        ValueError: when no band covers the margin (a margin below 1).
+    """
+    for band in bands:
+        if band.covers(margin):
+            return band
+    raise ValueError(f"no failure band covers margin {margin}")
+
+
+@dataclass(frozen=True)
+class ControlBand(MarginBand):
+    """A band of failure margins on the Control Roll, and what it does.
+
+    Attributes:
+        spell_takes_effect: Does the spell still go off?
+        push_bonus_applies: Does the pushed mana's effect bonus still apply?
+    """
+
+    spell_takes_effect: bool
+    push_bonus_applies: bool
+
+
+@dataclass(frozen=True)
+class DebtBand(MarginBand):
+    """A band of failure margins on the debt roll, and what it costs.
+
+    The debt roll is made after the spell has resolved (house reading
+    ``debt_roll_after_effect``), so a failure cannot take the spell back: it
+    takes its cost from the caster and starts a Runaway when it is one.
+
+    Attributes:
+        cost_pool: The pool the cost is taken from, one of
+            :data:`CASTER_POOLS`, or ``None`` for a band that takes nothing.
+        cost_per_debt: Taken from that pool per point of debt owed at the
+            roll. Not negative, and 0 when ``cost_pool`` is ``None``.
+    """
+
+    cost_pool: str | None
+    cost_per_debt: int
+
+    def __post_init__(self) -> None:
+        check_caster_pool("cost_pool", self.cost_pool, allow_none=True)
+        if self.cost_per_debt < 0:
+            raise ValueError("a debt band's cost must not be negative")
+        if self.cost_pool is None and self.cost_per_debt:
+            raise ValueError("a debt band with a cost must name its pool")
+
+    def cost(self, debt: int) -> int:
+        """What the band takes from a caster owing ``debt`` at the roll."""
+        return self.cost_per_debt * debt
 
 
 @dataclass(frozen=True)
@@ -364,24 +463,7 @@ class PushRules:
             raise ValueError("the push penalty must not be negative")
         if self.max_push_mana is not None and self.max_push_mana < 0:
             raise ValueError("the push cap must not be negative")
-        if not self.failure_bands or self.failure_bands[-1].highest_margin is not None:
-            raise ValueError("the last failure band must be open-ended")
-        expected_lowest = 1
-        last_index = len(self.failure_bands) - 1
-        for index, band in enumerate(self.failure_bands):
-            if band.lowest_margin != expected_lowest:
-                raise ValueError(
-                    f"failure bands must be contiguous from margin 1; "
-                    f"expected a band from {expected_lowest}, "
-                    f"got {band.lowest_margin}"
-                )
-            if band.highest_margin is None:
-                if index != last_index:
-                    raise ValueError("only the last failure band may be open-ended")
-                break
-            if band.highest_margin < band.lowest_margin:
-                raise ValueError(f"band {band} ends before it starts")
-            expected_lowest = band.highest_margin + 1
+        validate_margin_bands(self.failure_bands)
         if self.automatic_runaway_totals and self.runaway_band() is None:
             raise ValueError(
                 "automatic Runaway totals need a Runaway band to say what one does"
@@ -389,10 +471,7 @@ class PushRules:
 
     def band_for_margin(self, margin: int) -> ControlBand:
         """The failure band a positive margin lands in."""
-        for band in self.failure_bands:
-            if band.covers(margin):
-                return band
-        raise ValueError(f"no failure band covers margin {margin}")
+        return band_for_margin(self.failure_bands, margin)
 
     def runaway_band(self) -> ControlBand | None:
         """The band an automatic Runaway uses: the first Runaway band."""
@@ -606,29 +685,9 @@ class ChannelRules:
 
 
 @dataclass(frozen=True)
-class BorrowingFailure:
-    """What a failed debt roll does.
-
-    The debt roll is made after the spell has resolved (house reading
-    ``debt_roll_after_effect``), so a failure cannot take the spell back: it
-    is narrated, and flagged a Runaway when it is one.
-
-    Attributes:
-        key: Stable identifier carried in event payloads.
-        label: The failure as narration prints it.
-        is_runaway: Does the failure start a Runaway? Flagged in the payload
-            as a Runaway on the Control Roll is; its later turns belong to
-            tarmar-engine #30.
-    """
-
-    key: str
-    label: str
-    is_runaway: bool
-
-
-@dataclass(frozen=True)
 class BorrowingRules:
-    """Borrowing's numbers: the debt roll, its penalty, and its failure.
+    """Borrowing's numbers: the debt roll, its penalty, and its failure
+    bands.
 
     Attributes:
         debt_dice: The debt roll's dice expression.
@@ -636,9 +695,12 @@ class BorrowingRules:
             summed for the roll-under target before the penalty. At least one.
         penalty_per_debt: Subtracted from the target per point of debt owed
             once the cast is paid (and any refund has paid some back).
-        failure: What a failed debt roll does.
+        failure_bands: Contiguous bands of failure margins starting at 1, the
+            last open-ended, so every failure lands in exactly one; each
+            says what a failure there costs.
         automatic_failure_totals: Natural debt-roll totals that fail whatever
-            the target.
+            the target, and land in the last (open-ended) band whatever the
+            margin.
         max_debt: The most a caster may owe in all, or ``None``: Channel
             alone bounds a borrowing casting, so Channel rules must be
             injected beside it (:class:`MagicRules` refuses otherwise).
@@ -649,7 +711,7 @@ class BorrowingRules:
     debt_dice: str
     debt_attributes: tuple[str, ...]
     penalty_per_debt: int
-    failure: BorrowingFailure
+    failure_bands: tuple[DebtBand, ...]
     automatic_failure_totals: frozenset[int]
     max_debt: int | None = None
     refunds_pay_debt_first: bool = True
@@ -668,6 +730,15 @@ class BorrowingRules:
             raise ValueError("the debt penalty must not be negative")
         if self.max_debt is not None and self.max_debt < 0:
             raise ValueError("the debt cap must not be negative")
+        validate_margin_bands(self.failure_bands)
+
+    def band_for_margin(self, margin: int) -> DebtBand:
+        """The failure band a positive margin lands in."""
+        return band_for_margin(self.failure_bands, margin)
+
+    def automatic_band(self) -> DebtBand:
+        """The band an automatic failure total lands in: the last."""
+        return self.failure_bands[-1]
 
     @property
     def versus(self) -> str:
@@ -728,14 +799,6 @@ class RollUnderRule:
             )
 
 
-#: The pools a Runaway's drain may move to once the caster's mana is gone:
-#: the combatant's own pool fields, each with its maximum's field.
-RUNAWAY_OVERFLOW_POOLS: Mapping[str, str] = {
-    "body": "max_body",
-    "fatigue": "max_fatigue",
-}
-
-
 @dataclass(frozen=True)
 class RunawayRules:
     """Runaway's numbers: the drain, where it moves, and the anchor rolls.
@@ -746,7 +809,7 @@ class RunawayRules:
             included)...
         drain_flat: ...plus this. Neither negative, and not both 0.
         overflow_pool: The pool drained once the mana is gone, one of
-            :data:`RUNAWAY_OVERFLOW_POOLS`. It may go negative, as the pools
+            :data:`CASTER_POOLS`. It may go negative, as the pools
             already may.
         death_multiplier_of_max: The caster dies when the overflow pool
             reaches this many times its maximum below zero, or ``None``: the
@@ -773,11 +836,7 @@ class RunawayRules:
     effect_bonus_per_turn: int
 
     def __post_init__(self) -> None:
-        if self.overflow_pool not in RUNAWAY_OVERFLOW_POOLS:
-            raise ValueError(
-                f"overflow_pool must be one of {sorted(RUNAWAY_OVERFLOW_POOLS)}, "
-                f"not {self.overflow_pool!r}"
-            )
+        check_caster_pool("overflow_pool", self.overflow_pool)
         multipliers = {
             "drain_multiplier_of_cost": self.drain_multiplier_of_cost,
             "drain_flat": self.drain_flat,
@@ -800,7 +859,7 @@ class RunawayRules:
 
     def overflow_maximum(self, caster: CombatantState) -> int:
         """The caster's maximum in the overflow pool."""
-        return getattr(caster, RUNAWAY_OVERFLOW_POOLS[self.overflow_pool])
+        return getattr(caster, CASTER_POOLS[self.overflow_pool])
 
     def death_line(self, caster: CombatantState) -> int | None:
         """The overflow pool's value at which the caster dies, or ``None``

@@ -28,14 +28,16 @@ class HouseRulingsRecordTest(TestCase):
 
     def test_spell_magnitudes(self):
         value = ruling("spell_magnitudes").value
-        for key in (
-            "fire_missile",
-            "fire_ball",
-            "lightning_bolt",
-            "heal",
-            "fatigue",
-            "wound",
-        ):
+        # One magnitude per Elemental tier, held by that tier's spell in
+        # every element (#75).
+        for tier in spells._ELEMENTAL_TIERS:
+            tier_key = tier.name_suffix.lower()
+            for element in spells.ELEMENTS:
+                spell_key = f"{element}_{tier_key}"
+                self.assertEqual(
+                    spells.SPELLS[spell_key].damage, value[tier_key], spell_key
+                )
+        for key in ("heal", "fatigue", "wound"):
             self.assertEqual(spells.SPELLS[key].damage, value[key], key)
         self.assertEqual(spells.SPELLS["shield"].tn_bonus, value["shield_tn_bonus"])
         self.assertEqual(
@@ -306,21 +308,6 @@ class ChannelRulingsTest(TestCase):
         self.assertEqual(state.by_id(1).mana, 10 - 1)
 
 
-def _whole_debt_refund_profile():
-    """The Borrowing profile with a keen refund of 3: enough to pay a
-    borrowed Lightning Bolt's whole debt back."""
-    from tarmar_engine.profile import TarmarProfile
-
-    from .test_borrowing import borrowing_magic_rules
-
-    rules = borrowing_magic_rules()
-    radiant, keen, tidy = rules.casting_success_tiers
-    generous = replace(keen, mana_refund=3)
-    return TarmarProfile(
-        magic=replace(rules, casting_success_tiers=(radiant, generous, tidy))
-    )
-
-
 class BorrowingRulingsTest(TestCase):
     """The Borrowing readings, pinned by probe (tarmar-engine #28)."""
 
@@ -331,6 +318,7 @@ class BorrowingRulingsTest(TestCase):
             borrow_cast,
             borrower,
             debt_payload,
+            whole_debt_refund_profile,
         )
         from .test_engine import events_of_type
         from .test_magic import control_payload, roll_purposes
@@ -364,7 +352,7 @@ class BorrowingRulingsTest(TestCase):
         # A refund that pays the whole debt back leaves the roll to be made.
         cleared_state = borrower(mana=0)
         cleared = borrow_cast(
-            cleared_state, KEEN_BOLT_FACES, profile=_whole_debt_refund_profile()
+            cleared_state, KEEN_BOLT_FACES, profile=whole_debt_refund_profile()
         )
         self.assertEqual(cleared_state.by_id(1).debt, 0)
         self.assertEqual(debt_payload(cleared)["debt"], 0)
@@ -453,6 +441,35 @@ class BorrowingRulingsTest(TestCase):
         pool_only = borrower(mana=0)
         borrow_cast(pool_only, KEEN_BOLT_FACES, profile=POOL_REFUND_PROFILE)
         self.assertEqual((pool_only.by_id(1).mana, pool_only.by_id(1).debt), (0, 3))
+
+    def test_debt_roll_graded_bands(self):
+        from .test_borrowing import (
+            BOLT_FACES,
+            borrow_cast,
+            borrower,
+            debt_payload,
+        )
+
+        self.assertEqual(
+            ruling("debt_roll_graded_bands").value,
+            ("debt owed at the roll", "automatic total in the last band"),
+        )
+        # A keen natural 7 pays 1 of the 3 borrowed back: 2 owed at the roll,
+        # WIS 12 less 2 x 2 = 8, and an 11 misses by 3, the Backlash band at
+        # 2 fatigue per point owed: 4, not the 6 the cast first borrowed.
+        state = borrower(mana=0)
+        fatigue = state.by_id(1).fatigue
+        events = borrow_cast(state, [[2, 2, 3], [2, 2, 2], [3, 3, 3], [6, 5]])
+        self.assertEqual(debt_payload(events)["target"], 8)
+        self.assertEqual(state.by_id(1).fatigue, fatigue - 4)
+        # The automatic total lands in the last band, whatever the margin.
+        events = borrow_cast(borrower(wisdom=17), [*BOLT_FACES, [8, 8]])
+        failure = next(
+            event["payload"]
+            for event in events
+            if "debt_failure" in event.get("payload", {})
+        )
+        self.assertEqual(failure["debt_failure"], "surge")
 
 
 class HandToHandAndDestinationRulingsTest(TestCase):

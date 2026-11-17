@@ -79,6 +79,8 @@ from .magic import (
 from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
+    BODY_POOL,
+    FATIGUE_POOL,
     BattleState,
     CombatantState,
     ContestState,
@@ -869,11 +871,7 @@ class TurnRunner:
                 "destination": list(destination),
             },
         )
-        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
-        if cost:
-            self.apply_fatigue_cost(
-                combatant, cost, "running" if gait == "run" else "sprinting"
-            )
+        self._pay_gait_fatigue(combatant, gait)
 
     def shift_to(self, combatant: CombatantState) -> None:
         """An engaged option's one-hex Shift to its chosen hex (#20).
@@ -943,11 +941,7 @@ class TurnRunner:
                 "net_hexes": hexes.distance(start, combatant.position),
             },
         )
-        cost = GAIT_FATIGUE_COSTS.get(gait, 0)
-        if cost:
-            self.apply_fatigue_cost(
-                combatant, cost, "running" if gait == "run" else "sprinting"
-            )
+        self._pay_gait_fatigue(combatant, gait)
 
     def kite_step(self, combatant: CombatantState) -> None:
         """Phase-4 walk-slow adjustment: open distance to the nearest enemy."""
@@ -1003,18 +997,52 @@ class TurnRunner:
                 },
             )
 
-    def apply_fatigue_cost(
-        self, combatant: CombatantState, cost: int, reason: str
+    def _pay_gait_fatigue(self, combatant: CombatantState, gait: str) -> None:
+        """Charge a turn's movement at ``gait`` its Fatigue, if it costs any
+        (:data:`movement.GAIT_FATIGUE`)."""
+        charge = movement.GAIT_FATIGUE.get(gait)
+        if charge is not None and charge.cost:
+            self.apply_pool_cost(combatant, FATIGUE_POOL, charge.cost, charge.reason)
+
+    def apply_pool_cost(
+        self,
+        combatant: CombatantState,
+        pool: str,
+        cost: int,
+        reason: str,
+        chain: list[int] | None = None,
     ) -> None:
-        combatant.fatigue -= cost
+        """Take a gait's or a debt band's cost from one of a combatant's own
+        pools.
+
+        The pool falls, the event names what is left, and the reactions
+        seam's unconsciousness applies (and, through :meth:`survival_saves`,
+        its death line) as for any other loss. With a ``chain``, the cost's
+        rolls become the combatant's fatal chain, as :meth:`apply_damage`
+        makes a blow's, so a later death cites them even when the combatant
+        was already down.
+
+        Args:
+            combatant: Who pays.
+            pool: The pool, one of :data:`state.CASTER_POOLS`.
+            cost: How much; positive.
+            reason: The narration's reason ("running", "on the failed debt
+                for Fire Missile").
+            chain: The roll sequence numbers behind the cost, for a fall
+                into unconsciousness or a death to cite; ``None`` for none,
+                which leaves the fatal chain as it was.
+        """
+        setattr(combatant, pool, getattr(combatant, pool) - cost)
+        left = getattr(combatant, pool)
         self.emit(
             "status",
-            f"{combatant.name} spends {cost} fatigue {reason} "
-            f"({combatant.fatigue} left)",
+            f"{combatant.name} spends {cost} {pool} {reason} ({left} left)",
             actor=combatant.name,
-            payload={"fatigue": combatant.fatigue, "cost": cost, "reason": reason},
+            payload={pool: left, "cost": cost, "reason": reason},
         )
-        self.check_unconsciousness(combatant, [])
+        if chain is not None:
+            combatant.fatal_chain = list(chain)
+        self.check_unconsciousness(combatant, [] if chain is None else chain)
 
     # ------------------------------------------------------------ action phase
     def execute_action(self, combatant: CombatantState) -> None:
@@ -2663,7 +2691,7 @@ class TurnRunner:
                 f"{combatant.name} heals {healed} fatigue "
                 f"({combatant.fatigue}/{combatant.max_fatigue})",
                 actor=combatant.name,
-                payload={"healed": healed, "fatigue": combatant.fatigue},
+                payload={"healed": healed, FATIGUE_POOL: combatant.fatigue},
             )
             return
         target = self._living_target(combatant)
@@ -2705,9 +2733,9 @@ class TurnRunner:
             target,
             net,
             raw=raw,
-            reaches_body=spell.damage_pool == "body",
+            reaches_body=spell.damage_pool == BODY_POOL,
             chain=[cast_sequence, damage_sequence],
-            body_only=spell.damage_pool == "body",
+            body_only=spell.damage_pool == BODY_POOL,
         )
 
     def _casting_success_tier(
@@ -2893,11 +2921,15 @@ class TurnRunner:
         now (any refund already applied) and the casting roll's injury band
         and off-balance penalty, as the Control Roll takes them. It is made
         even when a refund has paid the whole debt back: the caster borrowed
-        on this cast. A natural total on the injected
-        automatic list fails whatever the target. A failure is narrated by
-        its injected label, in a second event, and flagged a Runaway when the
-        rules make it one, which with injected Runaway rules begins
-        (:meth:`_begin_runaway`); the spell has already resolved and stands.
+        on this cast. A failure's margin picks its injected band; a natural
+        total on the injected automatic list fails whatever the target and
+        lands in the last, open-ended band whatever the margin. The failure
+        is narrated by its band's label, in a second event; the band's cost,
+        its cost per point of debt times the debt owed at the roll, is taken
+        from its pool by :meth:`apply_pool_cost`,
+        so unconsciousness and death apply as for any other loss; and a
+        Runaway band, with injected Runaway rules, begins one
+        (:meth:`_begin_runaway`). The spell has already resolved and stands.
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
@@ -2935,19 +2967,38 @@ class TurnRunner:
         )
         if held:
             return
-        failure = borrowing.failure
+        band = (
+            borrowing.automatic_band()
+            if debt.automatic
+            else borrowing.band_for_margin(debt.margin)
+        )
+        cost = band.cost(combatant.debt)
+        cost_pool = band.cost_pool if cost else None
+        message = f"{combatant.name}'s failed debt for {spell.name}: {band.label}"
+        if cost_pool is not None:
+            message += f", costing {cost} {cost_pool}"
         self.emit(
             "status",
-            f"{combatant.name}'s failed debt for {spell.name}: {failure.label}",
+            message,
             actor=combatant.name,
             payload={
                 "spell": spell.key,
-                "debt_failure": failure.key,
-                "label": failure.label,
-                "runaway": failure.is_runaway,
+                "debt_failure": band.key,
+                "label": band.label,
+                "runaway": band.is_runaway,
+                "cost_pool": cost_pool,
+                "cost": cost,
             },
         )
-        if failure.is_runaway:
+        if cost_pool is not None:
+            self.apply_pool_cost(
+                combatant,
+                cost_pool,
+                cost,
+                f"on the failed debt for {spell.name}",
+                chain=[debt_sequence],
+            )
+        if band.is_runaway:
             self._begin_runaway(
                 combatant,
                 spell,
@@ -3546,8 +3597,8 @@ class TurnRunner:
                 "net": net,
                 "raw": raw,
                 "stopped": stopped,
-                "fatigue": defender.fatigue,
-                "body": defender.body,
+                FATIGUE_POOL: defender.fatigue,
+                BODY_POOL: defender.body,
                 "chain": list(chain),
             },
         )

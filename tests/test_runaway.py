@@ -17,12 +17,15 @@ from functools import partial
 from unittest import TestCase
 
 from tarmar_engine import engine, policy
-from tarmar_engine.magic import MagicRules, RollUnderRule, RunawayRules
+from tarmar_engine.magic import BODY_POOL, MagicRules, RollUnderRule, RunawayRules
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState, RunawayState
 
 from .test_borrowing import (
+    BACKLASH,
     BOLT_FACES,
+    BRUISE,
+    FLICKER,
     SURGE,
     borrow_cast,
     borrower,
@@ -69,9 +72,10 @@ FAILING_RUNAWAY_PROFILE = TarmarProfile(
 )
 #: The example casting roll's Runaway total, 14.
 RUNAWAY_TOTAL_FACES = [5, 5, 4]
-#: Borrowing whose failure is a Runaway, with Runaway rules beside it.
+#: Borrowing, whose last band (Surge, where the automatic total lands) is a
+#: Runaway, with Runaway rules beside it.
 SURGE_PROFILE = TarmarProfile(
-    magic=replace(borrowing_magic_rules(failure=SURGE), runaway=example_runaway_rules())
+    magic=replace(borrowing_magic_rules(), runaway=example_runaway_rules())
 )
 
 
@@ -205,6 +209,52 @@ class RunawayBeginsTest(TestCase):
         self.assertEqual(state.by_id(1).runaway, RunawayState("lightning_bolt", 3))
         self.assertEqual(len(self.begins(events)), 1)
 
+    def test_a_runaway_band_on_the_debt_roll(self):
+        # Owing 3: WIS 12 less 2 x 3 = 6, and a 13 misses by 7, the Surge band.
+        state = borrower(debt=2)
+        events = borrow_cast(state, [*BOLT_FACES, [7, 6]], profile=SURGE_PROFILE)
+        self.assertFalse(status_payloads(events, "debt_roll")[0]["automatic"])
+        failure = status_payloads(events, "debt_failure")[0]
+        self.assertEqual((failure["debt_failure"], failure["runaway"]), ("surge", True))
+        self.assertEqual(state.by_id(1).runaway, RunawayState("lightning_bolt", 3))
+        self.assertEqual(len(self.begins(events)), 1)
+
+    def test_a_debt_runaway_band_keeps_a_runaway_already_running(self):
+        # Owing 3: a 13 misses by 7, the Surge band, while Fire Missile runs.
+        state = borrower(debt=2)
+        state.by_id(1).runaway = RunawayState("fire_missile", 2)
+        events = borrow_cast(state, [*BOLT_FACES, [7, 6]], profile=SURGE_PROFILE)
+        self.assertTrue(status_payloads(events, "debt_failure")[0]["runaway"])
+        self.assertEqual(state.by_id(1).runaway, RunawayState("fire_missile", 2))
+        self.assertEqual(self.begins(events), [])
+        self.assertEqual(
+            events_of_type(events, "info")[-1]["payload"],
+            {"spell": "lightning_bolt", "runaway_kept": "fire_missile"},
+        )
+
+    def test_a_costed_runaway_band_takes_its_cost_before_the_runaway(self):
+        costly_surge = replace(SURGE, cost_pool=BODY_POOL, cost_per_debt=1)
+        profile = TarmarProfile(
+            magic=replace(
+                borrowing_magic_rules(
+                    failure_bands=(FLICKER, BACKLASH, BRUISE, costly_surge)
+                ),
+                runaway=example_runaway_rules(),
+            )
+        )
+        state = borrower(debt=2)
+        events = borrow_cast(state, [*BOLT_FACES, [7, 6]], profile=profile)
+        statuses = events_of_type(events, "status")
+        kinds = [
+            key
+            for event in statuses
+            for key in ("debt_failure", "reason", "runaway_begins")
+            if key in event["payload"]
+        ]
+        self.assertEqual(kinds, ["debt_failure", "reason", "runaway_begins"])
+        self.assertEqual(state.by_id(1).body, 27 - 3)
+        self.assertEqual(state.by_id(1).runaway, RunawayState("lightning_bolt", 3))
+
     def test_the_casting_rolls_runaway_total(self):
         state = wizard_state()
         events = cast(state, [RUNAWAY_TOTAL_FACES], profile=FAILING_RUNAWAY_PROFILE)
@@ -246,7 +296,7 @@ class RunawayBeginsTest(TestCase):
         events = borrow_cast(
             surge,
             [*BOLT_FACES, [8, 8]],
-            profile=TarmarProfile(magic=borrowing_magic_rules(failure=SURGE)),
+            profile=TarmarProfile(magic=borrowing_magic_rules()),
         )
         self.assertTrue(status_payloads(events, "debt_failure")[0]["runaway"])
         self.assertIsNone(surge.by_id(1).runaway)

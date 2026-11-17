@@ -26,7 +26,19 @@ name these spells but publish no combat numbers for them, so conservative
 values are chosen here and kept in one data table for easy revision.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+
+from .state import BODY_POOL, FATIGUE_POOL, check_caster_pool
+
+# The school whose spells are studied element by element.
+ELEMENTAL_SCHOOL = "Elemental"
+
+# schools-of-magic.md: "Elemental (water, fire, lightning, earth, wind)". A
+# student of Elemental magic studies one element as a track and climbs it
+# tier by tier (Missile, then Ball, then Bolt); switching element means
+# starting the new one at tier 1 (Spencer's ruling, tarmar-engine #75).
+ELEMENTS: tuple[str, ...] = ("water", "fire", "lightning", "earth", "wind")
 
 # Dodge's +4-to-TN (special-combat-situations.md) is a d20 concept; for a
 # targeted spell's 3d6 ≤ DEX check the equivalent is a penalty on the caster's
@@ -43,43 +55,82 @@ class Spell:
     attribute: str  # "INT" or "WIS" — the 3d6 casting roll's target
     targeted: bool  # needs the additional DEX roll
     damage: str | None = None  # dice expression, or None
-    damage_pool: str = "fatigue"  # which pool the damage hits
+    damage_pool: str = FATIGUE_POOL  # which pool the damage hits
     ignores_armour: bool = False  # mental/direct effects skip stops
     heals: bool = False  # damage expression restores instead
     continuing: bool = False  # renewed each turn in Phase 2 or ends
     tn_bonus: int = 0  # added to the caster's TN while active
     attacker_penalty: int = 0  # to-hit penalty on attacks at the caster
+    element: str | None = None  # an Elemental spell's element, else None
+
+    def __post_init__(self) -> None:
+        check_caster_pool(f"spell {self.key!r}'s damage_pool", self.damage_pool)
+        if self.element is None:
+            if self.school == ELEMENTAL_SCHOOL:
+                # An Elemental spell outside the ladders would escape the
+                # one-element-at-a-time ruling (#75).
+                raise ValueError(f"Elemental spell {self.key!r} names no element")
+            return
+        if self.element not in ELEMENTS:
+            raise ValueError(
+                f"spell {self.key!r} names the element {self.element!r}, which is "
+                f"not one of {ELEMENTS}"
+            )
+        if self.school != ELEMENTAL_SCHOOL:
+            raise ValueError(
+                f"spell {self.key!r} names the element {self.element!r} but is "
+                f"of the {self.school} school, not {ELEMENTAL_SCHOOL}"
+            )
+
+
+@dataclass(frozen=True)
+class _ElementalTier:
+    """One rung of every element's ladder: the fields its spell carries."""
+
+    name_suffix: str  # "Missile" -> "Fire Missile", key "fire_missile"
+    level: int
+    attribute: str
+    targeted: bool
+    damage: str
+
+
+# One table for every element's ladder (schools-of-magic.md's Elemental
+# levels 1-3); each element's Missile, Ball and Bolt are this table crossed
+# with ELEMENTS.
+_ELEMENTAL_TIERS: tuple[_ElementalTier, ...] = (
+    _ElementalTier(
+        name_suffix="Missile", level=1, attribute="INT", targeted=True, damage="1d6"
+    ),
+    _ElementalTier(
+        name_suffix="Ball", level=2, attribute="INT", targeted=True, damage="2d6"
+    ),
+    _ElementalTier(
+        name_suffix="Bolt", level=3, attribute="INT", targeted=True, damage="3d6"
+    ),
+)
+
+
+def _elemental_spell(element: str, tier: _ElementalTier) -> Spell:
+    """Build one element's spell at one tier of the ladder."""
+    return Spell(
+        key=f"{element}_{tier.name_suffix.lower()}",
+        name=f"{element.capitalize()} {tier.name_suffix}",
+        school=ELEMENTAL_SCHOOL,
+        level=tier.level,
+        attribute=tier.attribute,
+        targeted=tier.targeted,
+        damage=tier.damage,
+        element=element,
+    )
 
 
 SPELLS: dict[str, Spell] = {
     spell.key: spell
     for spell in (
-        Spell(
-            key="fire_missile",
-            name="Fire Missile",
-            school="Elemental",
-            level=1,
-            attribute="INT",
-            targeted=True,
-            damage="1d6",
-        ),
-        Spell(
-            key="fire_ball",
-            name="Fire Ball",
-            school="Elemental",
-            level=2,
-            attribute="INT",
-            targeted=True,
-            damage="2d6",
-        ),
-        Spell(
-            key="lightning_bolt",
-            name="Lightning Bolt",
-            school="Elemental",
-            level=3,
-            attribute="INT",
-            targeted=True,
-            damage="3d6",
+        *(
+            _elemental_spell(element, tier)
+            for element in ELEMENTS
+            for tier in _ELEMENTAL_TIERS
         ),
         Spell(
             key="shield",
@@ -122,7 +173,7 @@ SPELLS: dict[str, Spell] = {
             attribute="INT",
             targeted=False,
             damage="1d6",
-            damage_pool="body",
+            damage_pool=BODY_POOL,
             ignores_armour=True,
         ),
         Spell(
@@ -147,3 +198,67 @@ def get_spell(key: str) -> Spell:
             exist is a programming error, not a condition to paper over.
     """
     return SPELLS[key]
+
+
+def _index_ladders(spells: Iterable[Spell]) -> dict[tuple[str, int], Spell]:
+    """Index the spells that name an element by (element, level).
+
+    Args:
+        spells: the spells to index; those with no element are skipped.
+
+    Returns:
+        Each element's spells keyed by (element, level).
+
+    Raises:
+        ValueError: when two spells share an element and level, or when an
+            element's levels do not run 1, 2, ... n without a gap.
+    """
+    index: dict[tuple[str, int], Spell] = {}
+    for spell in spells:
+        if spell.element is None:
+            continue
+        rung = (spell.element, spell.level)
+        if rung in index:
+            raise ValueError(
+                f"{spell.key!r} and {index[rung].key!r} are both the level "
+                f"{spell.level} {spell.element} spell"
+            )
+        index[rung] = spell
+    levels_by_element: dict[str, list[int]] = {}
+    for element, level in index:
+        levels_by_element.setdefault(element, []).append(level)
+    for element, levels in levels_by_element.items():
+        expected_levels = list(range(1, len(levels) + 1))
+        if sorted(levels) != expected_levels:
+            raise ValueError(
+                f"the {element} ladder holds levels {sorted(levels)}, not "
+                f"{expected_levels}"
+            )
+    return index
+
+
+_LADDER_INDEX: dict[tuple[str, int], Spell] = _index_ladders(SPELLS.values())
+
+
+def lower_tier(spell: Spell) -> Spell | None:
+    """The spell one rung down the same element's ladder.
+
+    Args:
+        spell: the spell whose lower tier is wanted.
+
+    Returns:
+        The catalog spell of the same element one level below, or None for a
+        tier-1 spell or a spell with no element.
+
+    Raises:
+        KeyError: when the catalog holds no rung below the spell's level, a
+            spell that is not on a catalog ladder.
+    """
+    if spell.element is None or spell.level == 1:
+        return None
+    rung_below = (spell.element, spell.level - 1)
+    if rung_below not in _LADDER_INDEX:
+        raise KeyError(
+            f"no level {spell.level - 1} {spell.element} spell below {spell.key!r}"
+        )
+    return _LADDER_INDEX[rung_below]
