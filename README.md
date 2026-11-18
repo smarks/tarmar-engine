@@ -431,7 +431,8 @@ payload flag, as before.
 - **Anchoring.** `choose_option(..., magic=rules)` offers `anchor`
   (`Candidate.anchor_target`, `"anchor_target"` in its payload): to a
   conscious combatant for its own Runaway, which the AI always takes, and
-  to any other mage (a spell known or a spell skill recorded) with the mana
+  to any other mage (a spell known or a spell skill recorded, and since
+  v0.9.22 a level in the True skill; see "True Magic" below) with the mana
   for the helper's cost, for each living combatant's Runaway, at a score of
   0. The choice is `CombatantState.chosen_anchor`. In phase 5 the anchor is
   a whole action that stands still: a helper pays its cost, then an
@@ -476,9 +477,10 @@ changes.
 - **The counter.** `choose_option(..., magic=rules)` offers `counter`
   (`actions.COUNTER_OPTION`, keyed outside the lettered tables;
   `Candidate.counter_mana`, `"counter_mana"` in its payload, `target_id` the
-  caster) to any mage against each enemy mage, once per commitment it can
-  afford, at a score of 0: the AI never counters. A counter names a caster,
-  not a cast: it is offered whether or not the caster has chosen its action
+  caster) to any mage against each enemy mage (since v0.9.22 a level in the
+  True skill makes a mage too; see "True Magic" below), once per commitment
+  it can afford, at a score of 0: the AI never counters. A counter names a
+  caster, not a cast: it is offered whether or not the caster has chosen its action
   yet, so a defender that chooses first counters blind, and it opposes that
   caster's cast this turn whatever its target. The choice is
   `CombatantState.chosen_counter`
@@ -498,7 +500,11 @@ changes.
   defender, ties by `ties_go_to_caster`. A `status` event carries
   `counter_result`, `spell`, `caster_total`, `caster_bonus`, `caster_roll`,
   `defender_totals` (`defender`, `total`, `mana`, `bonus`, `roll` each) and
-  `countered`. Every declared counter is spent either way.
+  `countered`; since v0.9.22, and only with a familiarity bonus injected
+  (`CounterspellRules.familiarity_per_level` above 0), also
+  `caster_familiarity`, and `familiarity` and `familiarity_source` on each
+  `defender_totals` entry (see "True Magic" below). Every declared counter is
+  spent either way.
 - **Countered.** The spell makes no casting roll (no tier, Control Roll or
   Runaway), and its whole mana is paid, borrowing included, with the debt
   roll after. A `status` event carries `spell_countered`, `spell`,
@@ -938,6 +944,289 @@ keys and stats.
 - A spell's `damage_pool` is checked against `CASTER_POOLS`.
 - `house_rulings` `spell_magnitudes` is stated per tier, and its value keys
   are now `missile`, `ball` and `bolt`.
+
+## True Magic: workings and True casts, numbers injected (v0.9.22)
+
+A caster with a level in the True skill may do two new things
+(tarmar-engine #77): **True cast** a catalog spell, instantly, its Channel
+derived from the True skill; and **craft a working** over several turns.
+`MagicRules.true_magic` takes a `TrueMagicRules`: `channel_kind`,
+`skill_label`, `school`, `effects`, `tiers_per_level`, `turns_per_tier`,
+`roll_attribute`, `roll_bonus_per_level`, `interruption`, `drain_pool`,
+`drain_per_mana` and `lost_drain_per_mana`. Every number, label and key is
+the caller's, the True skill's own included; the tests use invented ones.
+Without it nothing changes but the spell catalog, which gains five generic
+counters (below).
+
+- **What is injected.** `channel_kind` names a key of
+  `ChannelRules.derivations` whose `source_skill` is the True skill, so the
+  skill's key is written once, in that derivation; `MagicRules` refuses True
+  Magic rules without Channel rules, or naming a kind with no derivation or
+  one that derives per spell. `MagicRules.true_level(caster)` is the
+  caster's level in it (`ChannelDerivation.skill_level`, read off
+  `CombatantState.skill_levels`), 0 with no True Magic rules; "may this
+  caster True cast or craft" is `true_level(caster) > 0`, asked no other
+  way. Each of `effects` is a `WorkingEffect`: `key`, `label`, `kind`
+  (`SpellEffectKind.DAMAGE` or `HEALING`, or `None` for an effect the
+  engine reports and the Game Master describes), `dice_per_tier`, `pool`,
+  `targeted`, `ignores_armour` and `needs_grant`; a narrated effect may be
+  neither targeted nor armour-piercing. `interruption` is an
+  `InterruptionRules`: `roll` (a `RollUnderRule`), `penalty_per_mana`,
+  `failure_bands` (plain `MarginBand`s, checked by
+  `validate_margin_bands`) and `automatic_runaway_totals`, which need a
+  Runaway band. `lost_drain_per_mana` maps a `magic.CastingEnding`
+  (`interrupted`, `abandoned`, `blocked`, `unpaid`, `unconscious`,
+  `grappled`, `countered`, `failed`, `stopped`) to a drain per mana; an
+  ending with no entry drains nothing, and a key that is no ending is
+  refused. Beside them, `CounterspellRules.familiarity_per_level` (default
+  0, below).
+- **The Channel by kind.** `MagicRules.cast_kind(spell, *, true_cast=False)`
+  is the True kind (`channel_kind`) for a True cast or a working and `None`,
+  the spell's own kind, for any other casting. `ChannelRules.kind_for`,
+  `ChannelRules.channel_for` and `bound_for`, and `MagicRules.channel_for`,
+  `channel_bound`, `cast_within_channel` and `lifted_bounds_passed` take a
+  `kind`; `None` is today's behaviour, except that on `MagicRules` a working
+  takes the True kind unasked. House ruling
+  `channel_kind_belongs_to_the_spell` now reads "per spell, unless the cast
+  names a kind". `LIFTABLE_BOUNDS` is unchanged.
+- **A working** is a `Spell` the rules build, not a catalog entry:
+  `TrueMagicRules.working(effect_key, tier)`, keyed
+  `working:<effect key>:<tier>` (`magic.WORKING_KEY_PREFIX` and
+  `WORKING_KEY_SEPARATOR`; `magic.is_working_key` is the one test). Its
+  name is "<label> (tier N)", its school `school`, its level the tier (so
+  its mana is the tier plus any push), its roll under `roll_attribute`, and
+  its dice `WorkingEffect.dice_at(tier)`, the per-tier dice with count and
+  modifier times the tier (`1d4+1` per tier is `3d4+3` at tier 3); it never
+  continues. `magic.spell_for(key, rules)` is the one lookup for a spell key
+  read from state or a candidate, a working's included; with no True Magic
+  rules a working's key raises `KeyError`. The highest tier a caster may
+  craft is `tiers_per_level` x its True level (`MagicRules.tier_cap`,
+  `None` when a Game Master has lifted Channel for it, which lifts the cap
+  too; `unlifted_tier_cap`, `past_tier_cap`), and a tier past it is
+  reported as `channel` by `lifted_bounds_passed`. A tier takes
+  `turns_per_tier` x the tier craft turns (`TrueMagicRules.turns_for`). An
+  effect with `needs_grant` may be crafted only at a key in
+  `CombatantState.granted_workings`, which the consuming game fills from its
+  record of a Game Master's grant and the engine reads through
+  `MagicRules.granted`, raising for a listed key the rules do not build.
+- **The craft.** `actions.CRAFT_OPTION` (`"craft"`, "CRAFT WORKING" in
+  `MAGIC_ACTIONS`) is a whole action that stands still, run by
+  `TurnRunner.craft_working`. Its candidate carries the working in
+  `spell_key`, with `push_mana`, `borrow` and `target_id`.
+  - *Begin.* A caster with no craft standing begins one. A craft the menu
+    never offers raises `ValueError`: no True Magic rules or True level 0, a
+    key the rules do not build, an ungranted `needs_grant` key, a tier past
+    the cap, a push Push's rules or cap do not allow (a narrated working
+    cannot be pushed), whole mana past Channel by the True kind, or a
+    borrowing with no Borrowing rules or past the debt cap. Where a cast is
+    blocked (a grapple, or hand-to-hand with a weapon in hand), or the pool
+    cannot cover the whole working and the caster did not choose to borrow,
+    the action is a logged no-op. Otherwise `CombatantState.crafting` takes a
+    `CraftState` (`spell_key`, `push_mana`, `borrow`, `turns_done`,
+    `borrowed`, `target_id`), and each spell the caster keeps up ends, with a
+    `status` event apiece.
+  - *Shares.* Each craft action, the first included, gathers one share of
+    the whole mana: `TrueMagicRules.share_due(craft)`, where the mana
+    gathered after k of n turns is the whole x k / n rounded down
+    (`gathered_after`; `gathered(craft)`, never stored), so 5 mana over 3
+    turns is 1, 2, 2. A share the pool cannot cover empties the pool and
+    adds the rest to `debt` and `CraftState.borrowed` when the craft
+    borrows; when it does not, nothing is taken and the working is lost,
+    `unpaid`. No share emits a cost event of its own: the payment is in the
+    craft's `action` event. A share of 0 is logged like any other, its
+    action reading "no mana due".
+  - *Continue.* While a craft stands, the only craft the menu offers is its
+    continuation, the craft option again with the craft's working, push and
+    borrowing (the mage's other options stay on offer, and choosing one ends
+    the craft); a craft option that differs from the craft raises
+    `ValueError` in phase 3, where the choice is recorded. Each craft action
+    names the working's target anew. Neither a continuation nor the
+    completion re-checks the True level, the grant, the tier cap or Channel,
+    so a grant withdrawn while a craft is under way does not stop it; the
+    completion does not re-check the cast guard either. A craft standing on
+    a figure when no True Magic rules are injected raises `ValueError`, in
+    the engine and on the menu.
+  - *Endings.* A craft ends early through one path: a `status` event, a
+    Runaway if one starts, one debt roll if any share was borrowed and the
+    mage is still active, then the drain, `lost_drain_per_mana[ending]` x
+    the mana gathered. Any other option chosen in phase 3 loses it
+    `abandoned`, or `blocked` where the continuation was withheld (in
+    hand-to-hand with a weapon in hand), and a craft action where no cast
+    may be made loses it `blocked`. Damage that lands, at least 1 point
+    after armour, on a crafting mage still active forces an interruption
+    roll, purpose `concentration`, roll-under `interruption.roll` less
+    `penalty_per_mana` x the mana gathered and less the injury band; a
+    failure's band (or an automatic total's Runaway band) loses it
+    `interrupted`, and a Runaway band also starts a Runaway costing the mana
+    gathered, unless nothing has been gathered. A grapple that takes hold
+    loses it `grappled`, and a fall into unconsciousness `unconscious`, with
+    no roll; a fall prone does not end it. A mage whose craft is lost in
+    phase 5 before its own slot has that turn's craft action as a logged
+    no-op.
+  - *Completion.* At the end of the Actions phase, after the last action and
+    before unmet counters lapse, each active combatant whose craft has had
+    every turn, in the phase's DEX order, completes its working. Its casting
+    roll is under `roll_attribute` + `roll_bonus_per_level` x its True level,
+    less the injury band, and names its attribute as
+    "<attribute>+<skill label>" (`TrueMagicRules.roll_target` and
+    `versus`). From there it runs the code a cast runs, in a cast's order:
+    the counter, the roll, the success tier, a pushed working's one Control
+    Roll, the aim, the effect, the debt roll. A damaging working lands as a
+    damaging spell does; a healing one heals the caster or the living
+    teammate its craft named (`BattleState.teammates_of`), conscious or not,
+    and never an enemy; a narrated one rolls its dice (purpose `working
+    magnitude`) and applies nothing. A failure on a total that keeps the mana
+    hands every share back, to the pool and off the debt, and drains
+    nothing; a total that loses the mana spends it.
+  - *The drain* comes last: `drain_per_mana` x the working's whole mana,
+    borrowed mana included, from `drain_pool`, through
+    `TurnRunner.apply_pool_cost`. **The pool may go below 0**; the caster
+    falls unconscious at 0 or below, and the survival saves apply, as for any
+    other loss. The craft is off the caster before the roll, so a fall by its
+    own drain or a debt band loses nothing a second time. A working a Control
+    band stops, or that fails on a total that loses the mana, drains
+    `lost_drain_per_mana` for `stopped` or `failed` instead.
+- **True casts.** `Candidate.true_cast` (`"true_cast"` in its payload only
+  when set) becomes `CombatantState.chosen_true_cast`.
+  `MagicRules.true_castable(caster)` is each spell the caster knows, but a
+  generic counter, in order, each followed by the same rung of every other
+  element's ladder (`spells.element_siblings`), with no repeats; empty at
+  True level 0. `cast_spell` raises `ValueError` for a True cast with no
+  True Magic rules, at True level 0, or of a spell outside it, and for any
+  cast of a working. A True cast is instant, derives its Channel by the True
+  kind, and makes the spell's own casting roll with no True-skill bonus.
+  Casting deeper is a push, with Push's Control Roll and bonus, and it
+  drains `drain_per_mana` x the mana pushed, so an unpushed True cast drains
+  nothing; countered, stopped by a Control band, or failed on a total that
+  loses the mana, it drains `lost_drain_per_mana` for `countered`,
+  `stopped` or `failed`.
+- **Five generic counters.** The catalog gains `counter_1` to `counter_5`,
+  "Counter 1" to "Counter 5", school `spells.PROTECTION_SCHOOL`, levels 1 to
+  5, attribute WIS, flagged `Spell.generic_counter`: **learned, never
+  cast.** `Spell` refuses one that is targeted, continuing or healing, or
+  that sets `damage`, `tn_bonus`, `attacker_penalty` or `element`; the menu
+  offers no cast of one, `true_castable` leaves them out and `cast_spell`
+  raises `ValueError`. They stand on a ladder of their own,
+  `spells.GENERIC_COUNTER_LADDER`, so `lower_tier` steps down it.
+  `spells.generic_counter_level(spell_keys)` is the highest level known, 0
+  for none. A figure whose only spells are generic counters has no cast
+  letter and may still counter; with no True level it is not offered as a
+  caster to counter. **A consumer that lists the catalog now lists these
+  five.**
+- **Familiarity on the opposed roll.** With `familiarity_per_level` above 0
+  (`CounterspellRules.counts_familiarity`) each side adds
+  `familiarity_bonus(level)`, the per-level bonus x a level.
+  `caster_familiarity` is the caster's recorded level in the exact spell
+  (`magic.spell_skill_level`, from `CombatantState.spell_skill_levels`), or
+  its True level for a working and for a True cast of a spell it holds no
+  level in. `defender_familiarity` is the highest, never the sum, of the
+  defender's level in the exact spell, its True level, and its generic
+  counter level when the spell's level (a working's tier) is no higher, with
+  the `magic.FamiliaritySource` it rests on (`spell`, `true`, `generic`, the
+  first of those on a tie, `None` at 0). The payload's familiarity keys
+  carry these levels, not the bonuses they buy. A working is countered only
+  when it goes off, with its whole mana as the caster's investment; a counter
+  declared on an earlier craft turn meets no cast and lapses, and a
+  countered working is lost, `countered`, and leaves no contest to press.
+  At 0 neither side's familiarity is read.
+- **The menu and AI.** `choose_option(..., magic=rules)` offers, wherever a
+  cast is legal, a True mage's recipe casts, then its True casts under the
+  same letter (named with `policy.TRUE_CAST_MARK`, score 0), then the
+  crafts it may begin under `CRAFT_OPTION`: one per effect and tier, from 1
+  up to the least of the tier cap (none with Channel lifted), the mana the
+  working may take (the purse, or for borrowing variants the borrowing
+  ceiling) and `WorkingEffect.highest_buildable_tier`, a `needs_grant`
+  effect only at granted keys. A damaging working is aimed as a damaging
+  cast is; a healing one is offered at the caster, and under `every_target`
+  at each teammate; a narrated one names no figure, and under
+  `every_target` each living one. A level in the True skill makes a mage
+  (`_is_mage`): with no spell known, such a figure may counter, may be named
+  by a counter, and may anchor another's Runaway, and a True mage with no
+  recipe spell is offered its crafts and their borrowing variants. With no
+  active enemy no new damaging craft is offered, as no damaging cast is,
+  but a standing damaging craft's continuation still is, naming no figure,
+  at score 0. A crafting mage is
+  offered the continuation and no new craft, prone beside STAND UP too,
+  withheld in hand-to-hand with a weapon in hand, with no pushed or
+  borrowing variant, and named with "(PUSH N MANA)", "(BORROWING)" or both
+  where its craft carries them. Pushed and borrowing variants keep
+  `true_cast`, and a recipe cast and a True cast of one spell past Channel
+  each keep their own withheld reason. The AI never True casts. It may
+  begin a craft at any tier up to its cap, never pushed or borrowing, and
+  scores a damaging working its forecast divided by the craft turns left,
+  this one included; a working whose drain would take its pool to 0 or below
+  scores 0, as healing, narrated, pushed and borrowing crafts do. It still
+  neither counters nor escalates. A counter's rationale adds the defender's
+  own familiarity bonus, against a cast not yet known its True level. The
+  menu's helpers take `magic` as a keyword, and a `casting_failure` passed
+  beside it that is not `magic.casting_failure` raises `ValueError`.
+- **Events.** The new events and keys, each appearing only with True Magic
+  or a familiarity bonus injected.
+
+  | When | Event | Payload |
+  |---|---|---|
+  | Craft action | `action` | `craft` (`engine.CRAFT_BEGUN` `"begun"` or `CRAFT_CONTINUED` `"continued"`), `spell`, `tier`, `turn`, `turns`, `share`, `gathered`, `mana_total`, `mana_left`, and a cast's cost keys |
+  | A spell kept up ends as a craft begins | `status` | `spell`, `ended: true`, `crafting: true` |
+  | Interruption | `roll` (`concentration`), then `status` | `craft_interrupted`, `spell`, `gathered`, `target`, `natural`, `margin`, `held`, `band`, `runaway` |
+  | Working lost | `status` | `craft_lost`, `ending`, `spell`, `mana_spent`, `drain`, and `defenders` when countered |
+  | Completion | a cast's own events | the cast payload plus `working: true`, `tier`, `true_cast: true`; on a hand-back `mana_returned`, and `debt_returned` with Borrowing injected |
+  | Healing a teammate | the heal's `status` | plus `target` |
+  | Narrated effect | `roll` (`working magnitude`) if it has dice, then `status` | `working_effect`, `tier`, `narrated: true`, `target`, `magnitude` |
+  | Drain | `apply_pool_cost`'s `status`, only above 0 | the pool, `cost`, `reason` (`engine.DRAIN_REASON`) |
+  | True cast | a cast's own events, the countered one too | plus `true_cast: true` |
+  | Opposed roll | `counter_result` | plus `caster_familiarity`, and `familiarity` and `familiarity_source` per defender |
+
+- **Snapshot.** `crafting`, `granted_workings` and `chosen_true_cast` are
+  written only when set, and `BattleState.from_dict` rebuilds `CraftState`,
+  so a battle that uses none snapshots as it always has.
+- **Public names added.** In `magic`: `TrueMagicRules`, `WorkingEffect`,
+  `InterruptionRules`, `CastingEnding`, `FamiliaritySource`,
+  `WORKING_KEY_PREFIX`, `WORKING_KEY_SEPARATOR`, `is_working_key`,
+  `spell_for`, `runaway_band`, `failed_band`, `spell_skill_level`;
+  `MagicRules.true_magic`, `true_level`,
+  `true_castable`, `tier_cap`, `unlifted_tier_cap`, `past_tier_cap`,
+  `granted`, `cast_kind`; `ChannelDerivation.skill_level`;
+  `CounterspellRules.familiarity_per_level`,
+  `counts_familiarity`, `familiarity_bonus`, `caster_familiarity`,
+  `defender_familiarity`; and on `TrueMagicRules`, `working_key`,
+  `effect_and_tier`, `working`, `working_from_key`, `tier_cap`,
+  `turns_for`, `gathered_after`, `gathered`, `share_due`, `roll_target`,
+  `versus`, `drained_mana`, `drain`, with `WorkingEffect.dice_at`,
+  `highest_buildable_tier` and `check_tier`. In `state`: `CraftState`,
+  `CombatantState.crafting`, `chosen_true_cast` and `granted_workings`,
+  `BattleState.teammates_of`. In `spells`: `Spell.generic_counter`,
+  `element_siblings`, `generic_counter_level`, `GENERIC_COUNTER_LADDER`,
+  `PROTECTION_SCHOOL`. In `actions`: `CRAFT_OPTION`. In `engine`:
+  `TurnRunner.craft_working`, `CASTING_DICE`, `DRAIN_REASON`,
+  `CRAFT_BEGUN`, `CRAFT_CONTINUED`, `CRAFT_LOSS_REASONS`. In `policy`:
+  `Candidate.true_cast`, `TRUE_CAST_MARK`.
+- **Unchanged without it.** With `true_magic=None` and
+  `familiarity_per_level=0`, every battle and every menu is byte-identical
+  to v0.9.21. `tests/test_event_stream_regression.py` replays 22 seeded
+  battles recorded on v0.9.21, under the default profile and with every
+  v0.9.21 magic mechanic injected, and compares each event, decision menus
+  included, and the state each battle ends in. The one change a caller sees
+  without injecting anything is the catalog's five generic counters.
+
+The readings the engine takes on the page's silences are in
+`tarmar_engine.house_rulings` (`craft_gathers_even_shares`,
+`working_mana_is_its_tier`, `crafting_ends_continuing_spells`,
+`another_action_abandons_the_craft`, `craft_begins_where_a_cast_may`,
+`working_aimed_by_its_last_craft_action`,
+`craft_fixes_push_and_borrow_at_the_start`,
+`craft_hit_is_damage_that_lands`, `interruption_takes_the_injury_band`,
+`working_runaway_costs_the_mana_gathered`, `what_else_breaks_a_craft`,
+`working_goes_off_after_the_actions`, `failed_working_keeps_its_mana`,
+`drain_counts_the_whole_working`, `healing_working_names_its_figure`,
+`narrated_working_rolls_its_tier`, `pushed_working_makes_one_control_roll`,
+`craft_borrows_share_by_share`, `true_cast_rolls_the_spells_own_roll`,
+`true_cast_familiarity`, `working_is_countered_when_it_goes_off`,
+`channel_lift_lifts_the_tier_cap`, `grant_stands_until_withdrawn`,
+`generic_counter_is_learned_never_cast`,
+`generic_counter_level_is_the_highest_rung_known`,
+`generic_counters_climb_one_ladder`, `generic_counter_reads_a_workings_tier`,
+`ai_crafts_up_to_its_cap`, `ai_crafts_what_it_can_survive`), each marked
+for Spencer.
 
 ## What it sits on
 
