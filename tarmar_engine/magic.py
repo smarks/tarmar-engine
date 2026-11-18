@@ -17,7 +17,7 @@ TARMAR`) runs the engine with none of them: no tiers, no Push, no Channel,
 and a casting roll judged against the caster's attribute alone, a failure
 keeping its mana and starting no Runaway (tarmar-engine #46).
 
-Seven mechanics are modelled so far:
+Eight mechanics are modelled:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -65,6 +65,17 @@ Seven mechanics are modelled so far:
   injected attribute, each gaining a bonus per step of mana invested; a
   defender who wins cancels the spell, its mana spent, and the caster may
   press it again on a later turn, paying again for another opposed roll.
+* **True Magic.** True casts, crafts and workings all run. A caster with a
+  level in the injected True skill may True cast a spell, deriving Channel
+  from that skill (:meth:`MagicRules.cast_kind`), or craft a working over
+  several turns (:class:`TrueMagicRules`). A working is a spell the rules
+  build from an injected effect and a tier (:meth:`TrueMagicRules.working`),
+  not a catalog entry. Its mana is gathered in shares, one per craft turn;
+  damage that lands on its caster forces an interruption roll
+  (:class:`InterruptionRules`); and a working or a pushed True cast drains
+  its caster by an injected amount. Each side of a counter's opposed roll
+  gains an injected bonus per level of its familiarity with the spell
+  (:attr:`CounterspellRules.familiarity_per_level`).
 
 A Game Master may lift three of these bounds for one figure, each separately,
 as a recorded ruling on the battle (Spencer's ruling of 2026-10-14 on
@@ -77,9 +88,11 @@ menu then offers that figure the wider amounts, the engine runs them, and a
 cast or counter that went past a lifted bound says so in its payload
 (:data:`LIFTED_BOUNDS_KEY`). Every other figure is held to the bounds as ever.
 
-The outcome names, tier names and labels are injected too: the engine's own
-vocabulary is only "borrows", "debt", "held", "failed" and whether an
-outcome is a Runaway.
+The outcome names, the success tiers' names and the labels are injected too,
+as are the True skill's key and label, a working's school and every effect's
+key and label: the engine's own vocabulary is only "borrows", "debt", "held",
+"failed", whether an outcome is a Runaway, and True Magic's "working",
+"craft", "True cast", "tier" and "familiarity".
 """
 
 from __future__ import annotations
@@ -89,8 +102,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, TypeVar
 
-from .dice import parse_dice_expression
-from .spells import Spell
+from .dice import MAX_DICE_COUNT, parse_dice_expression
+from .spells import Spell, element_siblings, generic_counter_level, get_spell
 
 # The combatant's pools are declared in .state; magic re-exports them so
 # ``tarmar_engine.magic`` keeps naming them.
@@ -100,7 +113,7 @@ from .state import FATIGUE_POOL as FATIGUE_POOL
 from .state import check_caster_pool
 
 if TYPE_CHECKING:
-    from .state import CombatantState
+    from .state import CombatantState, CraftState
 
 #: The attributes a roll in this module may be made against.
 MAGIC_ATTRIBUTES: frozenset[str] = frozenset({"INT", "WIS"})
@@ -121,6 +134,22 @@ LIFTED_BOUNDS_KEY = "lifted_bounds"
 #: An engine reading, recorded in :mod:`.house_rulings` as
 #: ``lifted_counter_minimum_is_zero``.
 LIFTED_COUNTER_MINIMUM = 0
+
+#: What the key of every working starts with...
+WORKING_KEY_PREFIX = "working"
+#: ...and what parts its prefix, its effect's key and its tier:
+#: ``working:<effect key>:<tier>`` (:meth:`TrueMagicRules.working_key`).
+WORKING_KEY_SEPARATOR = ":"
+
+
+def is_working_key(key: str) -> bool:
+    """Is this the key of a working, not of a catalog spell?
+
+    The one predicate for "this spell is a working". It says nothing of
+    whether any injected rules build the working
+    (:meth:`TrueMagicRules.effect_and_tier`).
+    """
+    return key.startswith(WORKING_KEY_PREFIX + WORKING_KEY_SEPARATOR)
 
 
 def casting_mana(spell: Spell, push_mana: int) -> int:
@@ -176,6 +205,47 @@ class SpellEffectKind(StrEnum):
 
     DAMAGE = "damage"
     HEALING = "healing"
+
+
+class CastingEnding(StrEnum):
+    """How a casting whose mana was spent ended without going off."""
+
+    #: A failed interruption roll.
+    INTERRUPTED = "interrupted"
+    #: The caster chose another action with the craft's continuation on offer.
+    ABANDONED = "abandoned"
+    #: The caster stood where no cast may be made: its craft action was
+    #: refused, or its menu held no continuation to choose.
+    BLOCKED = "blocked"
+    #: A share the pool could not pay, with no borrowing.
+    UNPAID = "unpaid"
+    #: The caster fell unconscious.
+    UNCONSCIOUS = "unconscious"
+    #: A grapple took hold of the caster.
+    GRAPPLED = "grappled"
+    #: A defender's counter cancelled it.
+    COUNTERED = "countered"
+    #: A casting roll on a total that loses the mana.
+    FAILED = "failed"
+    #: A Control band whose spell does not take effect.
+    STOPPED = "stopped"
+
+
+class FamiliaritySource(StrEnum):
+    """What a defender's familiarity with a spell cast rests on
+    (:meth:`CounterspellRules.defender_familiarity`).
+
+    Listed in the order that settles a tie: of two equal highest, the one
+    listed first is the source named.
+    """
+
+    #: The defender's level in the exact spell cast.
+    SPELL = "spell"
+    #: The defender's level in the True skill.
+    TRUE = "true"
+    #: The highest generic counter the defender knows, against a spell of
+    #: that level or lower.
+    GENERIC = "generic"
 
 
 def spell_effect_kind(spell: Spell) -> SpellEffectKind | None:
@@ -296,7 +366,8 @@ def casting_success_ceiling(
 @dataclass(frozen=True)
 class MarginBand:
     """A band of failure margins on a roll-under roll: the base of the
-    Control Roll's and the debt roll's bands.
+    Control Roll's and the debt roll's bands, and the interruption roll's
+    band as it stands.
 
     The margin is how far the roll exceeded its target (1 = missed by one).
 
@@ -369,6 +440,59 @@ def band_for_margin(bands: tuple[BandType, ...], margin: int) -> BandType:
         if band.covers(margin):
             return band
     raise ValueError(f"no failure band covers margin {margin}")
+
+
+def runaway_band(bands: tuple[BandType, ...]) -> BandType | None:
+    """The band an automatic Runaway uses: the first Runaway band, or
+    ``None`` when no band is one."""
+    return next((band for band in bands if band.is_runaway), None)
+
+
+def _check_automatic_runaway_totals(
+    automatic_runaway_totals: frozenset[int], bands: tuple[MarginBand, ...]
+) -> None:
+    """Refuse automatic Runaway totals on a roll none of whose bands is a
+    Runaway: nothing would say what such a total does.
+
+    Raises:
+        ValueError: for totals with no Runaway band among ``bands``.
+    """
+    if automatic_runaway_totals and runaway_band(bands) is None:
+        raise ValueError(
+            "automatic Runaway totals need a Runaway band to say what one does"
+        )
+
+
+def failed_band(
+    bands: tuple[BandType, ...],
+    margin: int,
+    *,
+    automatic: bool,
+    automatic_band: BandType | None,
+) -> BandType | None:
+    """The band a roll-under roll failed into, or ``None`` for one that held.
+
+    The one pick the Control Roll, the debt roll and the interruption roll
+    share: an automatic total lands in the band the roll names for it,
+    whatever the margin, and any other failure in the band its margin picks.
+
+    Args:
+        bands: Bands that passed :func:`validate_margin_bands`.
+        margin: How far the roll exceeded its target; 0 or less held.
+        automatic: Is the natural total one of the roll's automatic totals?
+        automatic_band: The band an automatic total lands in.
+
+    Raises:
+        ValueError: for an automatic total with no band to land in, which
+            would otherwise read as a roll that held.
+    """
+    if automatic:
+        if automatic_band is None:
+            raise ValueError("an automatic total needs a band to land in")
+        return automatic_band
+    if margin <= 0:
+        return None
+    return band_for_margin(bands, margin)
 
 
 @dataclass(frozen=True)
@@ -464,10 +588,9 @@ class PushRules:
         if self.max_push_mana is not None and self.max_push_mana < 0:
             raise ValueError("the push cap must not be negative")
         validate_margin_bands(self.failure_bands)
-        if self.automatic_runaway_totals and self.runaway_band() is None:
-            raise ValueError(
-                "automatic Runaway totals need a Runaway band to say what one does"
-            )
+        _check_automatic_runaway_totals(
+            self.automatic_runaway_totals, self.failure_bands
+        )
 
     def band_for_margin(self, margin: int) -> ControlBand:
         """The failure band a positive margin lands in."""
@@ -475,7 +598,7 @@ class PushRules:
 
     def runaway_band(self) -> ControlBand | None:
         """The band an automatic Runaway uses: the first Runaway band."""
-        return next((band for band in self.failure_bands if band.is_runaway), None)
+        return runaway_band(self.failure_bands)
 
     def mana_invested(self, spell: Spell, pushed_mana: int) -> int:
         """The mana the Control Roll's penalty counts: the whole casting
@@ -558,6 +681,14 @@ class PushRules:
 UNRECORDED_SKILL_LEVEL = 0
 
 
+def spell_skill_level(caster: CombatantState, spell: Spell) -> int:
+    """The level the caster's snapshot records in the exact spell
+    (``CombatantState.spell_skill_levels``);
+    :data:`UNRECORDED_SKILL_LEVEL` for a spell it records none for, which a
+    working always is."""
+    return caster.spell_skill_levels.get(spell.key, UNRECORDED_SKILL_LEVEL)
+
+
 class ChannelUnclassifiedSpell(ValueError):
     """A spell the injected Channel rules give no kind of magic.
 
@@ -598,15 +729,24 @@ class ChannelDerivation:
         if self.source_skill == "":
             raise ValueError("a Channel source skill must be a key or None")
 
+    def skill_level(self, caster: CombatantState) -> int:
+        """The caster's recorded level in this derivation's general skill.
+
+        Raises:
+            ValueError: for a per-spell derivation, which names no general
+                skill.
+        """
+        if self.source_skill is None:
+            raise ValueError(
+                "a per-spell Channel derivation reads no general skill's level"
+            )
+        return caster.skill_levels.get(self.source_skill, UNRECORDED_SKILL_LEVEL)
+
     def recorded_level(self, caster: CombatantState, spell: Spell) -> int:
         """The level this derivation reads off the caster's snapshot."""
         if self.source_skill is None:
-            levels = caster.spell_skill_levels
-            key = spell.key
-        else:
-            levels = caster.skill_levels
-            key = self.source_skill
-        return levels.get(key, UNRECORDED_SKILL_LEVEL)
+            return spell_skill_level(caster, spell)
+        return self.skill_level(caster)
 
     def channel_at(self, level: int) -> int:
         """The Channel a recorded level gives."""
@@ -629,9 +769,11 @@ class ChannelRules:
             :class:`ChannelUnclassifiedSpell`.
 
     The kind is read off the spell, not off the caster (house reading
-    ``channel_kind_belongs_to_the_spell``). The page leaves open whether a
-    kind of magic belongs to the spell or to the way a caster casts it; the
-    other reading would key the kind by caster and spell together.
+    ``channel_kind_belongs_to_the_spell``), unless the cast names one: every
+    method here takes a ``kind`` that stands in for the spell's own
+    (:meth:`MagicRules.cast_kind`). The page leaves open whether a kind of
+    magic belongs to the spell or to the way a caster casts it; the other
+    reading would key the kind by caster and spell together.
     """
 
     derivations: Mapping[str, ChannelDerivation]
@@ -650,37 +792,66 @@ class ChannelRules:
                 f"kinds of magic {sorted(unknown)} have no Channel derivation"
             )
 
-    def kind_for(self, spell: Spell) -> str:
-        """The kind of magic a spell belongs to.
+    def kind_for(self, spell: Spell, kind: str | None = None) -> str:
+        """The kind of magic a casting of the spell derives its Channel by.
+
+        Args:
+            spell: The spell cast.
+            kind: The kind the cast names (:meth:`MagicRules.cast_kind`), or
+                ``None``: the spell's own.
 
         Raises:
-            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+            ChannelUnclassifiedSpell: for a spell the rules give no kind,
+                when the cast names none.
+            ValueError: for a named kind with no derivation.
         """
-        kind = self.kind_by_spell.get(spell.key, self.default_kind)
-        if kind is None:
+        if kind is not None:
+            if kind not in self.derivations:
+                raise ValueError(
+                    f"the kind of magic {kind!r} has no Channel derivation"
+                )
+            return kind
+        own_kind = self.kind_by_spell.get(spell.key, self.default_kind)
+        if own_kind is None:
             raise ChannelUnclassifiedSpell(spell)
-        return kind
+        return own_kind
 
-    def channel_for(self, caster: CombatantState, spell: Spell) -> int:
+    def channel_for(
+        self, caster: CombatantState, spell: Spell, kind: str | None = None
+    ) -> int:
         """The caster's Channel for this spell: the most mana one casting of
         it may take, cost and pushed mana together.
 
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            kind: The kind the cast names, or ``None``: the spell's own
+                (:meth:`kind_for`).
+
         Raises:
             ChannelUnclassifiedSpell: for a spell the rules give no kind.
         """
-        derivation = self.derivations[self.kind_for(spell)]
+        derivation = self.derivations[self.kind_for(spell, kind)]
         return derivation.channel_at(derivation.recorded_level(caster, spell))
 
-    def bound_for(self, caster: CombatantState, spell: Spell) -> int | None:
+    def bound_for(
+        self, caster: CombatantState, spell: Spell, kind: str | None = None
+    ) -> int | None:
         """The caster's Channel for this spell as the bound on a casting from
         its own mana: ``None`` when a Game Master has lifted Channel for the
         caster (:data:`CHANNEL`).
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            kind: The kind the cast names, or ``None``: the spell's own
+                (:meth:`kind_for`).
 
         Raises:
             ChannelUnclassifiedSpell: for a spell the rules give no kind,
                 lifted or not: the cast still names the Channel it went past.
         """
-        channel = self.channel_for(caster, spell)
+        channel = self.channel_for(caster, spell, kind)
         return None if bound_lifted(caster, CHANNEL) else channel
 
 
@@ -896,6 +1067,10 @@ class CounterspellRules:
             purse alone bounds it. Channel does not (an engine reading: the
             defender casts no spell of its own, so no spell's kind of magic
             names a Channel to apply).
+        familiarity_per_level: Added to each side's total per level of its
+            familiarity with the spell cast (:meth:`caster_familiarity`,
+            :meth:`defender_familiarity`); not negative. 0: familiarity
+            counts for nothing, and nothing reads it.
     """
 
     opposed_dice: str
@@ -904,6 +1079,7 @@ class CounterspellRules:
     ties_go_to_caster: bool
     defender_min_mana: int
     defender_max_mana: int | None = None
+    familiarity_per_level: int = 0
 
     def __post_init__(self) -> None:
         parse_dice_expression(self.opposed_dice)  # raises on a bad expression
@@ -921,6 +1097,8 @@ class CounterspellRules:
             and self.defender_max_mana < self.defender_min_mana
         ):
             raise ValueError("a defender's most commitment is below its least")
+        if self.familiarity_per_level < 0:
+            raise ValueError("the familiarity bonus per level must not be negative")
 
     def bonus_for(self, mana_invested: int) -> int:
         """The opposed roll's bonus for this much mana invested."""
@@ -965,6 +1143,528 @@ class CounterspellRules:
             return self.ties_go_to_caster
         return caster_total > defender_total
 
+    @property
+    def counts_familiarity(self) -> bool:
+        """Does familiarity add anything to the opposed roll? Only then is
+        either side's familiarity read, or named in the roll's result."""
+        return self.familiarity_per_level > 0
+
+    def familiarity_bonus(self, level: int) -> int:
+        """The opposed roll's bonus for this level of familiarity."""
+        return self.familiarity_per_level * level
+
+    def caster_familiarity(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        true_level: int,
+        *,
+        true_cast: bool,
+    ) -> int:
+        """The caster's level of familiarity with the spell it casts.
+
+        Its recorded level in the exact spell (:func:`spell_skill_level`).
+        Two castings have no such level, and take the caster's level in the
+        True skill in its place (house reading ``true_cast_familiarity``): a
+        working, and a True cast of a spell the caster holds no level in, as
+        the same rung of an element it never studied is. A True cast of a
+        spell the caster does hold a level in takes that level, whichever of
+        the two is the higher.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast, a working included.
+            true_level: The caster's level in the True skill
+                (:meth:`MagicRules.true_level`).
+            true_cast: Is this a True cast?
+        """
+        level = spell_skill_level(caster, spell)
+        holds_no_level = level <= UNRECORDED_SKILL_LEVEL
+        if is_working_key(spell.key) or (true_cast and holds_no_level):
+            return true_level
+        return level
+
+    def defender_familiarity(
+        self, defender: CombatantState, spell: Spell, true_level: int
+    ) -> tuple[int, FamiliaritySource | None]:
+        """The defender's level of familiarity with the spell it counters,
+        and what that level rests on.
+
+        The highest of three levels, never their sum: its recorded level in
+        the exact spell (:func:`spell_skill_level`); its level in the True
+        skill; and the level of the highest generic counter it knows
+        (:func:`~tarmar_engine.spells.generic_counter_level`), which counts
+        only against a spell of that level or lower, a working's level being
+        its tier.
+
+        Args:
+            defender: The defender.
+            spell: The spell cast, a working included.
+            true_level: The defender's level in the True skill
+                (:meth:`MagicRules.true_level`).
+
+        Returns:
+            The level and its source. Of two equal highest the source is the
+            one :class:`FamiliaritySource` lists first, and it is ``None``
+            when the highest level is 0.
+
+        Raises:
+            KeyError: for a spell the defender knows that the catalog does
+                not hold.
+        """
+        generic_level = generic_counter_level(defender.spells)
+        levels = {
+            FamiliaritySource.SPELL: spell_skill_level(defender, spell),
+            FamiliaritySource.TRUE: true_level,
+            FamiliaritySource.GENERIC: (
+                generic_level if spell.level <= generic_level else 0
+            ),
+        }
+        # max() keeps the first of equal highest: the sources' listed order.
+        source = max(FamiliaritySource, key=levels.__getitem__)
+        level = levels[source]
+        return level, (source if level > 0 else None)
+
+
+@dataclass(frozen=True)
+class WorkingEffect:
+    """One effect the injected rules let a working have, at any tier.
+
+    Attributes:
+        key: Stable identifier, and the middle part of a built working's key
+            (:meth:`TrueMagicRules.working_key`). Not empty, and without
+            :data:`WORKING_KEY_SEPARATOR`.
+        label: The effect as the menu and narration print it.
+        kind: The rolled effect the engine applies, or ``None`` for a
+            narrated effect: the engine applies nothing and the Game Master
+            describes what the working does.
+        dice_per_tier: The dice rolled once per tier of the working. Required
+            for a rolled effect, optional for a narrated one.
+        pool: The pool damaged or healed, one of :data:`CASTER_POOLS`.
+        targeted: Does the working need the aim roll, as a targeted spell
+            does? A narrated effect cannot be.
+        ignores_armour: Does its damage skip armour? A narrated effect cannot.
+        needs_grant: May the working be crafted only by a figure a Game
+            Master has named it for?
+    """
+
+    key: str
+    label: str
+    kind: SpellEffectKind | None
+    dice_per_tier: str | None
+    pool: str = FATIGUE_POOL
+    targeted: bool = False
+    ignores_armour: bool = False
+    needs_grant: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.key or WORKING_KEY_SEPARATOR in self.key:
+            raise ValueError(
+                f"a working effect's key must not be empty or hold "
+                f"{WORKING_KEY_SEPARATOR!r}, as {self.key!r} does"
+            )
+        if self.dice_per_tier is not None:
+            parse_dice_expression(self.dice_per_tier)  # raises on a bad expression
+        check_caster_pool(f"working effect {self.key!r}'s pool", self.pool)
+        if self.kind is not None:
+            if self.dice_per_tier is None:
+                raise ValueError(
+                    f"working effect {self.key!r} rolls {self.kind.value} and "
+                    "names no dice per tier"
+                )
+        elif self.targeted or self.ignores_armour:
+            raise ValueError(
+                f"working effect {self.key!r} is narrated: the engine applies "
+                "nothing, so it can neither be targeted nor ignore armour"
+            )
+
+    def highest_buildable_tier(self) -> int | None:
+        """The highest tier a working of this effect can be built at: the
+        last whose dice (:meth:`dice_at`) a dice expression may hold, or
+        ``None`` for an effect that names no dice, which builds at any tier.
+
+        It bounds what the rules can build, whoever the caster: the menu
+        lists no tier past it and :meth:`check_tier` refuses one.
+        """
+        if self.dice_per_tier is None:
+            return None
+        count, _sides, _modifier = parse_dice_expression(self.dice_per_tier)
+        return MAX_DICE_COUNT // count
+
+    def check_tier(self, tier: int) -> None:
+        """Refuse a tier no working of this effect can be built at.
+
+        Raises:
+            ValueError: for a tier below 1, or past
+                :meth:`highest_buildable_tier`.
+        """
+        _check_tier(tier)
+        highest = self.highest_buildable_tier()
+        if highest is not None and tier > highest:
+            raise ValueError(
+                f"working effect {self.key!r} rolls {self.dice_per_tier} per "
+                f"tier and cannot be built past tier {highest}, as {tier} is"
+            )
+
+    def dice_at(self, tier: int) -> str | None:
+        """The dice a working of this effect rolls at a tier: the per-tier
+        dice with their count and modifier each multiplied by the tier, or
+        ``None`` for an effect that names no dice.
+
+        Raises:
+            ValueError: for a tier :meth:`check_tier` refuses.
+        """
+        self.check_tier(tier)
+        if self.dice_per_tier is None:
+            return None
+        count, sides, modifier = parse_dice_expression(self.dice_per_tier)
+        tier_modifier = modifier * tier
+        dice = f"{count * tier}d{sides}"
+        if tier_modifier:
+            dice += f"{tier_modifier:+d}"
+        return dice
+
+
+def _check_tier(tier: int) -> None:
+    """Refuse a working's tier below 1.
+
+    Raises:
+        ValueError: for such a tier.
+    """
+    if tier < 1:
+        raise ValueError(f"a working's tier must be at least 1, not {tier}")
+
+
+@dataclass(frozen=True)
+class InterruptionRules:
+    """The roll a crafting caster makes when damage lands on it, to keep the
+    working it is crafting.
+
+    Attributes:
+        roll: The roll-under roll: its dice and the attribute it is under.
+        penalty_per_mana: Subtracted from the target per point of mana the
+            craft has gathered; not negative.
+        failure_bands: Contiguous bands of failure margins starting at 1, the
+            last open-ended. Every band loses the working; ``is_runaway``
+            says whether it also runs away.
+        automatic_runaway_totals: Natural totals that are a Runaway whatever
+            the target. They need a Runaway band, as Push's do.
+    """
+
+    roll: RollUnderRule
+    penalty_per_mana: int
+    failure_bands: tuple[MarginBand, ...]
+    automatic_runaway_totals: frozenset[int]
+
+    def __post_init__(self) -> None:
+        if self.penalty_per_mana < 0:
+            raise ValueError("the interruption penalty must not be negative")
+        validate_margin_bands(self.failure_bands)
+        _check_automatic_runaway_totals(
+            self.automatic_runaway_totals, self.failure_bands
+        )
+
+
+@dataclass(frozen=True)
+class TrueMagicRules:
+    """True Magic's numbers: the workings a caster may craft over several
+    turns, and what a True cast or a working drains from its caster.
+
+    A working is a :class:`~tarmar_engine.spells.Spell` these rules build
+    (:meth:`working`), not a catalog entry: one per injected effect and tier.
+    The True skill is a general skill; its key lives in the Channel
+    derivation ``channel_kind`` names and nowhere else
+    (:class:`MagicRules` checks the two agree).
+
+    Attributes:
+        channel_kind: The kind of magic a True cast or a working derives its
+            Channel by: a key of :attr:`ChannelRules.derivations` whose
+            ``source_skill`` is the True skill.
+        skill_label: The True skill as narration prints it.
+        school: The ``school`` of a built working.
+        effects: The effects a working may have. At least one, keys unique.
+        tiers_per_level: A caster's highest tier is this many times its level
+            in the True skill; at least 1.
+        turns_per_tier: The craft turns a working takes per tier; at least 1.
+        roll_attribute: The attribute a working's casting roll is under, one
+            of :data:`MAGIC_ATTRIBUTES`.
+        roll_bonus_per_level: Added to that roll's target per level in the
+            True skill; not negative.
+        interruption: The roll a crafting caster makes when damage lands.
+        drain_pool: The pool a drain is taken from, one of
+            :data:`CASTER_POOLS`.
+        drain_per_mana: Taken per point of drained mana by a casting that
+            goes off; not negative.
+        lost_drain_per_mana: Taken per point of drained mana by a casting
+            that ended otherwise, by how it ended. An ending with no entry
+            drains nothing. No value is negative. :class:`CastingEnding` is a
+            string enumeration, so a key may be written as the member or as
+            its value; any other key is refused.
+    """
+
+    channel_kind: str
+    skill_label: str
+    school: str
+    effects: tuple[WorkingEffect, ...]
+    tiers_per_level: int
+    turns_per_tier: int
+    roll_attribute: str
+    roll_bonus_per_level: int
+    interruption: InterruptionRules
+    drain_pool: str
+    drain_per_mana: int
+    lost_drain_per_mana: Mapping[CastingEnding | str, int]
+
+    def __post_init__(self) -> None:
+        if not self.effects:
+            raise ValueError("True Magic rules need at least one working effect")
+        effect_keys = [effect.key for effect in self.effects]
+        repeated = sorted({key for key in effect_keys if effect_keys.count(key) > 1})
+        if repeated:
+            raise ValueError(f"working effect keys {repeated} are repeated")
+        if self.tiers_per_level < 1:
+            raise ValueError("the tiers per level must be at least 1")
+        if self.turns_per_tier < 1:
+            raise ValueError("the craft turns per tier must be at least 1")
+        if self.roll_attribute not in MAGIC_ATTRIBUTES:
+            raise ValueError(
+                f"roll_attribute must be one of {sorted(MAGIC_ATTRIBUTES)}, "
+                f"not {self.roll_attribute!r}"
+            )
+        if self.roll_bonus_per_level < 0:
+            raise ValueError("a working's roll bonus per level must not be negative")
+        check_caster_pool("drain_pool", self.drain_pool)
+        unknown_endings = sorted(
+            str(ending) for ending in set(self.lost_drain_per_mana) - set(CastingEnding)
+        )
+        if unknown_endings:
+            # A misspelt ending would otherwise drain nothing, without a word.
+            raise ValueError(
+                f"no casting ending is called {unknown_endings}; the endings are "
+                f"{[ending.value for ending in CastingEnding]}"
+            )
+        if self.drain_per_mana < 0 or any(
+            drain < 0 for drain in self.lost_drain_per_mana.values()
+        ):
+            raise ValueError("a drain per mana must not be negative")
+        for effect in self.effects:
+            # Every effect must build: Spell refuses a school that needs an
+            # element, which no working names.
+            self.working(effect.key, 1)
+
+    def _effect(self, effect_key: str) -> WorkingEffect:
+        """The injected effect with this key.
+
+        Raises:
+            KeyError: for a key no injected effect carries.
+        """
+        for effect in self.effects:
+            if effect.key == effect_key:
+                return effect
+        raise KeyError(f"these rules build no working of the effect {effect_key!r}")
+
+    def working_key(self, effect_key: str, tier: int) -> str:
+        """The key of the working of an effect at a tier:
+        ``working:<effect key>:<tier>``.
+
+        Raises:
+            KeyError: for an effect these rules do not carry.
+            ValueError: for a tier the effect cannot be built at
+                (:meth:`WorkingEffect.check_tier`).
+        """
+        self._effect(effect_key).check_tier(tier)
+        return WORKING_KEY_SEPARATOR.join((WORKING_KEY_PREFIX, effect_key, str(tier)))
+
+    def effect_and_tier(self, key: str) -> tuple[WorkingEffect, int]:
+        """The effect and the tier a working's key names.
+
+        Raises:
+            KeyError: for a key that is not a working these rules build: not
+                a working's key at all, an effect they do not carry, a tier
+                the effect cannot be built at, or one not written as
+                :meth:`working_key` writes it. Never a ``ValueError``: a key
+                is read from state, and one these rules do not build is
+                unknown, as a catalog key the catalog does not hold is.
+        """
+        refusal = f"{key!r} is not a working these rules build"
+        prefix, _, effect_and_tier_text = key.partition(WORKING_KEY_SEPARATOR)
+        effect_key, _, tier_text = effect_and_tier_text.rpartition(
+            WORKING_KEY_SEPARATOR
+        )
+        if prefix == WORKING_KEY_PREFIX and tier_text.isdecimal():
+            effect = self._effect(effect_key)
+            try:
+                tier = int(tier_text)
+                written_key = self.working_key(effect_key, tier)
+            except ValueError as unbuildable_tier:
+                raise KeyError(refusal) from unbuildable_tier
+            if written_key == key:
+                return effect, tier
+        raise KeyError(refusal)
+
+    def working(self, effect_key: str, tier: int) -> Spell:
+        """Build the working of an effect at a tier.
+
+        Its level is its tier, so :func:`casting_mana` gives the tier and any
+        pushed mana (house reading ``working_mana_is_its_tier``); its casting
+        roll is under :attr:`roll_attribute`; it
+        rolls :meth:`WorkingEffect.dice_at` for a rolled effect and nothing
+        for a narrated one; and it never continues.
+
+        Raises:
+            KeyError: for an effect these rules do not carry.
+            ValueError: for a tier the effect cannot be built at
+                (:meth:`WorkingEffect.check_tier`).
+        """
+        effect = self._effect(effect_key)
+        return Spell(
+            key=self.working_key(effect_key, tier),
+            name=f"{effect.label} (tier {tier})",
+            school=self.school,
+            level=tier,
+            attribute=self.roll_attribute,
+            targeted=effect.targeted,
+            damage=None if effect.kind is None else effect.dice_at(tier),
+            damage_pool=effect.pool,
+            ignores_armour=effect.ignores_armour,
+            heals=effect.kind is SpellEffectKind.HEALING,
+        )
+
+    def working_from_key(self, key: str) -> Spell:
+        """Build the working a key names: :meth:`working` of the key's
+        :meth:`effect_and_tier`. The one way a working's key becomes its
+        spell.
+
+        Raises:
+            KeyError: for a key that is not a working these rules build.
+        """
+        effect, tier = self.effect_and_tier(key)
+        return self.working(effect.key, tier)
+
+    def tier_cap(self, true_level: int) -> int:
+        """The highest tier a caster at this level in the True skill may
+        craft."""
+        return self.tiers_per_level * true_level
+
+    def turns_for(self, tier: int) -> int:
+        """The craft turns a working of this tier takes: at least 1.
+
+        Raises:
+            ValueError: for a tier below 1, which would take no turns to
+                gather its mana over.
+        """
+        _check_tier(tier)
+        return self.turns_per_tier * tier
+
+    def gathered_after(self, mana: int, turns: int, turns_done: int) -> int:
+        """The mana a craft has gathered after some of its turns: the whole
+        mana at an even pace, rounded down at each turn, so no two shares
+        differ by more than 1 and the last turn brings the whole (house
+        reading ``craft_gathers_even_shares``).
+
+        Args:
+            mana: The working's whole mana, its tier and any pushed mana.
+            turns: The craft turns the working takes (:meth:`turns_for`).
+            turns_done: The craft turns taken so far.
+
+        Raises:
+            ValueError: for a working that takes no turns, or for turns
+                taken that are fewer than none or more than it takes.
+        """
+        if turns < 1 or not 0 <= turns_done <= turns:
+            raise ValueError(
+                f"a craft of {turns} turns cannot have taken {turns_done} of them"
+            )
+        return mana * turns_done // turns
+
+    def gathered(self, craft: CraftState) -> int:
+        """The mana a craft has gathered so far: :meth:`gathered_after` its
+        ``turns_done``, for the working its key names with its pushed mana.
+
+        The craft stores no running total; this is the one place it is
+        worked out.
+
+        Raises:
+            KeyError: for a craft whose key is not a working these rules
+                build.
+            ValueError: for a craft that pushes less than no mana, or whose
+                turns taken :meth:`gathered_after` refuses.
+        """
+        if craft.push_mana < 0:
+            raise ValueError(f"a craft cannot push {craft.push_mana} mana")
+        working = self.working_from_key(craft.spell_key)
+        return self.gathered_after(
+            casting_mana(working, craft.push_mana),
+            self.turns_for(working.level),
+            craft.turns_done,
+        )
+
+    def share_due(self, craft: CraftState) -> int:
+        """The mana a craft's next craft action gathers: what the craft will
+        have gathered after that turn (:meth:`gathered_after`), less what it
+        has gathered (:meth:`gathered`). The one place a share is worked
+        out, for the engine that takes it and the menu that forecasts it.
+
+        Raises:
+            KeyError: for a craft whose key is not a working these rules
+                build.
+            ValueError: for a craft whose every turn is taken, which has no
+                share left to gather, and for one :meth:`gathered` refuses.
+        """
+        working = self.working_from_key(craft.spell_key)
+        after = self.gathered_after(
+            casting_mana(working, craft.push_mana),
+            self.turns_for(working.level),
+            craft.turns_done + 1,
+        )
+        return after - self.gathered(craft)
+
+    def roll_target(self, caster: CombatantState, true_level: int) -> int:
+        """The target of a working's casting roll, before any penalty its
+        caster's own state takes off it: the caster's :attr:`roll_attribute`
+        and :attr:`roll_bonus_per_level` for each level in the True skill.
+
+        Args:
+            caster: The caster.
+            true_level: The caster's level in the True skill
+                (:meth:`MagicRules.true_level`).
+        """
+        return (
+            attribute_score(caster, self.roll_attribute)
+            + self.roll_bonus_per_level * true_level
+        )
+
+    @property
+    def versus(self) -> str:
+        """What a working's casting roll is under, as a roll event and a
+        menu line name it: the attribute and the True skill's label."""
+        return f"{self.roll_attribute}+{self.skill_label}"
+
+    def drained_mana(self, spell: Spell, push_mana: int) -> int:
+        """The mana the drain of a True cast or a working counts: a
+        working's whole mana (:func:`casting_mana`), and for a True cast of a
+        catalog spell the mana pushed past its cost alone.
+
+        Args:
+            spell: The spell cast, a working included.
+            push_mana: The mana pushed past the spell's cost.
+        """
+        if is_working_key(spell.key):
+            return casting_mana(spell, push_mana)
+        return push_mana
+
+    def drain(self, drained_mana: int, ending: CastingEnding | None) -> int:
+        """What a True cast or a working drains from its caster.
+
+        Args:
+            drained_mana: The mana the drain counts.
+            ending: How the casting ended without going off, or ``None``: it
+                went off.
+        """
+        if ending is None:
+            return self.drain_per_mana * drained_mana
+        return self.lost_drain_per_mana.get(ending, 0) * drained_mana
+
 
 @dataclass(frozen=True)
 class MagicRules:
@@ -985,6 +1685,9 @@ class MagicRules:
             ``None``: no natural total fails on its own (the roll is judged
             against the attribute alone), no failure costs mana, and no cast
             starts a Runaway.
+        true_magic: True Magic's numbers, or ``None``: no caster may True
+            cast or craft a working. They need Channel rules, whose
+            derivation for their ``channel_kind`` names the True skill.
     """
 
     casting_success_tiers: tuple[CastingSuccessTier, ...] = ()
@@ -994,6 +1697,7 @@ class MagicRules:
     runaway: RunawayRules | None = None
     counterspell: CounterspellRules | None = None
     casting_failure: CastingFailureRules | None = None
+    true_magic: TrueMagicRules | None = None
 
     def __post_init__(self) -> None:
         seen: set[int] = set()
@@ -1012,16 +1716,184 @@ class MagicRules:
             raise ValueError(
                 "Borrowing with no debt cap needs Channel rules to bound a casting"
             )
+        if self.true_magic is not None:
+            self._true_derivation(self.true_magic)
 
-    def channel_for(self, caster: CombatantState, spell: Spell) -> int | None:
+    def _true_derivation(self, true_magic: TrueMagicRules) -> ChannelDerivation:
+        """The Channel derivation the True Magic rules name: the one place
+        the True skill's key is written.
+
+        Raises:
+            ValueError: with no Channel rules, for a ``channel_kind`` with no
+                derivation, or for one that reads no general skill.
+        """
+        if self.channel is None:
+            raise ValueError(
+                "True Magic rules need Channel rules: their channel_kind names "
+                "the derivation that holds the True skill"
+            )
+        derivation = self.channel.derivations.get(true_magic.channel_kind)
+        if derivation is None:
+            raise ValueError(
+                f"the True Magic channel_kind {true_magic.channel_kind!r} has no "
+                "Channel derivation"
+            )
+        if derivation.source_skill is None:
+            raise ValueError(
+                f"the True Magic channel_kind {true_magic.channel_kind!r} derives "
+                "Channel per spell; it must name the True skill as its source"
+            )
+        return derivation
+
+    def true_level(self, caster: CombatantState) -> int:
+        """The caster's level in the True skill; 0 with no True Magic rules.
+
+        "May this caster True cast or craft a working" is
+        ``true_level(caster) > 0``, asked no other way.
+        """
+        if self.true_magic is None:
+            return 0
+        return self._true_derivation(self.true_magic).skill_level(caster)
+
+    def true_castable(self, caster: CombatantState) -> tuple[Spell, ...]:
+        """The catalog spells the caster may True cast: each spell it knows
+        that can be cast (any but a generic counter), in the order it knows
+        them, each followed by the same rung of every other element's ladder
+        (:func:`~tarmar_engine.spells.element_siblings`), with no repeats.
+
+        Empty for a caster with no level in the True skill, and so with no
+        True Magic rules.
+
+        Raises:
+            KeyError: for a known spell the catalog does not hold.
+        """
+        if self.true_level(caster) <= 0:
+            return ()
+        castable: dict[str, Spell] = {}
+        for key in caster.spells:
+            known = get_spell(key)
+            if known.generic_counter:
+                continue
+            for spell in (known, *element_siblings(known)):
+                castable.setdefault(spell.key, spell)
+        return tuple(castable.values())
+
+    def tier_cap(self, caster: CombatantState) -> int | None:
+        """The highest tier of working the caster may craft, or ``None`` when
+        a Game Master has lifted Channel for the caster (:data:`CHANNEL`),
+        which lifts the cap with it (house reading
+        ``channel_lift_lifts_the_tier_cap``). 0 with no True Magic rules,
+        lifted or not, as :meth:`true_level` is.
+        """
+        if self.true_magic is not None and bound_lifted(caster, CHANNEL):
+            return None
+        return self.unlifted_tier_cap(caster)
+
+    def unlifted_tier_cap(self, caster: CombatantState) -> int:
+        """The tier cap the caster's level in the True skill gives, whether
+        or not a Game Master has lifted it; 0 with no True Magic rules.
+        Public so the menu's line for a working past it names it, as it
+        names the Channel a casting is past."""
+        if self.true_magic is None:
+            return 0
+        return self.true_magic.tier_cap(self.true_level(caster))
+
+    def _builds_working(self, key: str) -> bool:
+        """Is the key a working the injected True Magic rules build? Never,
+        with none injected."""
+        if self.true_magic is None:
+            return False
+        try:
+            self.true_magic.effect_and_tier(key)
+        except KeyError:
+            return False
+        return True
+
+    def granted(self, caster: CombatantState, key: str) -> bool:
+        """Has a Game Master named this working for the caster?
+
+        Args:
+            caster: The figure, whose ``granted_workings`` the consuming game
+                filled from its record of the ruling.
+            key: The working's key.
+
+        Raises:
+            ValueError: for a key, asked or listed, that is not a working
+                these rules build, as :func:`bound_lifted` refuses a misspelt
+                bound: a bad grant would otherwise offer nothing, without a
+                word.
+        """
+        unbuilt = sorted(
+            listed_key
+            for listed_key in {key, *caster.granted_workings}
+            if not self._builds_working(listed_key)
+        )
+        if unbuilt:
+            raise ValueError(
+                f"{caster.name}: the True Magic rules build no working called {unbuilt}"
+            )
+        return key in caster.granted_workings
+
+    def cast_kind(self, spell: Spell, *, true_cast: bool = False) -> str | None:
+        """The kind of magic a casting names for its Channel: the True kind
+        for a True cast or a working (:func:`is_working_key`), otherwise
+        ``None``, meaning the spell's own (:meth:`ChannelRules.kind_for`).
+
+        The one place a cast's ``true_cast`` flag becomes a kind; every
+        Channel method here takes the result as its ``kind``. Given no kind,
+        each asks this for the spell, so a working derives by the True kind
+        whether or not its caller named it. Nothing but the flag tells a
+        True cast of a catalog spell from a recipe cast: that caller must
+        pass the kind.
+
+        Raises:
+            ValueError: for a True cast or a working with no True Magic
+                rules injected, which has no kind to name.
+        """
+        if not true_cast and not is_working_key(spell.key):
+            return None
+        if self.true_magic is None:
+            raise ValueError(
+                f"{spell.name} is a True cast or a working, and no True Magic "
+                "rules are injected to name its kind of magic"
+            )
+        return self.true_magic.channel_kind
+
+    def _channel_kind(self, spell: Spell, kind: str | None) -> str | None:
+        """The kind a Channel method here derives by: the one its caller
+        named, else what :meth:`cast_kind` gives the spell unasked, which is
+        the True kind for a working and ``None`` (the spell's own) for any
+        other."""
+        return kind if kind is not None else self.cast_kind(spell)
+
+    def channel_for(
+        self, caster: CombatantState, spell: Spell, kind: str | None = None
+    ) -> int | None:
         """The caster's Channel for this spell, or ``None`` with no Channel
-        rules injected (no bound but the purse)."""
+        rules injected (no bound but the purse).
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            kind: The kind the cast names (:meth:`cast_kind`), or ``None``:
+                the True kind for a working, otherwise the spell's own.
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+            ValueError: for a working with no True Magic rules injected.
+        """
+        kind = self._channel_kind(spell, kind)
         if self.channel is None:
             return None
-        return self.channel.channel_for(caster, spell)
+        return self.channel.channel_for(caster, spell, kind)
 
     def channel_bound(
-        self, caster: CombatantState, spell: Spell, *, borrowing: bool = False
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        *,
+        borrowing: bool = False,
+        kind: str | None = None,
     ) -> int | None:
         """The most mana Channel lets this caster's casting of the spell take,
         or ``None`` when Channel bounds nothing but the purse (and Push's own
@@ -1038,13 +1910,17 @@ class MagicRules:
             caster: The caster.
             spell: The spell cast.
             borrowing: Does the casting borrow (cost past the purse)?
+            kind: The kind the cast names (:meth:`cast_kind`), or ``None``:
+                the True kind for a working, otherwise the spell's own.
 
         Raises:
             ChannelUnclassifiedSpell: for a spell the rules give no kind.
+            ValueError: for a working with no True Magic rules injected.
         """
+        kind = self._channel_kind(spell, kind)
         if self.channel is None:
             return None
-        bound = self.channel.bound_for(caster, spell)
+        bound = self.channel.bound_for(caster, spell, kind)
         if (
             bound is not None
             or not borrowing
@@ -1052,7 +1928,7 @@ class MagicRules:
             or self.borrowing.max_debt is not None
         ):
             return bound
-        return caster.mana + self.channel.channel_for(caster, spell)
+        return caster.mana + self.channel.channel_for(caster, spell, kind)
 
     def cast_within_channel(
         self,
@@ -1061,6 +1937,7 @@ class MagicRules:
         push_mana: int = 0,
         *,
         borrowing: bool = False,
+        kind: str | None = None,
     ) -> bool:
         """Does Channel let this caster cast the spell with ``push_mana``
         pushed: the casting's whole mana (:func:`casting_mana`) within
@@ -1081,21 +1958,32 @@ class MagicRules:
             spell: The spell cast.
             push_mana: The mana pushed past the spell's cost.
             borrowing: Does the casting borrow (cost past the purse)?
+            kind: The kind the cast names (:meth:`cast_kind`), or ``None``:
+                the True kind for a working, otherwise the spell's own.
 
         Raises:
             ChannelUnclassifiedSpell: for a spell the Channel rules give no
                 kind, lifted or not, as :meth:`channel_for` does.
         """
-        bound = self.channel_bound(caster, spell, borrowing=borrowing)
+        bound = self.channel_bound(caster, spell, borrowing=borrowing, kind=kind)
         return bound is None or casting_mana(spell, push_mana) <= bound
 
     def lifted_bounds_passed(
-        self, caster: CombatantState, spell: Spell, push_mana: int = 0
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        push_mana: int = 0,
+        *,
+        kind: str | None = None,
     ) -> tuple[str, ...]:
         """The bounds a casting of the spell with ``push_mana`` pushed goes
         past that only a Game Master's lifting allows, in order: Push's own
         cap (:data:`PUSH_CAP`) when the push is past it, then the caster's
-        Channel (:data:`CHANNEL`) when the casting's whole mana is past it.
+        Channel (:data:`CHANNEL`) when the casting's whole mana is past it,
+        or when the spell is a working whose tier is past the caster's tier
+        cap: lifting Channel lifts that cap too, so no bound of its own names
+        it. ``kind`` is the kind the cast names (:meth:`cast_kind`), or
+        ``None``: the True kind for a working, otherwise the spell's own.
 
         The one answer the engine's cast payload and the menu's cast options
         give (:data:`LIFTED_BOUNDS_KEY`), so a caller reads it rather than
@@ -1109,10 +1997,20 @@ class MagicRules:
         passed: list[str] = []
         if push_mana and self.push is not None and not self.push.within_cap(push_mana):
             passed.append(PUSH_CAP)
-        channel = self.channel_for(caster, spell)
-        if channel is not None and casting_mana(spell, push_mana) > channel:
+        channel = self.channel_for(caster, spell, kind)
+        past_channel = channel is not None and casting_mana(spell, push_mana) > channel
+        if past_channel or self.past_tier_cap(caster, spell):
             passed.append(CHANNEL)
         return tuple(passed)
+
+    def past_tier_cap(self, caster: CombatantState, spell: Spell) -> bool:
+        """Is the spell a working whose tier is past what the caster's level
+        in the True skill allows, whether or not the cap is lifted? Public
+        so the menu's line for such a working asks it, as
+        :meth:`lifted_bounds_passed` does."""
+        return is_working_key(spell.key) and spell.level > self.unlifted_tier_cap(
+            caster
+        )
 
     def success_tier(self, natural_total: int) -> CastingSuccessTier | None:
         """The tier a successful casting roll's natural total lands in."""
@@ -1124,3 +2022,25 @@ class MagicRules:
             ),
             None,
         )
+
+
+def spell_for(key: str, rules: MagicRules | None) -> Spell:
+    """The spell a key names: a catalog spell, or a working the injected
+    rules build.
+
+    The one lookup for a spell key read from state or a candidate, where
+    :func:`~tarmar_engine.spells.get_spell` alone would not know a working.
+
+    Args:
+        key: A catalog spell's key or a working's.
+        rules: The injected magic rules, or ``None`` for none.
+
+    Raises:
+        KeyError: for a key the catalog does not hold, and for a working's
+            key with no True Magic rules injected or one they do not build.
+    """
+    if not is_working_key(key):
+        return get_spell(key)
+    if rules is None or rules.true_magic is None:
+        raise KeyError(f"{key!r} is a working, and no True Magic rules are injected")
+    return rules.true_magic.working_from_key(key)

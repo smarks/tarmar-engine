@@ -193,6 +193,38 @@ class ContestState:
 
 
 @dataclass
+class CraftState:
+    """A working its caster is crafting over several turns (tarmar-engine
+    #77).
+
+    Kept on the caster across turns, and in the snapshot, from the craft
+    action that begins it until the working goes off or is lost; only a
+    profile with injected True Magic rules
+    (``tarmar_engine.magic.TrueMagicRules``) begins one. The mana gathered so
+    far is not stored: it is always ``TrueMagicRules.gathered`` of the craft,
+    because a share that cannot be taken ends the craft before ``turns_done``
+    rises.
+
+    Attributes:
+        spell_key: The working crafted: its key names its effect and tier.
+        push_mana: The mana pushed past the working's tier, fixed when the
+            craft begins.
+        borrow: May a share the pool cannot pay be borrowed? Fixed when the
+            craft begins.
+        turns_done: The craft actions taken, the first included.
+        borrowed: How much of the mana gathered was borrowed.
+        target_id: The figure the latest craft action named, or ``None``.
+    """
+
+    spell_key: str
+    push_mana: int
+    borrow: bool
+    turns_done: int
+    borrowed: int
+    target_id: int | None
+
+
+@dataclass
 class CombatantState:
     """One combatant's full mutable state plus the frozen stat snapshot."""
 
@@ -255,8 +287,11 @@ class CombatantState:
     spell_mastery: dict[str, int] = field(default_factory=dict)
     #: Recorded per-spell skill levels, by spell key, as the game
     #: keeps them (tarmar-studio derives them from ``Character.spells``). Read by
-    #: injected Channel rules (``tarmar_engine.magic.ChannelRules``); a spell
-    #: missing from the map is at level 0. Nothing else reads it.
+    #: injected Channel rules (``tarmar_engine.magic.ChannelRules``) and, with
+    #: a familiarity bonus injected, by a counter's opposed roll
+    #: (``tarmar_engine.magic.CounterspellRules``); a spell missing from the
+    #: map is at level 0. The menu reads only whether any is recorded, which
+    #: makes a figure a mage (``tarmar_engine.policy._is_mage``).
     spell_skill_levels: dict[str, int] = field(default_factory=dict)
     #: The caster's level in general skills a kind of magic's Channel may
     #: derive from instead of the spell's own level, by the injected skill
@@ -284,6 +319,11 @@ class CombatantState:
     #: press again (tarmar-engine #31), or ``None``. Persists across turns.
     #: Written to a snapshot only when set.
     contest: ContestState | None = None
+    #: The working this combatant is crafting (tarmar-engine #77), or
+    #: ``None``. Only a profile with injected True Magic rules begins one; it
+    #: persists across turns until the working goes off or is lost. Written
+    #: to a snapshot only when set.
+    crafting: CraftState | None = None
     # Team tag. Empty means free-for-all — this combatant is its own team of
     # one, an enemy of everybody. A non-empty tag makes every combatant
     # carrying the same tag a teammate: never offered as a target
@@ -327,6 +367,13 @@ class CombatantState:
     # the ruling (tarmar-studio #37); the menu and the engine read it through
     # ``magic.bound_lifted``. Written to a snapshot only when it lifts one.
     lifted_magic_bounds: list[str] = field(default_factory=list)
+    # The workings a Game Master has named for this figure, by working key
+    # (tarmar-engine #77): the only ones it may craft of an effect that needs
+    # a grant. The consuming game fills it from its own record of the ruling,
+    # as it fills ``hth_agreed_with``; the menu and the engine read it
+    # through ``magic.MagicRules.granted`` and never change it. Written to a
+    # snapshot only when it names one.
+    granted_workings: list[str] = field(default_factory=list)
     defending: bool = False  # Defend chosen this turn (+4 TN vs melee)
     dodging: bool = False  # Dodge chosen this turn (+4 TN vs missiles)
     yielded: bool = False  # yielded initial movement, moves in phase 4
@@ -351,6 +398,10 @@ class CombatantState:
     #: Only a profile with injected Borrowing rules acts on it. Written to a
     #: snapshot only when set.
     chosen_borrow: bool = False
+    #: Is the chosen cast a True cast (tarmar-engine #77)? Only a profile
+    #: with injected True Magic rules acts on it. Written to a snapshot only
+    #: when set.
+    chosen_true_cast: bool = False
     #: The combatant whose Runaway the chosen action anchors, the actor's own
     #: id for its own (tarmar-engine #30), or ``None``. Written to a snapshot
     #: only when set.
@@ -443,6 +494,7 @@ class CombatantState:
         self.chosen_spell = ""
         self.chosen_push_mana = 0
         self.chosen_borrow = False
+        self.chosen_true_cast = False
         self.chosen_anchor = None
         self.chosen_counter = None
         self.chosen_destination = None
@@ -470,7 +522,19 @@ SNAPSHOT_FIELDS_WRITTEN_WHEN_SET: tuple[str, ...] = (
     "counter",
     "contest",
     "chosen_counter",
+    "crafting",
+    "granted_workings",
+    "chosen_true_cast",
 )
+
+#: The combatant fields a snapshot holds as a mapping, and the state class
+#: :meth:`BattleState.from_dict` rebuilds each as.
+_SNAPSHOT_STATE_CLASSES: Mapping[str, type] = {
+    "runaway": RunawayState,
+    "counter": CounterState,
+    "contest": ContestState,
+    "crafting": CraftState,
+}
 
 
 def _snapshot_defaults() -> dict[str, object]:
@@ -521,6 +585,23 @@ class BattleState:
             and (not combatant.team or other.team != combatant.team)
         ]
 
+    def teammates_of(self, combatant: CombatantState) -> list[CombatantState]:
+        """Every other living combatant sharing the combatant's team tag,
+        conscious or not.
+
+        The combatant itself is not among them, and a figure with no team
+        tag has none: an empty tag is a team of one, never a shared team.
+        """
+        if not combatant.team:
+            return []
+        return [
+            other
+            for other in self.combatants
+            if other.alive
+            and other.combatant_id != combatant.combatant_id
+            and other.team == combatant.team
+        ]
+
     def occupied_hexes(self) -> set[tuple[int, int]]:
         """Every hex covered by a living figure's footprint."""
         return {
@@ -541,7 +622,8 @@ class BattleState:
         # A Game Master's agreement (tarmar-studio #867) and lifted magic
         # bounds (tarmar-studio #37), Borrowing's debt
         # and choice (tarmar-engine #28), a Runaway and its anchor choice
-        # (#30) and a counter, a contest and a counter choice (#31) are
+        # (#30), a counter, a contest and a counter choice (#31) and a
+        # craft, granted workings and a True cast choice (#77) are
         # written only when set, so a battle that uses none of them
         # snapshots as it always has. "Set" is "not the default": a chosen
         # anchor may name combatant 0.
@@ -568,15 +650,10 @@ class BattleState:
                 pair = entry.pop(name, None)
                 if pair is not None:
                     entry[name] = tuple(pair)
-            runaway = entry.pop("runaway", None)
-            if runaway is not None:
-                entry["runaway"] = RunawayState(**runaway)
-            counter = entry.pop("counter", None)
-            if counter is not None:
-                entry["counter"] = CounterState(**counter)
-            contest = entry.pop("contest", None)
-            if contest is not None:
-                entry["contest"] = ContestState(**contest)
+            for name, state_class in _SNAPSHOT_STATE_CLASSES.items():
+                held = entry.pop(name, None)
+                if held is not None:
+                    entry[name] = state_class(**held)
             combatants.append(
                 CombatantState(weapon=weapon, spare_weapons=spares, **entry)
             )

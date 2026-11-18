@@ -13,7 +13,7 @@ from tarmar_engine import actions, combat_math, engine, policy, weapons
 from tarmar_engine.policy import Candidate, Decision
 from tarmar_engine.state import BattleState, GroundWeapon, WeaponState
 
-from .test_engine import ScriptedRoller, duel_state, events_of_type
+from .test_engine import ScriptedRoller, duel_state, events_of_type, rolls_of
 from .test_magic import CASTING_FAILURE_PROFILE
 from .test_state import make_combatant
 
@@ -353,16 +353,7 @@ class RateOfFireTest(TestCase):
         archer.chosen_target = 2
         events = []
         runner_for(state, [[2], [2]], events).missile_attack(archer)
-        self.assertEqual(
-            len(
-                [
-                    e
-                    for e in events_of_type(events, "roll")
-                    if e["payload"]["purpose"] == "attack"
-                ]
-            ),
-            2,
-        )
+        self.assertEqual(len(rolls_of(events, "attack")), 2)
 
     def test_the_second_shot_names_its_bow_with_the_right_article(self):
         # "for an Elven bow", not "for a Elven bow" (tarmar-engine #59).
@@ -922,11 +913,7 @@ class CriticalModifierOnceTest(TestCase):
         runner_for(state, [[20], [1], [3, 3], [4, 4]], events).resolve_attack(
             attacker, state.by_id(2), ranged=False
         )
-        damage_rolls = [
-            e
-            for e in events_of_type(events, "roll")
-            if e["payload"]["purpose"] == "damage"
-        ]
+        damage_rolls = rolls_of(events, "damage")
         self.assertEqual(
             [r["payload"]["specification"] for r in damage_rolls], ["2d6+2", "2d6"]
         )

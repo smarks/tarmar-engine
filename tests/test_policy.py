@@ -156,6 +156,33 @@ class ChooseOptionTest(TestCase):
         candidates = policy._cast_candidates(state, state.by_id(1), "h")
         self.assertEqual(candidates, [])  # bolt too dear, shield already up
 
+    def test_caster_is_offered_no_cast_of_a_generic_counter(self):
+        # A Counter rung is learned and never cast, within the purse or past
+        # it (the list the borrowing variants are built from).
+        state = BattleState(
+            combatants=[
+                make_combatant(
+                    1, spells=["counter_3", "fire_missile"], mana=10, q=-4, r=0
+                ),
+                make_combatant(2, q=4, r=0),
+            ]
+        )
+        caster = state.by_id(1)
+        for beyond_purse in (False, True):
+            with self.subTest(beyond_purse=beyond_purse):
+                candidates = policy._cast_candidates(
+                    state, caster, "h", beyond_purse=beyond_purse
+                )
+                self.assertEqual(
+                    [candidate.spell_key for candidate in candidates],
+                    ["fire_missile"],
+                )
+        caster.spells = ["counter_3"]
+        caster.mana = 0
+        self.assertEqual(
+            policy._cast_candidates(state, caster, "h", beyond_purse=True), []
+        )
+
     def test_hurt_wizard_values_heal(self):
         state = BattleState(
             combatants=[

@@ -173,7 +173,16 @@ CAST_OPTIONS: frozenset[str] = frozenset({"h", "r"})
 # document's. A whole action that stands still; offered only with injected
 # Counterspell rules (``tarmar_engine.magic.CounterspellRules``).
 COUNTER_OPTION = "counter"
-MAGIC_ACTIONS: dict[str, str] = {COUNTER_OPTION: "COUNTER SPELL"}
+# Crafting a working (tarmar-engine #77) is keyed the same way: one more
+# magic action outside the lettered tables, a whole action that stands still.
+# It runs only with injected True Magic rules
+# (``tarmar_engine.magic.TrueMagicRules``), and the option chosen again while
+# a craft stands is that craft's continuation.
+CRAFT_OPTION = "craft"
+MAGIC_ACTIONS: dict[str, str] = {
+    COUNTER_OPTION: "COUNTER SPELL",
+    CRAFT_OPTION: "CRAFT WORKING",
+}
 
 
 def legal_actions(

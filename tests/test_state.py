@@ -6,6 +6,7 @@ from unittest import TestCase
 from tarmar_engine.state import (
     BattleState,
     CombatantState,
+    CraftState,
     WeaponState,
     bare_handed_damage,
 )
@@ -134,6 +135,50 @@ class BattleStateTest(TestCase):
             [enemy.combatant_id for enemy in state.enemies_of(state.by_id(1))], [2]
         )
 
+    def test_teammates_of_are_the_others_sharing_the_team_tag(self):
+        state = BattleState(
+            combatants=[
+                make_combatant(1, team="Red"),
+                make_combatant(2, team="Blue"),
+                make_combatant(3, team="Red"),
+                make_combatant(4),
+                make_combatant(5, team="Red"),
+            ]
+        )
+        teammates = state.teammates_of(state.by_id(1))
+        self.assertEqual([mate.combatant_id for mate in teammates], [3, 5])
+        self.assertEqual(
+            [mate.combatant_id for mate in state.teammates_of(state.by_id(5))], [1, 3]
+        )
+        self.assertEqual(state.teammates_of(state.by_id(2)), [])
+
+    def test_teammates_of_counts_the_unconscious_but_not_the_dead(self):
+        state = BattleState(
+            combatants=[
+                make_combatant(1, team="Red"),
+                make_combatant(2, team="Red", conscious=False),
+                make_combatant(3, team="Red", alive=False),
+            ]
+        )
+        teammates = state.teammates_of(state.by_id(1))
+        self.assertEqual([mate.combatant_id for mate in teammates], [2])
+        # A figure that is down still has its living teammates.
+        self.assertEqual(
+            [mate.combatant_id for mate in state.teammates_of(state.by_id(2))], [1]
+        )
+
+    def test_a_teamless_figure_has_no_teammates(self):
+        # An empty tag is a team of one: two teamless figures share nothing.
+        state = BattleState(
+            combatants=[
+                make_combatant(1),
+                make_combatant(2),
+                make_combatant(3, team="Red"),
+            ]
+        )
+        self.assertEqual(state.teammates_of(state.by_id(1)), [])
+        self.assertEqual(state.teammates_of(state.by_id(3)), [])
+
     def test_team_round_trips_and_defaults_empty(self):
         state = BattleState(combatants=[make_combatant(1, team="Red")])
         restored = BattleState.from_dict(json.loads(json.dumps(state.to_dict())))
@@ -192,3 +237,115 @@ class BattleStateTest(TestCase):
         self.assertEqual(state.arena_radius, 8)
         self.assertEqual(state.turn, 0)
         self.assertEqual(state.combatants, [])
+
+
+#: The combatant fields this slice of True Magic adds (tarmar-engine #77).
+TRUE_MAGIC_FIELDS = ("crafting", "granted_workings", "chosen_true_cast")
+
+
+class TrueMagicSnapshotTest(TestCase):
+    """A craft, a Game Master's granted workings and a True cast choice
+    (tarmar-engine #77) are written to a snapshot only when set. The keys and
+    numbers are invented."""
+
+    def test_a_craft_the_grants_and_the_choice_round_trip(self):
+        state = BattleState(
+            combatants=[make_combatant(1), make_combatant(2), make_combatant(3)]
+        )
+        state.by_id(1).crafting = CraftState(
+            spell_key="working:scorch:4",
+            push_mana=2,
+            borrow=True,
+            turns_done=3,
+            borrowed=1,
+            target_id=2,
+        )
+        state.by_id(2).granted_workings = ["working:omen:2", "working:omen:5"]
+        state.by_id(3).chosen_true_cast = True
+        data = json.loads(json.dumps(state.to_dict()))
+        restored = BattleState.from_dict(data)
+        self.assertEqual(restored, state)
+        self.assertIsInstance(restored.by_id(1).crafting, CraftState)
+        self.assertEqual(
+            data["combatants"][0]["crafting"],
+            {
+                "spell_key": "working:scorch:4",
+                "push_mana": 2,
+                "borrow": True,
+                "turns_done": 3,
+                "borrowed": 1,
+                "target_id": 2,
+            },
+        )
+        self.assertEqual(
+            data["combatants"][1]["granted_workings"],
+            ["working:omen:2", "working:omen:5"],
+        )
+        self.assertIs(data["combatants"][2]["chosen_true_cast"], True)
+        # Each is written only on the combatant that holds it.
+        written = [
+            [name for name in TRUE_MAGIC_FIELDS if name in combatant]
+            for combatant in data["combatants"]
+        ]
+        self.assertEqual(
+            written, [["crafting"], ["granted_workings"], ["chosen_true_cast"]]
+        )
+
+    def test_a_craft_that_names_no_figure_round_trips(self):
+        state = BattleState(combatants=[make_combatant(1)])
+        state.by_id(1).crafting = CraftState("working:hush:1", 0, False, 0, 0, None)
+        data = json.loads(json.dumps(state.to_dict()))
+        self.assertIsNone(data["combatants"][0]["crafting"]["target_id"])
+        self.assertEqual(BattleState.from_dict(data), state)
+
+    def test_the_choice_lasts_one_turn_and_the_craft_and_grants_persist(self):
+        combatant = make_combatant(1)
+        craft = CraftState("working:salve:2", 1, False, 1, 0, 1)
+        combatant.crafting = craft
+        combatant.granted_workings = ["working:omen:3"]
+        combatant.chosen_true_cast = True
+        combatant.reset_for_turn()
+        self.assertFalse(combatant.chosen_true_cast)
+        self.assertIs(combatant.crafting, craft)
+        self.assertEqual(combatant.granted_workings, ["working:omen:3"])
+
+    def test_unset_none_of_them_is_written(self):
+        state = BattleState(combatants=[make_combatant(1), make_combatant(2)])
+        for combatant in state.to_dict()["combatants"]:
+            for name in TRUE_MAGIC_FIELDS:
+                self.assertNotIn(name, combatant)
+
+    def test_set_and_then_unset_they_are_written_and_then_not(self):
+        # An emptied grant list, a finished craft and a turn's reset each
+        # leave the snapshot as it was before the field was set.
+        state = BattleState(combatants=[make_combatant(1)])
+        before = state.to_dict()
+        holder = state.by_id(1)
+        holder.granted_workings = ["working:omen:3"]
+        holder.crafting = CraftState("working:salve:2", 1, False, 1, 0, 1)
+        holder.chosen_true_cast = True
+        while_set = state.to_dict()["combatants"][0]
+        for name in TRUE_MAGIC_FIELDS:
+            self.assertIn(name, while_set)
+        holder.granted_workings = []
+        holder.crafting = None
+        holder.reset_for_turn()
+        self.assertEqual(state.to_dict(), before)
+
+    def test_a_snapshot_missing_the_keys_loads_them_as_their_defaults(self):
+        state = BattleState(
+            turn=4,
+            combatants=[
+                make_combatant(1, spells=["fire_missile"], team="Red"),
+                make_combatant(2, q=3, r=-1),
+            ],
+        )
+        older_text = json.dumps(state.to_dict())
+        for name in TRUE_MAGIC_FIELDS:
+            self.assertNotIn(name, older_text)
+        loaded = BattleState.from_dict(json.loads(older_text))
+        for combatant in loaded.combatants:
+            self.assertIsNone(combatant.crafting)
+            self.assertEqual(combatant.granted_workings, [])
+            self.assertFalse(combatant.chosen_true_cast)
+        self.assertEqual(json.dumps(loaded.to_dict()), older_text)

@@ -31,7 +31,7 @@ from .test_borrowing import (
     borrower,
     borrowing_magic_rules,
 )
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, rolls_of
 from .test_magic import (
     PurposeRoller,
     cast,
@@ -129,11 +129,7 @@ def anchor_payload(events) -> dict:
 
 
 def anchor_roll(events) -> dict:
-    return next(
-        event["payload"]
-        for event in events_of_type(events, "roll")
-        if event["payload"]["purpose"] == "anchor"
-    )
+    return rolls_of(events, "anchor")[0]["payload"]
 
 
 class RunawayRulesValidationTest(TestCase):

@@ -29,7 +29,7 @@ from tarmar_engine.magic import (
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState
 
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, roll_purposes
 from .test_state import make_combatant
 
 WOBBLE = ControlBand(
@@ -172,10 +172,6 @@ def cast(state, faces, *, profile=MAGIC_PROFILE, spell="fire_missile", push=0):
     )
     runner.cast_spell(caster)
     return events
-
-
-def roll_purposes(events) -> list[str]:
-    return [event["payload"]["purpose"] for event in events_of_type(events, "roll")]
 
 
 def status_payloads(events, key) -> list[dict]:
