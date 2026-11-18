@@ -64,18 +64,22 @@ from .magic import (
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
     BorrowingRules,
+    CastingEnding,
     CastingFailureRules,
     CastingSuccessTier,
     CounterspellRules,
     MagicRules,
     PushRules,
     RunawayRules,
+    TrueMagicRules,
     attribute_score,
     bound_lifted,
     casting_mana,
     casting_success_ceiling,
     failed_band,
+    is_working_key,
     spell_effect_kind,
+    spell_for,
 )
 from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
@@ -86,11 +90,19 @@ from .state import (
     CombatantState,
     ContestState,
     CounterState,
+    CraftState,
     GroundWeapon,
     RunawayState,
     WeaponState,
     bare_handed_damage,
 )
+
+#: The dice every casting roll throws, a catalog spell's and a working's
+#: alike (casting-spells.md: "3d6 ≤ INT or WIS").
+CASTING_DICE = "3d6"
+#: Why a figure pays a drain, as the event that takes it says
+#: (:meth:`TurnRunner._take_drain`).
+DRAIN_REASON = "on the drain of their casting"
 
 # turn-sequence.md phase table: number -> name. Drift-guarded against the
 # markdown by battle/tests/test_rules_drift.py.
@@ -222,6 +234,9 @@ class TurnRunner:
         # phase, at their own action or at their caster's cast, whichever
         # came first (tarmar-engine #31).
         self._counters_taken: set[int] = set()
+        # The combatants who lost a craft this turn (tarmar-engine #77): a
+        # record of the whole turn, since a craft can end in any phase.
+        self._crafts_ended: set[int] = set()
 
     # ------------------------------------------------------------------ events
     def emit(
@@ -375,6 +390,7 @@ class TurnRunner:
     def run(self, choose_option) -> None:
         """Run the six phases of one turn. ``choose_option`` is the AI policy."""
         self.state.turn += 1
+        self._crafts_ended = set()
         for combatant in self.state.combatants:
             combatant.reset_for_turn()
         self._start_of_turn_missile_state()
@@ -1216,10 +1232,19 @@ class TurnRunner:
         if letter == "l":
             self.missile_attack(combatant, last_shot=True)
 
-    def _living_target(self, combatant: CombatantState) -> CombatantState | None:
-        """The chosen target if still a valid mark, else the nearest active enemy."""
-        if combatant.chosen_target is not None:
-            target = self.state.by_id(combatant.chosen_target)
+    def _living_target(
+        self, combatant: CombatantState, target_id: int | None
+    ) -> CombatantState | None:
+        """The figure named if still a valid mark, else the nearest active
+        enemy.
+
+        Args:
+            combatant: Who acts.
+            target_id: The figure the action names: the combatant's chosen
+                target, or the one a casting carries.
+        """
+        if target_id is not None:
+            target = self.state.by_id(target_id)
             if target.active:
                 return target
         enemies = self.state.enemies_of(combatant)
@@ -1234,7 +1259,7 @@ class TurnRunner:
         )
 
     def melee_attack(self, combatant: CombatantState) -> None:
-        target = self._living_target(combatant)
+        target = self._living_target(combatant, combatant.chosen_target)
         if target is None:
             return
         if not combat_math.figures_adjacent(combatant, target):
@@ -1288,7 +1313,7 @@ class TurnRunner:
         adjDEX N+"), a crossbow then needs its turns to reload, and a thrown
         weapon leaves the hand and lies where it fell (#781/#812).
         """
-        target = self._living_target(combatant)
+        target = self._living_target(combatant, combatant.chosen_target)
         if target is None:
             return
         engaged = self.profile.engagement.is_engaged(self.state, combatant)
@@ -1324,7 +1349,7 @@ class TurnRunner:
             if shot:
                 if combatant.weapon is not weapon or not combatant.active:
                     break  # fumbled the bow away, or felled mid-volley
-                target = self._living_target(combatant)
+                target = self._living_target(combatant, combatant.chosen_target)
                 if target is None:
                     break
                 self.emit(
@@ -1982,8 +2007,9 @@ class TurnRunner:
                 other.hth_with.remove(combatant.combatant_id)
         combatant.hth_with = []
 
-    @staticmethod
-    def _establish_grapple(attacker: CombatantState, defender: CombatantState) -> None:
+    def _establish_grapple(
+        self, attacker: CombatantState, defender: CombatantState
+    ) -> None:
         attacker.grappling = defender.combatant_id
         defender.grappled_by = attacker.combatant_id
 
@@ -2316,8 +2342,15 @@ class TurnRunner:
         caster may press it again on a later turn. With no ``MagicRules``
         none of these runs and a cast logs exactly what it always has.
 
+        The checks are made here. The guard on where a figure may cast
+        (:meth:`_cast_blocked`) and the casting itself, from the counter to
+        the debt roll (:meth:`_roll_and_resolve`), are the pieces a working
+        shares.
+
         Raises:
-            ValueError: for a generic counter, which is learned and never
+            KeyError: for a spell the catalog does not hold.
+            ValueError: for a working, which is crafted and never cast, a
+                generic counter, which is learned and never
                 cast (house reading
                 ``generic_counter_is_learned_never_cast``; the menu offers
                 none), a push or a borrowing the profile's rules do not
@@ -2325,13 +2358,18 @@ class TurnRunner:
                 push past the cap where neither is lifted for the caster, or
                 a borrowing past the injected debt cap.
         """
-        spell = get_spell(combatant.chosen_spell)
+        magic = self.profile.magic
+        spell = spell_for(combatant.chosen_spell, magic)
+        if is_working_key(spell.key):
+            raise ValueError(
+                f"{combatant.name} casts {spell.name}, a working, which is "
+                "crafted and never cast"
+            )
         if spell.generic_counter:
             raise ValueError(
                 f"{combatant.name} casts {spell.name}, a generic counter, which "
                 "is learned and never cast"
             )
-        magic = self.profile.magic
         borrowing = None if magic is None else magic.borrowing
         if combatant.chosen_borrow and borrowing is None:
             raise ValueError(
@@ -2357,12 +2395,16 @@ class TurnRunner:
                     f"{spell.name}; the cap is {magic.push.max_push_mana}"
                 )
         cost = casting_mana(spell, push_mana)
+        # The kind of magic the cast names for its Channel: none for a recipe
+        # cast, which derives by the spell's own.
+        true_cast = combatant.chosen_true_cast
+        kind = None if magic is None else magic.cast_kind(spell, true_cast=true_cast)
         # The Channel used and its kind, with Channel rules injected.
         channel_used: tuple[int, str] | None = None
         if magic is not None and magic.channel is not None:
             channel_used = (
-                magic.channel.channel_for(combatant, spell),
-                magic.channel.kind_for(spell),
+                magic.channel.channel_for(combatant, spell, kind),
+                magic.channel.kind_for(spell, kind),
             )
         channel = None if channel_used is None else channel_used[0]
         # What the cast would borrow: the shortfall, when the caster chose to.
@@ -2373,9 +2415,9 @@ class TurnRunner:
         )
         borrows = shortfall > 0
         if magic is not None and not magic.cast_within_channel(
-            combatant, spell, push_mana, borrowing=borrows
+            combatant, spell, push_mana, borrowing=borrows, kind=kind
         ):
-            bound = magic.channel_bound(combatant, spell, borrowing=borrows)
+            bound = magic.channel_bound(combatant, spell, borrowing=borrows, kind=kind)
             borrowing_note = (
                 "" if bound == channel else f", which lets them borrow to {bound}"
             )
@@ -2388,42 +2430,9 @@ class TurnRunner:
         lifted_past = (
             ()
             if magic is None
-            else magic.lifted_bounds_passed(combatant, spell, push_mana)
+            else magic.lifted_bounds_passed(combatant, spell, push_mana, kind=kind)
         )
-        if (
-            self.profile.grapple.locks_movement(
-                combatant.grappled_by, combatant.grappling
-            )
-            and combatant.spell_mastery.get(spell.key, 1) < 3
-        ):
-            # hand-to-hand-and-grappling.md: in a grapple, "Spellcasting is
-            # limited to a spell you can cast with no hand gestures and no
-            # verbal component — Spell Mastery level 2 and 3 respectively"
-            # (#821; both, so level 3 — coordinator's ruling, Spencer may
-            # overrule).
-            self.emit(
-                "info",
-                f"{combatant.name} is locked in a grapple and cannot cast "
-                f"{spell.name} without gestures and words",
-                actor=combatant.name,
-            )
-            return
-        if (
-            movement.in_hand_to_hand(self.state, combatant)
-            and combatant.weapon.item_id
-            and combatant.spell_mastery.get(spell.key, 1)
-            < policy.HTH_NO_GESTURE_MASTERY
-        ):
-            # The HTH table: "CAST SPELL — If hands free or no-gesture
-            # spell" (tarmar-engine #19), held here as well as on the menu.
-            self.emit(
-                "info",
-                f"{combatant.name} is in hand-to-hand with the "
-                f"{combatant.weapon.name} in hand and cannot cast {spell.name} "
-                "without gestures",
-                actor=combatant.name,
-                payload={"hth_cast_refused": True, "spell": spell.key},
-            )
+        if self._cast_blocked(combatant, spell):
             return
         if combatant.mana < cost and not shortfall:
             pushed_note = f" pushed with {push_mana} more" if push_mana else ""
@@ -2440,51 +2449,169 @@ class TurnRunner:
                     f"{combatant.name} borrows {shortfall} mana for {spell.name} "
                     f"owing {combatant.debt}; the debt cap is {cap}"
                 )
-        channel_note = "" if channel is None else f"; Channel {channel}"
-        contest = self._oppose_cast(combatant, spell, cost)
+        self._roll_and_resolve(
+            combatant,
+            spell,
+            push_mana=push_mana,
+            target_id=combatant.chosen_target,
+            true_cast=true_cast,
+            roll_target=attribute_score(combatant, spell.attribute),
+            versus=spell.attribute,
+            shortfall=shortfall,
+            craft=None,
+            channel_used=channel_used,
+            lifted_past=lifted_past,
+        )
+
+    def _cast_blocked(self, caster: CombatantState, spell: Spell) -> bool:
+        """Is the caster where it may not cast this spell? The refusal is
+        logged here.
+
+        The one guard on a grapple and on hand-to-hand, for a cast and for a
+        working alike. A spell the caster has no mastery of reads at level 1:
+        refused in a grapple, and in hand-to-hand with a weapon in hand.
+
+        Returns:
+            Whether the casting is refused.
+        """
+        if (
+            self.profile.grapple.locks_movement(caster.grappled_by, caster.grappling)
+            and caster.spell_mastery.get(spell.key, 1) < 3
+        ):
+            # hand-to-hand-and-grappling.md: in a grapple, "Spellcasting is
+            # limited to a spell you can cast with no hand gestures and no
+            # verbal component — Spell Mastery level 2 and 3 respectively"
+            # (#821; both, so level 3 — coordinator's ruling, Spencer may
+            # overrule).
+            self.emit(
+                "info",
+                f"{caster.name} is locked in a grapple and cannot cast "
+                f"{spell.name} without gestures and words",
+                actor=caster.name,
+            )
+            return True
+        if (
+            movement.in_hand_to_hand(self.state, caster)
+            and caster.weapon.item_id
+            and caster.spell_mastery.get(spell.key, 1) < policy.HTH_NO_GESTURE_MASTERY
+        ):
+            # The HTH table: "CAST SPELL — If hands free or no-gesture
+            # spell" (tarmar-engine #19), held here as well as on the menu.
+            self.emit(
+                "info",
+                f"{caster.name} is in hand-to-hand with the "
+                f"{caster.weapon.name} in hand and cannot cast {spell.name} "
+                "without gestures",
+                actor=caster.name,
+                payload={"hth_cast_refused": True, "spell": spell.key},
+            )
+            return True
+        return False
+
+    def _roll_and_resolve(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        *,
+        push_mana: int,
+        target_id: int | None,
+        true_cast: bool,
+        roll_target: int,
+        versus: str,
+        shortfall: int,
+        craft: CraftState | None,
+        channel_used: tuple[int, str] | None,
+        lifted_past: tuple[str, ...],
+    ) -> None:
+        """A casting from the counter to the debt roll: the one copy of the
+        sequence, for a cast and for a working.
+
+        In order: every counter declared against the caster
+        (:meth:`_oppose_cast`); the casting roll; the payment, on a success
+        or on a failing total that loses the mana; the ``action`` event; the
+        effect of a success (:meth:`_resolve_cast`) or the Runaway a failing
+        total starts; and the debt roll of a casting that paid and borrowed.
+        Countered, the casting makes no roll: it pays, says so and makes its
+        debt roll.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            push_mana: The mana pushed past the spell's cost.
+            target_id: The figure the casting names, or ``None``.
+            true_cast: Is this a True cast?
+            roll_target: The casting roll's target before the caster's own
+                penalties: the injury band and the off-balance penalty come
+                off here, at the roll, after any counter has been met.
+            versus: The roll's attribute, as its event names it.
+            shortfall: What an instant cast borrows if it pays.
+            craft: A completing working's craft, or ``None`` for an instant
+                cast, which is paid here.
+            channel_used: The caster's Channel for the casting and its kind
+                of magic, with Channel rules injected.
+            lifted_past: The lifted bounds the casting went past.
+
+        Raises:
+            NotImplementedError: for a True cast or a working. This runs a
+                recipe cast only until the slices of tarmar-engine #77 that
+                build those land.
+        """
+        if true_cast or craft is not None:
+            raise NotImplementedError(
+                f"{caster.name}'s {spell.name}: a True cast and a working are "
+                "not yet run here"
+            )
+        magic = self.profile.magic
+        borrowing = None if magic is None else magic.borrowing
+        cost = casting_mana(spell, push_mana)
+        channel_note = "" if channel_used is None else f"; Channel {channel_used[0]}"
+        contest = self._oppose_cast(
+            caster,
+            spell,
+            cost,
+            target_id=target_id,
+            true_cast=true_cast,
+            stands=craft is None,
+        )
         if contest is not None:
-            cost_note = self._pay_cast(combatant, spell, push_mana, shortfall)
+            cost_note = self._pay_cast(caster, spell, push_mana, shortfall)
             defenders = ", ".join(
                 self.state.by_id(defender_id).name
                 for defender_id in contest.defender_ids
             )
             self.emit(
                 "status",
-                f"{combatant.name}'s {spell.name} is countered by {defenders}: "
+                f"{caster.name}'s {spell.name} is countered by {defenders}: "
                 f"no casting roll ({cost_note}{channel_note}); it may be pressed "
                 "again on a later turn",
-                actor=combatant.name,
+                actor=caster.name,
                 payload={
                     "spell_countered": True,
                     "spell": spell.key,
                     "defenders": list(contest.defender_ids),
                     "contest_turns": contest.turns,
-                    "mana_left": combatant.mana,
+                    "mana_left": caster.mana,
                     **self._cast_cost_keys(
-                        combatant, push_mana, channel_used, shortfall, lifted_past
+                        caster, push_mana, channel_used, shortfall, lifted_past
                     ),
                 },
             )
             if shortfall and borrowing is not None:
-                self._debt_roll(combatant, spell, borrowing)
+                self._debt_roll(caster, spell, borrowing, cost=cost)
             return
-        attribute_name = spell.attribute
-        base_attribute = (
-            combatant.intelligence if attribute_name == "INT" else combatant.wisdom
-        )
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
         # off-balance figure's −2 on this action (#811).
-        attribute = base_attribute - self._action_roll_penalty(combatant)
+        attribute = roll_target - self._action_roll_penalty(caster)
         # How a casting roll fails on its natural total is injected
         # (tarmar-engine #46); with none, the attribute alone judges it.
         casting_failure = None if magic is None else magic.casting_failure
         record, cast_sequence = self.roll(
-            "3d6",
+            CASTING_DICE,
             purpose="casting",
-            actor=combatant.name,
+            actor=caster.name,
             target_number=attribute,
-            versus=attribute_name,
+            versus=versus,
             roll_under=True,
             judge=lambda cast: (
                 "success"
@@ -2507,25 +2634,25 @@ class TurnRunner:
         )
         borrowed = shortfall if pays else 0
         if pays:
-            cost_note = self._pay_cast(combatant, spell, push_mana, borrowed)
+            cost_note = self._pay_cast(caster, spell, push_mana, borrowed)
         else:
-            cost_note = f"no mana spent, {combatant.mana} left"
+            cost_note = f"no mana spent, {caster.mana} left"
         payload: dict[str, str | int | bool | list[str]] = {
             "spell": spell.key,
             "success": succeeded,
-            "mana_left": combatant.mana,
+            "mana_left": caster.mana,
             "casting_roll": cast_sequence,
             **self._cast_cost_keys(
-                combatant, push_mana, channel_used, borrowed, lifted_past
+                caster, push_mana, channel_used, borrowed, lifted_past
             ),
         }
         self.emit(
             "action",
-            f"{combatant.name} casts {spell.name} "
-            f"(3d6 ≤ {attribute_name} {attribute}): "
+            f"{caster.name} casts {spell.name} "
+            f"({CASTING_DICE} ≤ {versus} {attribute}): "
             f"{'success' if succeeded else 'failure'} "
             f"({cost_note}{channel_note})",
-            actor=combatant.name,
+            actor=caster.name,
             payload=payload,
         )
         # A refund the pool keeps is capped at what the pool paid, so it never
@@ -2536,15 +2663,71 @@ class TurnRunner:
             refund_cap = cost - borrowed
         if succeeded:
             self._resolve_cast(
-                combatant, spell, magic, sum(record.faces), cast_sequence, refund_cap
+                caster,
+                spell,
+                magic,
+                sum(record.faces),
+                cast_sequence,
+                refund_cap,
+                push_mana=push_mana,
+                target_id=target_id,
             )
         elif (
             casting_failure is not None
             and sum(record.faces) == casting_failure.runaway_total
         ):
-            self._begin_runaway(combatant, spell, cost)
+            self._begin_runaway(caster, spell, cost)
         if borrowed and borrowing is not None:
-            self._debt_roll(combatant, spell, borrowing)
+            self._debt_roll(caster, spell, borrowing, cost=cost)
+
+    def _true_magic_rules(self, combatant: CombatantState) -> TrueMagicRules:
+        """The profile's injected True Magic rules.
+
+        Raises:
+            ValueError: when the profile has none, for an action that needs
+                them.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.true_magic is None:
+            raise ValueError(
+                f"{combatant.name}'s action needs True Magic rules and the "
+                f"{self.profile.name!r} profile has none"
+            )
+        return magic.true_magic
+
+    def _take_drain(
+        self,
+        caster: CombatantState,
+        drained_mana: int,
+        ending: CastingEnding | None,
+        chain: list[int],
+    ) -> None:
+        """Take what a True cast or a working drains from its caster: the
+        one way a drain is taken.
+
+        The amount is the injected rules' for that much mana and that ending
+        (:meth:`.magic.TrueMagicRules.drain`), taken from their drain pool by
+        :meth:`apply_pool_cost`, so unconsciousness and death apply as for
+        any other loss. Nothing is taken, and no event is logged, when the
+        amount is 0.
+
+        Args:
+            caster: Who is drained.
+            drained_mana: The mana the drain counts.
+            ending: How the casting ended without going off, or ``None``: it
+                went off.
+            chain: The roll sequence numbers behind the drain, for a fall
+                into unconsciousness or a death to cite.
+
+        Raises:
+            ValueError: with no True Magic rules injected.
+        """
+        true_magic = self._true_magic_rules(caster)
+        amount = true_magic.drain(drained_mana, ending)
+        if amount > 0:
+            self.apply_pool_cost(
+                caster, true_magic.drain_pool, amount, DRAIN_REASON, chain=chain
+            )
 
     @staticmethod
     def _anchored_growth(
@@ -2628,7 +2811,10 @@ class TurnRunner:
         natural_total: int,
         cast_sequence: int,
         refund_cap: int,
-    ) -> None:
+        *,
+        push_mana: int,
+        target_id: int | None,
+    ) -> bool:
         """A successful cast's tier, Control Roll, aim and effect, in order.
 
         Args:
@@ -2638,8 +2824,14 @@ class TurnRunner:
             natural_total: The casting roll's natural total.
             cast_sequence: The casting roll's event sequence number.
             refund_cap: The most a tier's refund may hand back.
+            push_mana: The mana pushed past the spell's cost.
+            target_id: The figure the casting names, or ``None``.
+
+        Returns:
+            Whether the spell went off. Only a Control band whose spell does
+            not take effect stops it: a missed aim, no living target, damage
+            the armour stops and a continuing spell all went off.
         """
-        push_mana = combatant.chosen_push_mana
         effect_bonus = 0
         bonus_sources: list[str] = []
         if magic is not None:
@@ -2659,7 +2851,7 @@ class TurnRunner:
                 combatant, spell, magic.push, push_mana
             )
             if not takes_effect:
-                return
+                return False
             if push_bonus:
                 effect_bonus += push_bonus
                 bonus_sources.append(f"{push_bonus:+d} pushed mana")
@@ -2685,7 +2877,7 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"spell": spell.key, "active": True},
             )
-            return
+            return True
         if spell.heals:
             heal_record, _sequence = self.roll(
                 spell.damage or "1d6", purpose="healing", actor=combatant.name
@@ -2702,10 +2894,10 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"healed": healed, FATIGUE_POOL: combatant.fatigue},
             )
-            return
-        target = self._living_target(combatant)
+            return True
+        target = self._living_target(combatant, target_id)
         if target is None:
-            return
+            return True
         if spell.targeted:
             # casting-spells.md: magic requiring hitting a target needs an
             # additional DEX roll — 3d6 ≤ DEX. A dodging target's +4-TN is
@@ -2731,7 +2923,7 @@ class TurnRunner:
                     f"{combatant.name}'s {spell.name} misses {target.name}",
                     actor=combatant.name,
                 )
-                return
+                return True
         damage_record, damage_sequence = self.roll(
             spell.damage or "1d6", purpose="spell damage", actor=combatant.name
         )
@@ -2746,6 +2938,7 @@ class TurnRunner:
             chain=[cast_sequence, damage_sequence],
             body_only=spell.damage_pool == BODY_POOL,
         )
+        return True
 
     def _casting_success_tier(
         self,
@@ -2918,7 +3111,12 @@ class TurnRunner:
         return takes_effect, push_bonus
 
     def _debt_roll(
-        self, combatant: CombatantState, spell: Spell, borrowing: BorrowingRules
+        self,
+        combatant: CombatantState,
+        spell: Spell,
+        borrowing: BorrowingRules,
+        *,
+        cost: int,
     ) -> None:
         """Roll a borrowing cast's debt roll and narrate its outcome
         (tarmar-engine #28).
@@ -2939,6 +3137,13 @@ class TurnRunner:
         so unconsciousness and death apply as for any other loss; and a
         Runaway band, with injected Runaway rules, begins one
         (:meth:`_begin_runaway`). The spell has already resolved and stands.
+
+        Args:
+            combatant: The caster who borrowed.
+            spell: The spell the casting was of.
+            borrowing: The injected Borrowing rules.
+            cost: The casting's whole mana, pushed mana included: the
+                original cost of a Runaway a band starts.
         """
         target = borrowing.debt_target(
             combatant, combatant.debt
@@ -2982,11 +3187,11 @@ class TurnRunner:
         )
         if band is None:
             return
-        cost = band.cost(combatant.debt)
-        cost_pool = band.cost_pool if cost else None
+        band_cost = band.cost(combatant.debt)
+        cost_pool = band.cost_pool if band_cost else None
         message = f"{combatant.name}'s failed debt for {spell.name}: {band.label}"
         if cost_pool is not None:
-            message += f", costing {cost} {cost_pool}"
+            message += f", costing {band_cost} {cost_pool}"
         self.emit(
             "status",
             message,
@@ -2997,23 +3202,19 @@ class TurnRunner:
                 "label": band.label,
                 "runaway": band.is_runaway,
                 "cost_pool": cost_pool,
-                "cost": cost,
+                "cost": band_cost,
             },
         )
         if cost_pool is not None:
             self.apply_pool_cost(
                 combatant,
                 cost_pool,
-                cost,
+                band_cost,
                 f"on the failed debt for {spell.name}",
                 chain=[debt_sequence],
             )
         if band.is_runaway:
-            self._begin_runaway(
-                combatant,
-                spell,
-                casting_mana(spell, combatant.chosen_push_mana),
-            )
+            self._begin_runaway(combatant, spell, cost)
 
     # ----------------------------------------------------------------- runaway
     def _runaway_rules(self, combatant: CombatantState) -> RunawayRules:
@@ -3056,7 +3257,7 @@ class TurnRunner:
         if magic is None or magic.runaway is None:
             return
         if combatant.runaway is not None:
-            kept = get_spell(combatant.runaway.spell_key)
+            kept = spell_for(combatant.runaway.spell_key, magic)
             self.emit(
                 "info",
                 f"{combatant.name} already feeds a runaway {kept.name}; "
@@ -3105,7 +3306,7 @@ class TurnRunner:
         running = caster.runaway
         if running is None:
             return
-        spell = get_spell(running.spell_key)
+        spell = spell_for(running.spell_key, self.profile.magic)
         running.turns_running += 1
         drain = rules.drain(running.original_cost)
         drained_mana = min(drain, max(0, caster.mana))
@@ -3197,7 +3398,7 @@ class TurnRunner:
                 payload={"anchor_target": owner.combatant_id},
             )
             return
-        spell = get_spell(running.spell_key)
+        spell = spell_for(running.spell_key, self.profile.magic)
         helping = owner is not anchorer
         rule = rules.helper_anchor if helping else rules.self_anchor
         cost = rules.helper_cost(running.original_cost) if helping else 0
@@ -3306,7 +3507,7 @@ class TurnRunner:
         if contest is None:
             return
         caster.contest = None
-        spell = get_spell(contest.spell_key)
+        spell = spell_for(contest.spell_key, self.profile.magic)
         self.emit(
             "status",
             f"{caster.name} {CONTEST_END_REASONS[reason]}: the contest over "
@@ -3406,10 +3607,17 @@ class TurnRunner:
         )
 
     def _oppose_cast(
-        self, caster: CombatantState, spell: Spell, cost: int
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        cost: int,
+        *,
+        target_id: int | None,
+        true_cast: bool = False,
+        stands: bool = True,
     ) -> ContestState | None:
         """Meet a cast with every counter against its caster (tarmar-engine
-        #31); the contest a countered cast leaves standing, or ``None``.
+        #31); the contest of a countered cast, or ``None``.
 
         A defender that chose a counter against this caster and has not
         acted yet declares it now (house reading
@@ -3422,6 +3630,16 @@ class TurnRunner:
         caster must beat the highest defender, ties by the injected rule.
         Every declared counter is spent either way. Through, the contest
         ends; countered, it stands on the caster for a later turn.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            cost: The casting's whole mana, pushed mana included.
+            target_id: The figure the casting names, which a contest keeps.
+            true_cast: Is this a True cast? Nothing here reads it yet.
+            stands: Does a countered casting leave its contest standing on
+                the caster, to be pressed again? ``False`` returns the
+                contest without keeping it.
         """
         magic = self.profile.magic
         rules = None if magic is None else magic.counterspell
@@ -3518,13 +3736,15 @@ class TurnRunner:
             self._end_contest(caster, "through")
             return None
         turns = 1 if caster.contest is None else caster.contest.turns + 1
-        caster.contest = ContestState(
+        contest = ContestState(
             spell_key=spell.key,
-            target_id=caster.chosen_target,
+            target_id=target_id,
             defender_ids=defender_ids,
             turns=turns,
         )
-        return caster.contest
+        if stands:
+            caster.contest = contest
+        return contest
 
     def _lapse_counters(self) -> None:
         """At the end of the Actions phase, every counter no cast met lapses,
