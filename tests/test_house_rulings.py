@@ -5,7 +5,9 @@ a ruling (marked for Spencer) or a page, "and then a drift test". A change
 to the record or to the code without the other fails here.
 """
 
+import ast
 from dataclasses import replace
+from pathlib import Path
 from unittest import TestCase
 
 import tarmar_rules
@@ -280,8 +282,12 @@ class ChannelRulingsTest(TestCase):
         from tarmar_engine.spells import get_spell
 
         from .test_channel import channel_caster, example_channel_rules
+        from .test_true_magic import KNOT_KIND, KNOT_SKILL, true_magic_rules
 
-        self.assertEqual(ruling("channel_kind_belongs_to_the_spell").value, "per spell")
+        self.assertEqual(
+            ruling("channel_kind_belongs_to_the_spell").value,
+            "per spell, unless the cast names a kind",
+        )
         rules = example_channel_rules()
         first = channel_caster({}, skill_levels={"tapestry": 4}).by_id(1)
         second = channel_caster({}, skill_levels={"tapestry": 1}).by_id(1)
@@ -289,6 +295,18 @@ class ChannelRulingsTest(TestCase):
         self.assertEqual(rules.kind_for(heal), "weft")
         self.assertEqual(rules.channel_for(first, heal), 4 + 2)
         self.assertEqual(rules.channel_for(second, heal), 1 + 2)
+        # A kind the cast names stands in for the spell's own, and a True
+        # cast names the True kind: "knot", 3 x the "knotwork" level + 1.
+        self.assertEqual(rules.kind_for(heal, "loom"), "loom")
+        magic = true_magic_rules()
+        knotter = channel_caster({}, skill_levels={"tapestry": 4, KNOT_SKILL: 2}).by_id(
+            1
+        )
+        self.assertIsNone(magic.cast_kind(heal))
+        named = magic.cast_kind(heal, true_cast=True)
+        self.assertEqual(named, KNOT_KIND)
+        self.assertEqual(magic.channel_for(knotter, heal), 4 + 2)
+        self.assertEqual(magic.channel_for(knotter, heal, named), 3 * 2 + 1)
 
     def test_channel_not_on_renewal(self):
         from tarmar_engine import engine
@@ -914,3 +932,123 @@ class GenericCounterRulingsTest(TestCase):
         # The ladder is the generic counters', not a school's.
         elsewhere = replace(rungs[2], school="Passage")
         self.assertIs(spells.lower_tier(elsewhere), rungs[1])
+
+
+class TrueMagicRulingsTest(TestCase):
+    """The readings on workings and their crafting (tarmar-engine #77), each
+    pinned to the code that makes it. The rules are the invented ones of
+    ``test_true_magic``."""
+
+    def test_working_mana_is_its_tier(self):
+        from tarmar_engine.magic import casting_mana
+
+        from .test_true_magic import example_true_magic_rules
+
+        self.assertEqual(ruling("working_mana_is_its_tier").value, "tier")
+        rules = example_true_magic_rules()
+        for tier in (1, 4, 9):
+            with self.subTest(tier=tier):
+                working = rules.working("scorch", tier)
+                self.assertEqual(working.level, tier)
+                self.assertEqual(casting_mana(working, 0), tier)
+                self.assertEqual(casting_mana(working, 3), tier + 3)
+
+    def test_craft_gathers_even_shares(self):
+        from .test_true_magic import example_true_magic_rules
+
+        self.assertEqual(
+            ruling("craft_gathers_even_shares").value, "even shares, rounded down"
+        )
+        rules = example_true_magic_rules()
+        # 7 mana over 3 turns: 7 x 1 // 3, 7 x 2 // 3, then the whole.
+        gathered = [rules.gathered_after(7, 3, turns_done) for turns_done in range(4)]
+        self.assertEqual(gathered, [0, 2, 4, 7])
+        # Not the alternative, which would pay the whole mana at the start.
+        self.assertLess(rules.gathered_after(7, 3, 1), 7)
+
+    def test_channel_lift_lifts_the_tier_cap(self):
+        from tarmar_engine.magic import CHANNEL, LIFTABLE_BOUNDS
+
+        from .test_true_magic import (
+            example_true_magic_rules,
+            knot_caster,
+            true_magic_rules,
+        )
+
+        self.assertEqual(ruling("channel_lift_lifts_the_tier_cap").value, CHANNEL)
+        rules = true_magic_rules()
+        held = knot_caster(2)
+        lifted = knot_caster(2, lifted_magic_bounds=[CHANNEL])
+        # "knotwork" 2: a tier cap of 2 x 2 and a Channel of 3 x 2 + 1.
+        cap = 2 * 2
+        self.assertEqual(rules.tier_cap(held), cap)
+        self.assertIsNone(rules.tier_cap(lifted))
+        # No bound names the cap itself: every other lift leaves it standing,
+        # and a working past it reports Channel.
+        for bound in LIFTABLE_BOUNDS:
+            if bound == CHANNEL:
+                continue
+            with self.subTest(bound=bound):
+                self.assertEqual(
+                    rules.tier_cap(knot_caster(2, lifted_magic_bounds=[bound])), cap
+                )
+        # Tier 5 is past the cap and, at 5 mana, within Channel.
+        past_the_cap = example_true_magic_rules().working("mend", cap + 1)
+        self.assertEqual(rules.lifted_bounds_passed(lifted, past_the_cap), (CHANNEL,))
+
+    def test_grant_stands_until_withdrawn(self):
+        # The engine never writes a figure's granted workings, so a grant
+        # stands until the consuming game withdraws it. The stronger pin, a
+        # craft begun that leaves its key listed, is the craft slice's to
+        # add here, with ``TurnRunner.craft_working``.
+        from .test_state import make_combatant
+        from .test_true_magic import knot_caster, true_magic_rules
+
+        self.assertEqual(
+            ruling("grant_stands_until_withdrawn").value, "stands until withdrawn"
+        )
+        self.assertEqual(self.writes_of("granted_workings"), [])
+        # The scan sees a write where there is one: a turn's reset clears
+        # its choices by assignment.
+        self.assertIn("state.py", self.writes_of("chosen_true_cast"))
+        grants = ["working:omen:2"]
+        granted = knot_caster(2, granted_workings=list(grants))
+        self.assertTrue(true_magic_rules().granted(granted, "working:omen:2"))
+        granted.reset_for_turn()
+        self.assertEqual(granted.granted_workings, grants)
+        self.assertEqual(make_combatant(1).granted_workings, [])
+
+    #: The list methods that change a list in place.
+    LIST_MUTATORS = frozenset(
+        {"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"}
+    )
+
+    def writes_of(self, attribute: str) -> list[str]:
+        """The engine modules that write an attribute of this name: assign
+        or delete it or an item of it, or call a list method that changes it
+        in place. A field's own declaration is not a write."""
+
+        def names_it(node: ast.AST) -> bool:
+            return isinstance(node, ast.Attribute) and node.attr == attribute
+
+        writers: list[str] = []
+        package = Path(engine.__file__).resolve().parent
+        for module in sorted(package.rglob("*.py")):
+            for node in ast.walk(ast.parse(module.read_text())):
+                written = (
+                    (names_it(node) and not isinstance(node.ctx, ast.Load))
+                    or (
+                        isinstance(node, ast.Subscript)
+                        and not isinstance(node.ctx, ast.Load)
+                        and names_it(node.value)
+                    )
+                    or (
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in self.LIST_MUTATORS
+                        and names_it(node.func.value)
+                    )
+                )
+                if written:
+                    writers.append(module.name)
+        return sorted(set(writers))

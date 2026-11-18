@@ -465,11 +465,16 @@ HOUSE_RULINGS += (
         "caster: two casters casting one spell derive Channel the same way. "
         "The page does not say which: the alternative reading makes the kind "
         "belong to the way a caster casts the spell, keyed by caster and "
-        "spell together, so one spell could take either derivation.",
-        "per spell",
-        "tarmar_engine/magic.py ChannelRules.kind_for",
-        RULING,
-        "#825 (tarmar-engine #29)",
+        "spell together, so one spell could take either derivation. Amended "
+        "for True Magic toward that alternative, in one case: a cast may name "
+        "its kind, which then stands in for the spell's own, and a True cast "
+        "or a working names the True kind. Every other cast names none and "
+        "derives by the spell's own.",
+        "per spell, unless the cast names a kind",
+        "tarmar_engine/magic.py ChannelRules.kind_for, MagicRules.cast_kind",
+        "Spencer's decision of 2026-11-17 that a True cast derives Channel "
+        "from the True skill (" + RULING + ")",
+        "#825 (tarmar-engine #29); #208 (tarmar-engine #77)",
     ),
     HouseRuling(
         "channel_not_on_renewal",
@@ -827,6 +832,58 @@ HOUSE_RULINGS += (
         "no element siblings." + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
         "generic counter",
         "tarmar_engine/spells.py GENERIC_COUNTER_LADDER, _index_ladders, lower_tier",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "working_mana_is_its_tier",
+        "A working's mana is its tier and any mana pushed into it, by the "
+        "public rule that a spell costs its level: a built working's level "
+        "is its tier, so whatever reads a casting's mana counts a working as "
+        "it counts a catalog spell.",
+        "tier",
+        "tarmar_engine/magic.py TrueMagicRules.working, casting_mana",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "craft_gathers_even_shares",
+        "A working's whole mana is gathered in even shares, one per craft "
+        "turn: the mana gathered after a turn is the whole mana times the "
+        "craft turns taken, over the turns the working takes, rounded down. "
+        "The mana gathered never runs ahead of an even pace, no two shares "
+        "differ by more than a point, and the last turn brings the whole. "
+        "The alternative reading pays the whole mana when the craft begins.",
+        "even shares, rounded down",
+        "tarmar_engine/magic.py TrueMagicRules.gathered_after",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "channel_lift_lifts_the_tier_cap",
+        "A Game Master lets a figure craft a working above its tier cap by "
+        "lifting Channel for it: the one lift lifts the cap too, since both "
+        "bound how large a casting the figure may make. No bound of its own "
+        "names the cap, so the liftable bounds are as they were, and a "
+        "working whose tier is past the cap reports Channel as the lifted "
+        "bound it went past. The alternative reading is a further bound, "
+        "lifted on its own.",
+        "channel",
+        "tarmar_engine/magic.py MagicRules.tier_cap, lifted_bounds_passed",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "grant_stands_until_withdrawn",
+        "A Game Master's grant of a working is not spent by a craft: it "
+        "stands for the battle, as a lifted bound does, until the Game Master "
+        "withdraws it in the consuming game's record. The engine reads a "
+        "figure's granted workings and never writes them. The alternative "
+        "reading is a single use, which the engine would take off the list "
+        "when the craft begins.",
+        "stands until withdrawn",
+        "tarmar_engine/magic.py MagicRules.granted; "
+        "tarmar_engine/state.py CombatantState.granted_workings",
         RULING,
         "#208 (tarmar-engine #77)",
     ),

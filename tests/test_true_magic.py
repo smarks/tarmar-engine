@@ -43,7 +43,7 @@ from tarmar_engine.magic import (
     spell_for,
 )
 from tarmar_engine.spells import ELEMENTAL_SCHOOL, get_spell
-from tarmar_engine.state import CombatantState
+from tarmar_engine.state import CombatantState, CraftState
 
 from .test_borrowing import DEBT_BANDS, FLICKER, SURGE, example_borrowing_rules
 from .test_channel import LOOM, channel_caster, example_channel_rules
@@ -519,6 +519,38 @@ class BuiltWorkingTest(TestCase):
             rules.working("scorch", 0)
 
 
+class WorkingFromKeyTest(TestCase):
+    """One method turns a working's key into its spell."""
+
+    def test_it_builds_the_working_the_key_names(self):
+        rules = example_true_magic_rules()
+        for effect in EFFECTS:
+            for tier in (1, 3, 8):
+                with self.subTest(effect=effect.key, tier=tier):
+                    key = rules.working_key(effect.key, tier)
+                    self.assertEqual(
+                        rules.working_from_key(key), rules.working(effect.key, tier)
+                    )
+
+    def test_a_key_these_rules_do_not_build_is_a_key_error(self):
+        rules = example_true_magic_rules()
+        for key in (
+            "fire_missile",
+            "working:drench:1",
+            "working:scorch:0",
+            f"working:scorch:{MAX_DICE_COUNT + 1}",
+        ):
+            with self.subTest(key=key), self.assertRaises(KeyError):
+                rules.working_from_key(key)
+
+    def test_spell_for_answers_with_it(self):
+        rules = true_magic_rules()
+        key = example_true_magic_rules().working_key("omen", 4)
+        self.assertEqual(
+            spell_for(key, rules), example_true_magic_rules().working_from_key(key)
+        )
+
+
 class SpellForTest(TestCase):
     def test_a_working_key_round_trips(self):
         rules = true_magic_rules()
@@ -790,6 +822,17 @@ class SharesTest(TestCase):
                     self.assertLessEqual(max(shares) - min(shares), 1)
                     self.assertEqual(rules.gathered_after(mana, turns, turns), mana)
 
+    def test_turns_taken_outside_the_crafts_turns_are_refused(self):
+        rules = example_true_magic_rules()
+        self.assertEqual(rules.gathered_after(10, 6, 0), 0)
+        self.assertEqual(rules.gathered_after(10, 6, 6), 10)
+        for turns, turns_done in ((6, -1), (6, 7), (6, 12), (0, 0), (-2, -1)):
+            with (
+                self.subTest(turns=turns, turns_done=turns_done),
+                self.assertRaises(ValueError),
+            ):
+                rules.gathered_after(10, turns, turns_done)
+
     def test_the_turns_a_tier_takes(self):
         self.assertEqual(example_true_magic_rules().turns_for(1), 3)
         self.assertEqual(example_true_magic_rules().turns_for(4), 12)
@@ -993,3 +1036,156 @@ class WorkingLiftedBoundsTest(TestCase):
         bolt = get_spell("lightning_bolt")
         self.assertEqual(self.rules.tier_cap(caster), 0)
         self.assertEqual(self.rules.lifted_bounds_passed(caster, bolt), ())
+
+
+def craft_of(spell_key: str, *, push_mana: int = 0, turns_done: int = 0) -> CraftState:
+    """A craft of a working, some of its turns taken; nothing borrowed and
+    no figure named."""
+    return CraftState(
+        spell_key=spell_key,
+        push_mana=push_mana,
+        borrow=False,
+        turns_done=turns_done,
+        borrowed=0,
+        target_id=None,
+    )
+
+
+class GatheredTest(TestCase):
+    """The mana a craft has gathered is worked out from the craft, never
+    stored on it."""
+
+    def gathered_each_turn(self, rules: TrueMagicRules, tier: int, push_mana: int):
+        key = rules.working_key("scorch", tier)
+        return [
+            rules.gathered(craft_of(key, push_mana=push_mana, turns_done=turns_done))
+            for turns_done in range(rules.turns_for(tier) + 1)
+        ]
+
+    def test_it_rises_turn_by_turn_to_the_tier_and_the_push(self):
+        # Tier 2 takes 2 x 3 turns; pushed by 3 its whole mana is 5.
+        self.assertEqual(
+            self.gathered_each_turn(example_true_magic_rules(), 2, 3),
+            [0, 0, 1, 2, 3, 4, 5],
+        )
+
+    def test_an_unpushed_craft_gathers_its_tier(self):
+        # Tier 3 at 2 turns a tier: 3 mana over 6 turns.
+        self.assertEqual(
+            self.gathered_each_turn(example_true_magic_rules(turns_per_tier=2), 3, 0),
+            [0, 0, 1, 1, 2, 2, 3],
+        )
+
+    def test_it_is_gathered_after_for_the_crafts_own_working(self):
+        rules = example_true_magic_rules()
+        for tier in (1, 2, 5):
+            for push_mana in (0, 1, 4):
+                turns = rules.turns_for(tier)
+                for turns_done in range(turns + 1):
+                    with self.subTest(
+                        tier=tier, push_mana=push_mana, turns_done=turns_done
+                    ):
+                        craft = craft_of(
+                            rules.working_key("mend", tier),
+                            push_mana=push_mana,
+                            turns_done=turns_done,
+                        )
+                        self.assertEqual(
+                            rules.gathered(craft),
+                            rules.gathered_after(tier + push_mana, turns, turns_done),
+                        )
+
+    def test_what_was_borrowed_and_who_is_named_change_nothing(self):
+        rules = example_true_magic_rules()
+        key = rules.working_key("scorch", 2)
+        plain = craft_of(key, push_mana=1, turns_done=4)
+        borrowing = CraftState(
+            spell_key=key,
+            push_mana=1,
+            borrow=True,
+            turns_done=4,
+            borrowed=2,
+            target_id=7,
+        )
+        self.assertEqual(rules.gathered(borrowing), rules.gathered(plain))
+
+    def test_a_craft_of_no_working_these_rules_build_is_a_key_error(self):
+        rules = example_true_magic_rules()
+        for key in ("fire_missile", "working:drench:1", "working:scorch:0"):
+            with self.subTest(key=key), self.assertRaises(KeyError):
+                rules.gathered(craft_of(key, turns_done=1))
+
+    def test_a_craft_past_its_last_turn_or_before_its_first_is_refused(self):
+        rules = example_true_magic_rules()
+        key = rules.working_key("scorch", 2)
+        last_turn = rules.turns_for(2)
+        self.assertEqual(
+            rules.gathered(craft_of(key, push_mana=3, turns_done=last_turn)), 5
+        )
+        for turns_done in (-1, last_turn + 1, 2 * last_turn):
+            with self.subTest(turns_done=turns_done), self.assertRaises(ValueError):
+                rules.gathered(craft_of(key, push_mana=3, turns_done=turns_done))
+
+    def test_a_craft_that_pushes_less_than_nothing_is_refused(self):
+        rules = example_true_magic_rules()
+        key = rules.working_key("scorch", 2)
+        self.assertEqual(rules.gathered(craft_of(key, push_mana=0, turns_done=6)), 2)
+        for push_mana in (-1, -2, -5):
+            with self.subTest(push_mana=push_mana), self.assertRaises(ValueError):
+                rules.gathered(craft_of(key, push_mana=push_mana, turns_done=3))
+
+
+class GrantedTest(TestCase):
+    """A Game Master's grants are read through the rules, which refuse a
+    grant of a working they do not build."""
+
+    def test_a_listed_working_is_granted_and_another_is_not(self):
+        rules = true_magic_rules()
+        caster = knot_caster(2, granted_workings=["working:omen:2", "working:hush:1"])
+        self.assertTrue(rules.granted(caster, "working:omen:2"))
+        self.assertTrue(rules.granted(caster, "working:hush:1"))
+        # The grant is of a tier, not of the effect.
+        self.assertFalse(rules.granted(caster, "working:omen:3"))
+        self.assertFalse(rules.granted(caster, "working:scorch:2"))
+
+    def test_nothing_is_granted_to_a_figure_with_no_grants(self):
+        self.assertFalse(true_magic_rules().granted(knot_caster(2), "working:omen:2"))
+
+    def test_a_grant_these_rules_do_not_build_is_refused(self):
+        rules = true_magic_rules()
+        for bad_grant in (
+            "working:omn:2",
+            "working:omen:0",
+            "working:omen",
+            "fire_missile",
+            f"working:omen:{MAX_DICE_COUNT // 3 + 1}",
+        ):
+            caster = knot_caster(2, granted_workings=["working:omen:2", bad_grant])
+            with self.subTest(bad_grant=bad_grant):
+                # Whatever is asked, a listed key that is granted included.
+                with self.assertRaises(ValueError):
+                    rules.granted(caster, "working:omen:2")
+                with self.assertRaises(ValueError):
+                    rules.granted(caster, "working:scorch:1")
+
+    def test_asking_after_a_key_these_rules_do_not_build_is_refused(self):
+        rules = true_magic_rules()
+        caster = knot_caster(2, granted_workings=["working:omen:2"])
+        for asked in ("working:omn:2", "fire_missile", "working:omen:0"):
+            with self.subTest(asked=asked), self.assertRaises(ValueError):
+                rules.granted(caster, asked)
+
+    def test_with_no_true_magic_rules_every_grant_is_refused(self):
+        caster = knot_caster(2, granted_workings=["working:omen:2"])
+        for rules in (MagicRules(), MagicRules(channel=knot_channel_rules())):
+            with self.subTest(channel=rules.channel is not None):
+                with self.assertRaises(ValueError):
+                    rules.granted(caster, "working:omen:2")
+
+    def test_reading_a_grant_leaves_the_list_as_it_was(self):
+        rules = true_magic_rules()
+        grants = ["working:omen:2", "working:hush:1"]
+        caster = knot_caster(2, granted_workings=list(grants))
+        rules.granted(caster, "working:omen:2")
+        rules.granted(caster, "working:omen:4")
+        self.assertEqual(caster.granted_workings, grants)

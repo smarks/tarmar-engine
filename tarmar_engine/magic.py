@@ -114,7 +114,7 @@ from .state import FATIGUE_POOL as FATIGUE_POOL
 from .state import check_caster_pool
 
 if TYPE_CHECKING:
-    from .state import CombatantState
+    from .state import CombatantState, CraftState
 
 #: The attributes a roll in this module may be made against.
 MAGIC_ATTRIBUTES: frozenset[str] = frozenset({"INT", "WIS"})
@@ -1398,7 +1398,8 @@ class TrueMagicRules:
         """Build the working of an effect at a tier.
 
         Its level is its tier, so :func:`casting_mana` gives the tier and any
-        pushed mana; its casting roll is under :attr:`roll_attribute`; it
+        pushed mana (house reading ``working_mana_is_its_tier``); its casting
+        roll is under :attr:`roll_attribute`; it
         rolls :meth:`WorkingEffect.dice_at` for a rolled effect and nothing
         for a narrated one; and it never continues.
 
@@ -1420,6 +1421,17 @@ class TrueMagicRules:
             ignores_armour=effect.ignores_armour,
             heals=effect.kind is SpellEffectKind.HEALING,
         )
+
+    def working_from_key(self, key: str) -> Spell:
+        """Build the working a key names: :meth:`working` of the key's
+        :meth:`effect_and_tier`. The one way a working's key becomes its
+        spell.
+
+        Raises:
+            KeyError: for a key that is not a working these rules build.
+        """
+        effect, tier = self.effect_and_tier(key)
+        return self.working(effect.key, tier)
 
     def tier_cap(self, true_level: int) -> int:
         """The highest tier a caster at this level in the True skill may
@@ -1446,8 +1458,38 @@ class TrueMagicRules:
             mana: The working's whole mana, its tier and any pushed mana.
             turns: The craft turns the working takes (:meth:`turns_for`).
             turns_done: The craft turns taken so far.
+
+        Raises:
+            ValueError: for a working that takes no turns, or for turns
+                taken that are fewer than none or more than it takes.
         """
+        if turns < 1 or not 0 <= turns_done <= turns:
+            raise ValueError(
+                f"a craft of {turns} turns cannot have taken {turns_done} of them"
+            )
         return mana * turns_done // turns
+
+    def gathered(self, craft: CraftState) -> int:
+        """The mana a craft has gathered so far: :meth:`gathered_after` its
+        ``turns_done``, for the working its key names with its pushed mana.
+
+        The craft stores no running total; this is the one place it is
+        worked out.
+
+        Raises:
+            KeyError: for a craft whose key is not a working these rules
+                build.
+            ValueError: for a craft that pushes less than no mana, or whose
+                turns taken :meth:`gathered_after` refuses.
+        """
+        if craft.push_mana < 0:
+            raise ValueError(f"a craft cannot push {craft.push_mana} mana")
+        working = self.working_from_key(craft.spell_key)
+        return self.gathered_after(
+            casting_mana(working, craft.push_mana),
+            self.turns_for(working.level),
+            craft.turns_done,
+        )
 
     def drain(self, drained_mana: int, ending: CastingEnding | None) -> int:
         """What a True cast or a working drains from its caster.
@@ -1568,6 +1610,42 @@ class MagicRules:
         if self.true_magic is None:
             return 0
         return self.true_magic.tier_cap(self.true_level(caster))
+
+    def _builds_working(self, key: str) -> bool:
+        """Is the key a working the injected True Magic rules build? Never,
+        with none injected."""
+        if self.true_magic is None:
+            return False
+        try:
+            self.true_magic.effect_and_tier(key)
+        except KeyError:
+            return False
+        return True
+
+    def granted(self, caster: CombatantState, key: str) -> bool:
+        """Has a Game Master named this working for the caster?
+
+        Args:
+            caster: The figure, whose ``granted_workings`` the consuming game
+                filled from its record of the ruling.
+            key: The working's key.
+
+        Raises:
+            ValueError: for a key, asked or listed, that is not a working
+                these rules build, as :func:`bound_lifted` refuses a misspelt
+                bound: a bad grant would otherwise offer nothing, without a
+                word.
+        """
+        unbuilt = sorted(
+            listed_key
+            for listed_key in {key, *caster.granted_workings}
+            if not self._builds_working(listed_key)
+        )
+        if unbuilt:
+            raise ValueError(
+                f"{caster.name}: the True Magic rules build no working called {unbuilt}"
+            )
+        return key in caster.granted_workings
 
     def cast_kind(self, spell: Spell, *, true_cast: bool = False) -> str | None:
         """The kind of magic a casting names for its Channel: the True kind
@@ -1776,5 +1854,4 @@ def spell_for(key: str, rules: MagicRules | None) -> Spell:
         return get_spell(key)
     if rules is None or rules.true_magic is None:
         raise KeyError(f"{key!r} is a working, and no True Magic rules are injected")
-    effect, tier = rules.true_magic.effect_and_tier(key)
-    return rules.true_magic.working(effect.key, tier)
+    return rules.true_magic.working_from_key(key)
