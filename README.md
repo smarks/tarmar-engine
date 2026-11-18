@@ -1228,6 +1228,16 @@ The readings the engine takes on the page's silences are in
 `ai_crafts_up_to_its_cap`, `ai_crafts_what_it_can_survive`), each marked
 for Spencer.
 
+## The schools page without Counter or True Magic (v0.9.23)
+
+The vendored `spec/magic/schools-of-magic.md` no longer lists Counter or
+Arcane/True Magic among the less common schools, and a line below that list
+points to the True Magic page instead (tarmar-engine #81, following
+smarks/tarmar-studio#208). Protection's Counter rungs are unchanged. It is a
+spec-only release: no code, catalog entry or event changes, and the drift
+guards read only the spell lists and the Elemental line, which stay as they
+were.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

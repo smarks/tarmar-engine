@@ -10,9 +10,9 @@
 ## Less Common Schools (71-100%)
 
 - Weather
-- Counter
-- Arcane/True Magic
 - Control
+
+True Magic is not on this table: it is learned by invitation. See [True Magic](../true-magic).
 
 ## Spell Lists
 
