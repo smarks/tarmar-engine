@@ -593,7 +593,8 @@ HOUSE_RULINGS += (
         "first: the second is logged and starts nothing, so one spell at a "
         "time feeds on a combatant.",
         1,
-        "tarmar_engine/engine.py _begin_runaway",
+        "tarmar_engine/engine.py _begin_runaway (_roll_and_resolve, "
+        "_push_control_roll, _debt_roll, _lose_working, anchor_runaway)",
         RULING,
         "#825 (tarmar-engine #30)",
     ),
@@ -974,6 +975,85 @@ HOUSE_RULINGS += (
         "fixed when the craft begins",
         "tarmar_engine/engine.py _begin_craft, _settle_craft_choice; "
         "tarmar_engine/state.py CraftState",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "craft_hit_is_damage_that_lands",
+        "A hit on a crafting caster is any damage that takes at least a "
+        "point from them after armour: a weapon's, a bare-handed blow's or a "
+        "spell's. Each forces its own roll to keep the working, made once "
+        "the damage is applied, by a caster it has left active. A blow the "
+        "armour stops entirely forces none, and neither does a cost the "
+        "caster pays from their own pool (a debt band's, a Runaway's feed, a "
+        "drain), which is no damage. The alternative readings count a "
+        "stopped blow, or a cost.",
+        "damage past the armour",
+        "tarmar_engine/engine.py apply_damage (resolve_attack, _resolve_cast), "
+        "_interruption_roll (apply_damage)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "interruption_takes_the_injury_band",
+        "The roll to keep a working takes its caster's injury band, by the "
+        "one reading every roll a figure makes as its action takes it, and "
+        "reads the band after the hit's damage is applied, so the blow that "
+        "forces the roll can itself bring the band on. An off-balance "
+        "penalty never reaches the roll. A figure is put off-balance only by "
+        "its own fumble, which a crafting caster makes none of, or by a "
+        "grapple that takes hold on a natural 20, which ends the craft; and "
+        "a penalty owed as a craft begins is spent by the action that begins "
+        "it, which rolls nothing.",
+        "injury band, read after the hit",
+        "tarmar_engine/engine.py _interruption_roll (apply_damage)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "working_runaway_costs_the_mana_gathered",
+        "A working that runs away as a hit breaks its craft starts a Runaway "
+        "whose original cost is the mana the craft had gathered by then, as "
+        "a cast's Runaway feeds on what the cast took: not the working's "
+        "whole mana, and not only the part of it borrowed. It feeds, is "
+        "kept and is anchored as any Runaway is; anchored, it simply stops, "
+        "a working being no continuing spell. A working whose craft has "
+        "gathered nothing has nothing to run away with: it is lost and "
+        "starts no Runaway, even on a band or a total that is one, and its "
+        "event says it does not run away. With no Runaway rules injected a "
+        "working that runs away is flagged and nothing starts.",
+        "mana gathered",
+        "tarmar_engine/engine.py _interruption_roll (apply_damage), "
+        "_lose_working (_settle_craft_choice, craft_working, "
+        "_interruption_roll, _fall_unconscious, _establish_grapple), "
+        "_begin_runaway (_roll_and_resolve, _push_control_roll, _debt_roll, "
+        "_lose_working, anchor_runaway)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "what_else_breaks_a_craft",
+        "Three things besides a hit can reach a crafting caster. A grapple "
+        "that takes hold ends the working with no roll, since a held figure "
+        "casts only at a Spell Mastery a working has none of. An enemy "
+        "entering hand-to-hand with a caster who has a weapon in hand ends "
+        "it with no roll, at the caster's next craft action, where the one "
+        "guard a cast answers to refuses it; a caster with empty hands "
+        "crafts on, and the blow that opened the hand-to-hand forces the "
+        "usual roll if it lands. A fall does not end it: a prone caster's "
+        "craft action goes on. Unconsciousness ends it, which is no choice. "
+        "The alternative reading for the grapple and the hand-to-hand is "
+        "that they force the roll a hit does.",
+        {
+            "grapple": "grappled",
+            "hand-to-hand, weapon in hand": "blocked",
+            "fall": None,
+            "unconsciousness": "unconscious",
+        },
+        "tarmar_engine/engine.py _establish_grapple (attempt_grapple), "
+        "craft_working, _cast_blocked (cast_spell, craft_working, "
+        "_begin_craft), _fall_unconscious (check_unconsciousness, "
+        "_feed_runaway)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),

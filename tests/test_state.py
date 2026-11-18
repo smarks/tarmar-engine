@@ -300,7 +300,7 @@ class TrueMagicSnapshotTest(TestCase):
 
     def test_the_choice_lasts_one_turn_and_the_craft_and_grants_persist(self):
         combatant = make_combatant(1)
-        craft = CraftState("working:mend:2", 1, False, 1, 0, 1)
+        craft = CraftState("working:salve:2", 1, False, 1, 0, 1)
         combatant.crafting = craft
         combatant.granted_workings = ["working:omen:3"]
         combatant.chosen_true_cast = True
@@ -322,7 +322,7 @@ class TrueMagicSnapshotTest(TestCase):
         before = state.to_dict()
         holder = state.by_id(1)
         holder.granted_workings = ["working:omen:3"]
-        holder.crafting = CraftState("working:mend:2", 1, False, 1, 0, 1)
+        holder.crafting = CraftState("working:salve:2", 1, False, 1, 0, 1)
         holder.chosen_true_cast = True
         while_set = state.to_dict()["combatants"][0]
         for name in TRUE_MAGIC_FIELDS:

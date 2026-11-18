@@ -1006,7 +1006,7 @@ class TrueMagicRulingsTest(TestCase):
                     rules.tier_cap(knot_caster(2, lifted_magic_bounds=[bound])), cap
                 )
         # Tier 5 is past the cap and, at 5 mana, within Channel.
-        past_the_cap = example_true_magic_rules().working("mend", cap + 1)
+        past_the_cap = example_true_magic_rules().working("salve", cap + 1)
         self.assertEqual(rules.lifted_bounds_passed(lifted, past_the_cap), (CHANNEL,))
 
     def test_grant_stands_until_withdrawn(self):
@@ -1177,7 +1177,7 @@ class TrueMagicRulingsTest(TestCase):
         }
         for situation, (state, begins) in situations.items():
             with self.subTest(situation=situation):
-                caster = choose_craft(state, "mend", 1)
+                caster = choose_craft(state, "salve", 1)
                 turn_runner, events = runner_on(state, (), CRAFT_PROFILE)
                 # A cast of a spell the caster knows is refused in the same
                 # places, by the same guard.
@@ -1252,6 +1252,267 @@ class TrueMagicRulingsTest(TestCase):
                     (standing.push_mana, standing.borrow, standing.turns_done),
                     (1, False, 1),
                 )
+
+    def test_craft_hit_is_damage_that_lands(self):
+        from tarmar_engine.state import BODY_POOL, FATIGUE_POOL, WeaponState
+
+        from .test_cast_pieces import runner_on
+        from .test_craft_broken import (
+            BROKEN_PROFILE,
+            KEEPS,
+            beside,
+            concentration_rolls,
+            hit,
+        )
+
+        self.assertEqual(
+            ruling("craft_hit_is_damage_that_lands").value, "damage past the armour"
+        )
+        # A weapon's blow, a bare-handed one and a spell that land each
+        # force the roll, whichever pool the damage comes off: Fire Missile
+        # is aimed and takes Fatigue, Wound is not and takes Body alone.
+        spell_dice = {
+            "fire_missile": [[2, 2, 2], [2, 2, 2], [4]],
+            "wound": [[2, 2, 2], [4]],
+        }
+        for blow in ("weapon", "bare hands", *spell_dice):
+            with self.subTest(blow=blow):
+                state = beside()
+                caster, enemy = state.by_id(1), state.by_id(2)
+                fatigue, body = caster.fatigue, caster.body
+                if blow in spell_dice:
+                    enemy.spells = [blow]
+                    enemy.spell_skill_levels = {blow: 2}
+                    enemy.mana = 5
+                    enemy.chosen_spell = blow
+                    enemy.chosen_target = caster.combatant_id
+                    turn_runner, events = runner_on(
+                        state, [*spell_dice[blow], KEEPS], BROKEN_PROFILE
+                    )
+                    turn_runner.cast_spell(enemy)
+                    # The one spell lands on Body and leaves Fatigue whole;
+                    # the other, the reverse.
+                    on_body = spells.get_spell(blow).damage_pool == BODY_POOL
+                    self.assertEqual(on_body, blow == "wound")
+                    self.assertEqual(caster.fatigue, fatigue - (0 if on_body else 4))
+                    self.assertEqual(caster.body, body - (4 if on_body else 0))
+                else:
+                    if blow == "bare hands":
+                        enemy.weapon = WeaponState()
+                    turn_runner, events = runner_on(
+                        state, [[19], [6, 6], KEEPS], BROKEN_PROFILE
+                    )
+                    turn_runner.resolve_attack(enemy, caster, ranged=False)
+                (damage,) = [
+                    event for event in events if event["event_type"] == "damage"
+                ]
+                self.assertGreater(damage["payload"]["net"], 0)
+                (roll,) = concentration_rolls(events)
+                # Made once the damage is applied.
+                self.assertGreater(roll["sequence"], damage["sequence"])
+        # A single point past the armour is a hit; a blow stopped entirely
+        # is none.
+        for net, rolls in ((1, 1), (0, 0)):
+            with self.subTest(net=net):
+                events, _turn_runner = hit(beside(), net=net)
+                self.assertEqual(len(concentration_rolls(events)), rolls)
+        # A hit that leaves the caster down forces none: the craft is
+        # already lost to the fall.
+        state = beside(fatigue=1)
+        events, _turn_runner = hit(state, net=1)
+        self.assertFalse(state.by_id(1).conscious)
+        self.assertEqual(concentration_rolls(events), [])
+        # A cost the caster pays from a pool of their own is no damage.
+        state = beside()
+        turn_runner, events = runner_on(state, (), BROKEN_PROFILE)
+        turn_runner.apply_pool_cost(state.by_id(1), FATIGUE_POOL, 1, "running")
+        self.assertEqual(concentration_rolls(events), [])
+
+    def test_interruption_takes_the_injury_band(self):
+        from .test_cast_pieces import runner_on
+        from .test_craft import STEADY, choose_craft, crafter, steady_craft
+        from .test_craft_broken import (
+            BROKEN_PROFILE,
+            HOLDS_OUTRIGHT,
+            KEEPS,
+            beside,
+            concentration_rolls,
+            grapple,
+            hit,
+        )
+        from .test_engine import events_of_type
+
+        self.assertEqual(
+            ruling("interruption_takes_the_injury_band").value,
+            "injury band, read after the hit",
+        )
+        # Unhurt before the hit, and in the band once its damage is applied:
+        # the roll takes the band the hit brought on.
+        state = steady_craft(fatigue=22)
+        caster = state.by_id(1)
+        self.assertEqual(BROKEN_PROFILE.reactions.injury_penalty(caster), 0)
+        unhurt_events, _turn_runner = hit(steady_craft(), [KEEPS])
+        events, _turn_runner = hit(state, [KEEPS])
+        band = BROKEN_PROFILE.reactions.injury_penalty(caster)
+        self.assertGreater(band, 0)
+        (unhurt_roll,) = concentration_rolls(unhurt_events)
+        (roll,) = concentration_rolls(events)
+        self.assertEqual(
+            roll["payload"]["target_number"],
+            unhurt_roll["payload"]["target_number"] - band,
+        )
+        # The one thing that puts a crafting caster off-balance, a grapple
+        # that takes hold on a natural 20, ends the craft: no roll is left
+        # for the penalty to reach.
+        state = beside()
+        caster = state.by_id(1)
+        grapple(state, [HOLDS_OUTRIGHT])
+        self.assertTrue(caster.off_balance)
+        self.assertIsNone(caster.crafting)
+        # A penalty owed as a craft begins is spent by the action that
+        # begins it, which rolls nothing.
+        state = crafter(off_balance=True)
+        caster = choose_craft(state, **STEADY)
+        turn_runner, events = runner_on(state, (), BROKEN_PROFILE)
+        turn_runner.execute_action(caster)
+        self.assertIsNotNone(caster.crafting)
+        self.assertFalse(caster.off_balance)
+        self.assertEqual(events_of_type(events, "roll"), [])
+
+    def test_working_runaway_costs_the_mana_gathered(self):
+        from tarmar_engine.state import RunawayState
+
+        from .test_craft import (
+            STEADY,
+            borrowed_craft,
+            choose_craft,
+            craft,
+            craft_true_magic,
+            crafter_beside,
+            losses,
+            standing_craft,
+            steady_craft,
+        )
+        from .test_craft_broken import (
+            DEBT_HOLDS,
+            RUNAWAY_PROFILE,
+            STEADY_KEY,
+            UNRAVELS,
+            hit,
+            interruptions,
+        )
+        from .test_runaway import anchor
+        from .test_true_magic import UNRAVEL
+
+        self.assertEqual(
+            ruling("working_runaway_costs_the_mana_gathered").value, "mana gathered"
+        )
+        whole_mana = STEADY["tier"] + STEADY["push"]
+        for turns in (2, 3):
+            with self.subTest(turns=turns):
+                state = steady_craft(turns)
+                caster = state.by_id(1)
+                gathered = craft_true_magic().gathered(standing_craft(caster))
+                self.assertLess(gathered, whole_mana)
+                hit(state, [UNRAVELS], RUNAWAY_PROFILE)
+                self.assertEqual(
+                    caster.runaway,
+                    RunawayState(spell_key=STEADY_KEY, original_cost=gathered),
+                )
+        # Borrowed mana is gathered mana: the Runaway of a craft that paid
+        # one share and borrowed one feeds on both.
+        state = borrowed_craft()
+        caster = state.by_id(1)
+        hit(state, [UNRAVELS, DEBT_HOLDS], RUNAWAY_PROFILE)
+        self.assertEqual(
+            caster.runaway, RunawayState(spell_key=STEADY_KEY, original_cost=2)
+        )
+        # Anchored, it simply stops: a working is no continuing spell.
+        anchor(state, 1, [[2, 2]], RUNAWAY_PROFILE)
+        self.assertIsNone(caster.runaway)
+        self.assertEqual(caster.active_spells, [])
+        # A craft that has gathered nothing has nothing to run away with:
+        # its working is lost on the same band, and no Runaway starts.
+        state = crafter_beside(wisdom=6)
+        caster = choose_craft(state, "scorch", 1)
+        craft(state)
+        self.assertEqual(craft_true_magic().gathered(standing_craft(caster)), 0)
+        events, _turn_runner = hit(state, [UNRAVELS], RUNAWAY_PROFILE)
+        (named,) = interruptions(events)
+        self.assertEqual((named["band"], named["runaway"]), (UNRAVEL.key, False))
+        self.assertEqual([lost["ending"] for lost in losses(events)], ["interrupted"])
+        self.assertIsNone(caster.runaway)
+        self.assertIsNone(caster.crafting)
+
+    def test_what_else_breaks_a_craft(self):
+        from tarmar_engine.magic import CastingEnding
+        from tarmar_engine.state import FATIGUE_POOL, WeaponState
+
+        from .test_cast_pieces import runner_on
+        from .test_craft import craft, craft_actions, losses, standing_craft
+        from .test_craft_broken import (
+            BROKEN_PROFILE,
+            HOLDS,
+            SLIPS,
+            beside,
+            concentration_rolls,
+            grapple,
+            knock_prone,
+        )
+
+        value = ruling("what_else_breaks_a_craft").value
+        self.assertEqual(
+            value,
+            {
+                "grapple": CastingEnding.GRAPPLED.value,
+                "hand-to-hand, weapon in hand": CastingEnding.BLOCKED.value,
+                "fall": None,
+                "unconsciousness": CastingEnding.UNCONSCIOUS.value,
+            },
+        )
+
+        def endings(events) -> list[str]:
+            return [lost["ending"] for lost in losses(events)]
+
+        # A grapple that takes hold ends the working, and no roll is made
+        # to keep it.
+        state = beside()
+        events = grapple(state, [HOLDS])
+        self.assertEqual(endings(events), [value["grapple"]])
+        self.assertEqual(concentration_rolls(events), [])
+        # An enemy in hand-to-hand with a caster who has a weapon in hand:
+        # the working is lost at the caster's next craft action, to the
+        # guard a cast answers to, and again no roll is made.
+        state = beside()
+        self.assertEqual(endings(grapple(state, [SLIPS])), [])
+        turn_runner, events = runner_on(state, (), BROKEN_PROFILE)
+        self.assertTrue(
+            turn_runner._cast_blocked(state.by_id(1), spells.get_spell("heal"))
+        )
+        events = craft(state, BROKEN_PROFILE)
+        self.assertEqual(endings(events), [value["hand-to-hand, weapon in hand"]])
+        self.assertEqual(concentration_rolls(events), [])
+        # With empty hands the caster crafts on.
+        state = beside(weapon=WeaponState())
+        grapple(state, [SLIPS])
+        self.assertEqual(state.by_id(1).hth_with, [2])
+        self.assertEqual(endings(craft(state, BROKEN_PROFILE)), [])
+        self.assertEqual(standing_craft(state.by_id(1)).turns_done, 3)
+        # A fall ends nothing: a caster knocked prone keeps the craft, and
+        # their craft action goes on.
+        state = beside()
+        self.assertIsNone(value["fall"])
+        self.assertEqual(endings(knock_prone(state)), [])
+        self.assertIsNotNone(state.by_id(1).crafting)
+        events = craft(state, BROKEN_PROFILE)
+        self.assertEqual(endings(events), [])
+        self.assertEqual(len(craft_actions(events)), 1)
+        # Unconsciousness ends it.
+        state = beside()
+        turn_runner, events = runner_on(state, (), BROKEN_PROFILE)
+        turn_runner.apply_pool_cost(state.by_id(1), FATIGUE_POOL, 40, "running")
+        self.assertEqual(endings(events), [value["unconsciousness"]])
+        self.assertEqual(concentration_rolls(events), [])
 
     #: The list methods that change a list in place.
     LIST_MUTATORS = frozenset(

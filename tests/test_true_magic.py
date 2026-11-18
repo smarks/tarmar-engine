@@ -4,7 +4,7 @@ will ask.
 
 Every number and name here is invented, as in ``test_magic`` and
 ``test_channel``: a kind of magic called "knot" deriving from a general skill
-called "knotwork", effects called "scorch", "mend", "omen" and "hush", a 2d6
+called "knotwork", effects called "scorch", "salve", "omen" and "hush", a 2d6
 interruption roll against WIS with bands named "snag" and "unravel", and
 coefficients that are plainly not the rulebook's. The tests check the
 engine's *structure*: what the rules refuse, the spell a working is built as,
@@ -76,14 +76,14 @@ SCORCH = WorkingEffect(
     targeted=True,
     ignores_armour=True,
 )
-MEND = WorkingEffect(
-    key="mend", label="Mend", kind=SpellEffectKind.HEALING, dice_per_tier="1d8"
+SALVE = WorkingEffect(
+    key="salve", label="Salve", kind=SpellEffectKind.HEALING, dice_per_tier="1d8"
 )
 OMEN = WorkingEffect(
     key="omen", label="Omen", kind=None, dice_per_tier="3d4-1", needs_grant=True
 )
 HUSH = WorkingEffect(key="hush", label="Hush", kind=None, dice_per_tier=None)
-EFFECTS = (SCORCH, MEND, OMEN, HUSH)
+EFFECTS = (SCORCH, SALVE, OMEN, HUSH)
 
 SCHOOL = "Loomcraft"
 
@@ -151,7 +151,7 @@ class WorkingEffectValidationTest(TestCase):
                 replace(SCORCH, key=key)
 
     def test_a_rolled_effect_names_its_dice(self):
-        for effect in (SCORCH, MEND):
+        for effect in (SCORCH, SALVE):
             with self.subTest(effect=effect.key), self.assertRaises(ValueError):
                 replace(effect, dice_per_tier=None)
 
@@ -201,7 +201,7 @@ class WorkingDiceTest(TestCase):
         self.assertEqual(SCORCH.dice_at(1), "1d4+1")
         self.assertEqual(SCORCH.dice_at(3), "3d4+3")
         self.assertEqual(OMEN.dice_at(2), "6d4-2")
-        self.assertEqual(MEND.dice_at(4), "4d8")
+        self.assertEqual(SALVE.dice_at(4), "4d8")
 
     def test_an_effect_with_no_dice_rolls_none_at_any_tier(self):
         self.assertIsNone(HUSH.dice_at(1))
@@ -227,11 +227,11 @@ class HighestBuildableTierTest(TestCase):
     """An effect's dice bound the tiers a working of it can be built at."""
 
     HEAVY = replace(SCORCH, dice_per_tier="60d4")
-    DICED_EFFECTS = (SCORCH, MEND, OMEN, HEAVY)
+    DICED_EFFECTS = (SCORCH, SALVE, OMEN, HEAVY)
 
     def test_it_is_the_last_tier_whose_dice_count_is_in_range(self):
         self.assertEqual(SCORCH.highest_buildable_tier(), MAX_DICE_COUNT)
-        self.assertEqual(MEND.highest_buildable_tier(), MAX_DICE_COUNT)
+        self.assertEqual(SALVE.highest_buildable_tier(), MAX_DICE_COUNT)
         self.assertEqual(OMEN.highest_buildable_tier(), MAX_DICE_COUNT // 3)
         self.assertEqual(self.HEAVY.highest_buildable_tier(), 1)
 
@@ -297,7 +297,7 @@ class TrueMagicRulesValidationTest(TestCase):
             example_true_magic_rules(effects=())
 
     def test_effect_keys_are_unique(self):
-        twin = replace(MEND, key=SCORCH.key)
+        twin = replace(SALVE, key=SCORCH.key)
         with self.assertRaises(ValueError):
             example_true_magic_rules(effects=(SCORCH, twin))
 
@@ -388,8 +388,8 @@ class WorkingKeyTest(TestCase):
         rules = example_true_magic_rules()
         self.assertEqual(rules.working_key("scorch", 3), "working:scorch:3")
         self.assertEqual(
-            rules.working_key("mend", 12),
-            WORKING_KEY_SEPARATOR.join((WORKING_KEY_PREFIX, "mend", "12")),
+            rules.working_key("salve", 12),
+            WORKING_KEY_SEPARATOR.join((WORKING_KEY_PREFIX, "salve", "12")),
         )
 
     def test_a_key_for_an_unknown_effect_or_a_tier_below_one_is_refused(self):
@@ -482,8 +482,8 @@ class BuiltWorkingTest(TestCase):
         self.assertEqual(spell_effect_kind(working), SpellEffectKind.DAMAGE)
 
     def test_a_healing_working(self):
-        working = example_true_magic_rules().working("mend", 2)
-        self.assertEqual(working.name, "Mend (tier 2)")
+        working = example_true_magic_rules().working("salve", 2)
+        self.assertEqual(working.name, "Salve (tier 2)")
         self.assertEqual(working.damage, "2d8")
         self.assertTrue(working.heals)
         self.assertEqual(working.damage_pool, FATIGUE_POOL)
@@ -508,7 +508,7 @@ class BuiltWorkingTest(TestCase):
         self.assertEqual(casting_mana(working, 3), 7)
 
     def test_a_working_follows_the_injected_roll_attribute(self):
-        working = example_true_magic_rules(roll_attribute="INT").working("mend", 1)
+        working = example_true_magic_rules(roll_attribute="INT").working("salve", 1)
         self.assertEqual(working.attribute, "INT")
 
     def test_an_unknown_effect_or_a_tier_below_one_is_refused(self):
@@ -994,13 +994,13 @@ class CastKindTest(TestCase):
 
     def test_a_working_names_the_true_kind_with_or_without_the_flag(self):
         rules = true_magic_rules()
-        working = example_true_magic_rules().working("mend", 2)
+        working = example_true_magic_rules().working("salve", 2)
         self.assertEqual(rules.cast_kind(working), KNOT_KIND)
         self.assertEqual(rules.cast_kind(working, true_cast=True), KNOT_KIND)
 
     def test_a_true_cast_with_no_true_magic_rules_is_refused(self):
         rules = MagicRules(channel=knot_channel_rules())
-        working = example_true_magic_rules().working("mend", 2)
+        working = example_true_magic_rules().working("salve", 2)
         with self.assertRaises(ValueError):
             rules.cast_kind(get_spell("fire_missile"), true_cast=True)
         with self.assertRaises(ValueError):
@@ -1152,7 +1152,7 @@ class GatheredTest(TestCase):
                         tier=tier, push_mana=push_mana, turns_done=turns_done
                     ):
                         craft = craft_of(
-                            rules.working_key("mend", tier),
+                            rules.working_key("salve", tier),
                             push_mana=push_mana,
                             turns_done=turns_done,
                         )

@@ -153,7 +153,7 @@ class CastBlockedTest(TestCase):
 
     def test_a_spell_the_caster_has_no_mastery_of_reads_at_level_one(self):
         # A working is no catalog spell and has no mastery entry.
-        working = example_true_magic_rules().working("mend", 2)
+        working = example_true_magic_rules().working("salve", 2)
         for state in (held(adjacent_pair()), hand_to_hand(adjacent_pair())):
             refused, events = self.blocked(state, working)
             self.assertTrue(refused)

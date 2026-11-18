@@ -45,7 +45,9 @@ whatever the two figures' DEX order (house reading
 (tarmar-engine #77) a caster with a level in the True skill may craft a
 working over several turns, a phase-5 action each
 (:meth:`TurnRunner.craft_working`); choosing any other action in phase 3
-abandons the craft.
+abandons the craft, damage that lands on the crafter forces a roll to keep
+it (:meth:`TurnRunner._interruption_roll`), and unconsciousness or a grapple
+that takes hold ends it.
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -56,7 +58,7 @@ and renews only one known at 2 or better (``CombatantState.spell_mastery``).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -82,6 +84,7 @@ from .magic import (
     casting_success_ceiling,
     failed_band,
     is_working_key,
+    runaway_band,
     spell_effect_kind,
     spell_for,
 )
@@ -117,6 +120,10 @@ CRAFT_LOSS_REASONS: dict[CastingEnding, str] = {
     CastingEnding.ABANDONED: "abandoned for another action",
     CastingEnding.BLOCKED: "they may not craft where they are",
     CastingEnding.UNPAID: "their mana cannot pay its share",
+    CastingEnding.INTERRUPTED: "a hit broke their concentration",
+    CastingEnding.UNCONSCIOUS: "they fell unconscious",
+    CastingEnding.GRAPPLED: "they are held in a grapple",
+    CastingEnding.COUNTERED: "countered",
 }
 
 # turn-sequence.md phase table: number -> name. Drift-guarded against the
@@ -1148,8 +1155,8 @@ class TurnRunner:
         #43): the attack roll (both shots of a double shot) and its critical
         confirm roll, the grapple attempt, the hand-to-hand disengage and
         Struggle Free, drawing a dagger, a targeted spell's aim, the casting
-        roll, the Control Roll, the debt roll, the anchor roll and the
-        caster's side of a counter contest.
+        roll, the Control Roll, the debt roll, the anchor roll, the
+        caster's side of a counter contest and a crafter's interruption roll.
         """
         return self.profile.reactions.injury_penalty(
             combatant
@@ -1975,8 +1982,9 @@ class TurnRunner:
         )
         die = record.faces[0]
         if die == combat.DIE_FACES:
-            self._establish_grapple(attacker, defender)
-            defender.off_balance = True
+            # The hold is reported before it is established, so whatever
+            # taking hold brings about (a craft lost, tarmar-engine #77) is
+            # logged after the hold that caused it.
             self.emit(
                 "action",
                 f"{attacker.name} grapples {defender.name} with a natural 20 "
@@ -1988,6 +1996,8 @@ class TurnRunner:
                     "attack_roll": attack_sequence,
                 },
             )
+            self._establish_grapple(attacker, defender)
+            defender.off_balance = True
             return
         if die == 1:
             fumble_record, _sequence = self.roll(
@@ -2009,7 +2019,7 @@ class TurnRunner:
             return
         hit = die + bonus >= numbers.target_number
         if hit:
-            self._establish_grapple(attacker, defender)
+            # Reported before it is established, as the natural 20 is.
             self.emit(
                 "action",
                 f"{attacker.name} grapples and holds {defender.name}",
@@ -2020,6 +2030,7 @@ class TurnRunner:
                     "attack_roll": attack_sequence,
                 },
             )
+            self._establish_grapple(attacker, defender)
         else:
             self.emit(
                 "action",
@@ -2071,8 +2082,17 @@ class TurnRunner:
     def _establish_grapple(
         self, attacker: CombatantState, defender: CombatantState
     ) -> None:
+        """A grapple takes hold: the attacker holds the defender from now
+        until the grapple ends.
+
+        A craft standing on the figure held ends here, with no roll (house
+        reading ``what_else_breaks_a_craft``): the working is lost
+        (:meth:`_lose_working`, :attr:`~.magic.CastingEnding.GRAPPLED`).
+        """
         attacker.grappling = defender.combatant_id
         defender.grappled_by = attacker.combatant_id
+        if defender.crafting is not None:
+            self._lose_working(defender, CastingEnding.GRAPPLED)
 
     def _end_grapple(
         self,
@@ -2668,6 +2688,12 @@ class TurnRunner:
             actor=caster.name,
         )
 
+    def _names_of(self, combatant_ids: Iterable[int]) -> str:
+        """The named combatants as a log line lists them, in the order given."""
+        return ", ".join(
+            self.state.by_id(combatant_id).name for combatant_id in combatant_ids
+        )
+
     def _cast_blocked(self, caster: CombatantState, spell: Spell) -> bool:
         """Is the caster where it may not cast this spell? The refusal is
         logged here.
@@ -2786,10 +2812,7 @@ class TurnRunner:
         )
         if contest is not None:
             cost_note = self._pay_cast(caster, spell, push_mana, shortfall)
-            defenders = ", ".join(
-                self.state.by_id(defender_id).name
-                for defender_id in contest.defender_ids
-            )
+            defenders = self._names_of(contest.defender_ids)
             self.emit(
                 "status",
                 f"{caster.name}'s {spell.name} is countered by {defenders}: "
@@ -3177,12 +3200,119 @@ class TurnRunner:
             )
         return craft
 
+    def _interruption_roll(self, combatant: CombatantState, chain: list[int]) -> None:
+        """The roll a crafting combatant makes to keep their working when
+        damage lands on them.
+
+        Roll-under, with the injected interruption rules' dice, against
+        their attribute, less their penalty per point of mana the craft has
+        gathered, and less the injury band as it stands after the hit
+        (house reading ``interruption_takes_the_injury_band``;
+        :meth:`_action_roll_penalty`). A natural total on the injected
+        automatic list is a Runaway whatever the target; any other failure's
+        margin picks its band (:func:`~.magic.failed_band`). The roll is
+        logged, then a ``status`` event names it (``craft_interrupted``, the
+        working, the mana gathered, the roll's target, natural total and
+        margin, whether it held, the band, and whether the working runs
+        away).
+        A roll that holds leaves the craft standing. Every band loses the
+        working (:meth:`_lose_working`,
+        :attr:`~.magic.CastingEnding.INTERRUPTED`), and a Runaway band
+        starts a Runaway of it as well, unless the craft has gathered
+        nothing: such a working is lost and no more, and its event says it
+        does not run away (house reading
+        ``working_runaway_costs_the_mana_gathered``).
+
+        Args:
+            combatant: The crafting combatant the damage landed on.
+            chain: The roll sequence numbers of the hit. With this roll's
+                own after them, they are what the lost working's drain is
+                cited against.
+
+        Raises:
+            ValueError: with no True Magic rules injected, or for a
+                combatant with no craft standing.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
+        """
+        true_magic = self._true_magic_rules(combatant)
+        craft = combatant.crafting
+        if craft is None:
+            raise ValueError(f"{combatant.name} has no craft to be interrupted")
+        interruption = true_magic.interruption
+        working = true_magic.working_from_key(craft.spell_key)
+        gathered = true_magic.gathered(craft)
+        target = (
+            attribute_score(combatant, interruption.roll.attribute)
+            - interruption.penalty_per_mana * gathered
+            - self._action_roll_penalty(combatant)
+        )
+        concentration = self._roll_under(
+            interruption.roll.dice,
+            purpose="concentration",
+            target=target,
+            automatic_totals=interruption.automatic_runaway_totals,
+        )
+        band = failed_band(
+            interruption.failure_bands,
+            concentration.margin,
+            automatic=concentration.automatic,
+            automatic_band=runaway_band(interruption.failure_bands),
+        )
+        held = band is None
+        # A working with nothing gathered has nothing to run away with: it
+        # is lost, and starts no Runaway, whatever its band (house reading
+        # ``working_runaway_costs_the_mana_gathered``).
+        runaway = band is not None and band.is_runaway and gathered > 0
+        concentration_sequence = self.emit_roll(
+            concentration.record,
+            actor=combatant.name,
+            versus=interruption.roll.attribute,
+            roll_under=True,
+            outcome="held" if band is None else band.label,
+        )
+        if band is None:
+            message = (
+                f"{combatant.name} keeps their craft of {working.name} through the hit"
+            )
+        else:
+            message = (
+                f"{combatant.name}'s craft of {working.name} is broken by "
+                f"the hit: {band.label}"
+            )
+        self.emit(
+            "status",
+            message,
+            actor=combatant.name,
+            payload={
+                "craft_interrupted": True,
+                "spell": working.key,
+                "gathered": gathered,
+                "target": target,
+                "natural": concentration.natural_total,
+                "margin": concentration.margin,
+                "held": held,
+                "band": None if band is None else band.key,
+                "runaway": runaway,
+            },
+        )
+        if band is not None:
+            self._lose_working(
+                combatant,
+                CastingEnding.INTERRUPTED,
+                chain=[*chain, concentration_sequence],
+                runaway=runaway,
+            )
+
     def _lose_working(
         self,
         combatant: CombatantState,
         ending: CastingEnding,
         *,
         craft: CraftState | None = None,
+        chain: list[int] | None = None,
+        runaway: bool = False,
+        defenders: tuple[int, ...] = (),
     ) -> None:
         """A craft ends before its working goes off: the one way it does.
 
@@ -3191,12 +3321,16 @@ class TurnRunner:
         combatant joins ``_crafts_ended``, so whatever follows runs with no
         craft standing and cannot lose the working twice; the ``status``
         event says so (``craft_lost``, how it ended, the mana spent, which
-        is what the craft had gathered, and the drain it owes); a craft that
-        borrowed makes its one debt roll (:meth:`_debt_roll`, the mana
-        gathered as the cost of a Runaway a band starts), unless the
-        combatant is no longer active, whose debt stands unrolled; and the
-        drain the injected rules give that ending is taken
-        (:meth:`_take_drain`), counting the mana gathered.
+        is what the craft had gathered, the drain it owes, and the
+        defenders who countered it when it was countered); a working that
+        runs away starts its Runaway (:meth:`_begin_runaway`), whose
+        original cost is the mana gathered (house reading
+        ``working_runaway_costs_the_mana_gathered``); a craft that borrowed
+        makes its one debt roll (:meth:`_debt_roll`, the mana gathered as
+        the cost of a Runaway a band starts), unless the combatant is no
+        longer active, whose debt stands unrolled; and the drain the
+        injected rules give that ending is taken (:meth:`_take_drain`),
+        counting the mana gathered.
 
         Args:
             combatant: Whose craft is lost.
@@ -3204,10 +3338,20 @@ class TurnRunner:
                 :data:`CRAFT_LOSS_REASONS`.
             craft: The craft lost, when it has already been taken off the
                 combatant; ``None`` for the craft standing on it.
+            chain: The roll sequence numbers behind the loss, for a fall
+                into unconsciousness or a death the drain brings to cite;
+                ``None`` for an ending no roll of its own brought, which
+                leaves the combatant's fatal chain as it was.
+            runaway: Does the working run away as it is lost?
+            defenders: The combatants who countered it, for a working lost
+                :attr:`~.magic.CastingEnding.COUNTERED`.
 
         Raises:
-            ValueError: with no True Magic rules injected, or for a
-                combatant with no craft standing and none given.
+            ValueError: with no True Magic rules injected; for a combatant
+                with no craft standing and none given; or for defenders
+                named on any ending but
+                :attr:`~.magic.CastingEnding.COUNTERED`, or none named on
+                that one.
             KeyError: for an ending nothing loses a craft by
                 (:data:`CRAFT_LOSS_REASONS`), or a craft whose key is not a
                 working the injected rules build.
@@ -3217,30 +3361,42 @@ class TurnRunner:
         if lost is None:
             raise ValueError(f"{combatant.name} has no craft to lose")
         reason = CRAFT_LOSS_REASONS[ending]
+        countered = ending is CastingEnding.COUNTERED
+        if countered != bool(defenders):
+            raise ValueError(
+                f"{combatant.name}'s craft is lost {ending.value} with "
+                f"{len(defenders)} defenders named; a countered working "
+                "names who countered it, and no other does"
+            )
         working = true_magic.working_from_key(lost.spell_key)
         gathered = true_magic.gathered(lost)
         borrowed = lost.borrowed
         combatant.crafting = None
         self._crafts_ended.add(combatant.combatant_id)
+        payload: dict[str, str | int | bool | list[int]] = {
+            "craft_lost": True,
+            "ending": ending.value,
+            "spell": working.key,
+            "mana_spent": gathered,
+            "drain": true_magic.drain(gathered, ending),
+        }
+        if countered:
+            reason += f" by {self._names_of(defenders)}"
+            payload["defenders"] = list(defenders)
         self.emit(
             "status",
             f"{combatant.name}'s craft of {working.name} is lost, {reason}: "
             f"{gathered} mana spent",
             actor=combatant.name,
-            payload={
-                "craft_lost": True,
-                "ending": ending.value,
-                "spell": working.key,
-                "mana_spent": gathered,
-                "drain": true_magic.drain(gathered, ending),
-            },
+            payload=payload,
         )
+        if runaway:
+            self._begin_runaway(combatant, working, gathered)
         magic = self.profile.magic
         borrowing = None if magic is None else magic.borrowing
         if borrowed and borrowing is not None and combatant.active:
             self._debt_roll(combatant, working, borrowing, cost=gathered)
-        # None of these endings follows a roll: the drain cites none.
-        self._take_drain(combatant, gathered, ending, None)
+        self._take_drain(combatant, gathered, ending, chain)
 
     @staticmethod
     def _anchored_growth(
@@ -4323,6 +4479,12 @@ class TurnRunner:
         reaches Body as well. The ``chain`` (to-hit and damage roll sequence
         numbers) is remembered on the defender so a later death event can
         cite the exact rolls that killed them.
+
+        Damage that lands on a defender with a craft standing, and leaves
+        them active, forces their interruption roll
+        (:meth:`_interruption_roll`; house reading
+        ``craft_hit_is_damage_that_lands``). A blow the armour stops
+        entirely lands nothing and forces none.
         """
         if net <= 0:
             self.emit(
@@ -4371,6 +4533,8 @@ class TurnRunner:
             },
         )
         self.check_unconsciousness(defender, chain)
+        if defender.crafting is not None and defender.active:
+            self._interruption_roll(defender, chain)
 
     def check_unconsciousness(
         self, combatant: CombatantState, chain: list[int]
@@ -4385,7 +4549,14 @@ class TurnRunner:
 
     def _fall_unconscious(self, combatant: CombatantState, chain: list[int]) -> None:
         """The engine's one fall into unconsciousness: the figure drops,
-        the event is logged, and its grapples end."""
+        the event is logged, a craft standing on it is lost
+        (:meth:`_lose_working`, :attr:`~.magic.CastingEnding.UNCONSCIOUS`),
+        and its grapples end.
+
+        The craft is lost after the figure is down, so a craft that borrowed
+        makes no debt roll, and what the lost working drains names no rolls
+        of its own: the figure's fatal chain stands as the fall left it.
+        """
         combatant.conscious = False
         combatant.prone = True
         if chain:
@@ -4396,6 +4567,8 @@ class TurnRunner:
             actor=combatant.name,
             payload={"unconscious": True, "chain": list(chain)},
         )
+        if combatant.crafting is not None:
+            self._lose_working(combatant, CastingEnding.UNCONSCIOUS)
         # A figure that has stopped fighting neither holds nor is held (#11).
         self._release_grapples_involving(combatant)
 

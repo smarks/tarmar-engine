@@ -157,6 +157,48 @@ def standing_craft(caster: CombatantState) -> CraftState:
     return craft
 
 
+def steady_craft(
+    turns: int = 2,
+    *,
+    borrow: bool = False,
+    state: BattleState | None = None,
+    **caster_overrides,
+) -> BattleState:
+    """A caster some turns into the steady Scorch, a point gathered each
+    turn, which its pool can pay for: the crafter, with the overrides given,
+    or figure 1 of the state given."""
+    if state is None:
+        state = crafter(**caster_overrides)
+    elif caster_overrides:
+        raise ValueError("a state given is crafted in as it stands")
+    choose_craft(state, **STEADY, borrow=borrow)
+    for _turn in range(turns):
+        craft(state)
+    return state
+
+
+def borrowed_craft(**caster_overrides) -> BattleState:
+    """The crafter, 1 mana to its name, two turns into the steady Scorch:
+    one share paid and one borrowed."""
+    state = steady_craft(borrow=True, mana=1, **caster_overrides)
+    assert standing_craft(state.by_id(1)).borrowed == 1
+    return state
+
+
+def lose(
+    state: BattleState,
+    ending: CastingEnding,
+    faces=(),
+    profile=CRAFT_PROFILE,
+    **keywords,
+) -> tuple[list[dict], set[int]]:
+    """Lose the caster's craft on a runner of its own; the events, and the
+    combatants that runner then holds as having lost a craft this turn."""
+    turn_runner, events = runner_on(state, faces, profile)
+    turn_runner._lose_working(state.by_id(1), ending, **keywords)
+    return events, turn_runner._crafts_ended
+
+
 def craft_actions(events) -> list[dict]:
     """The payload of each craft action an event stream logged."""
     return [
@@ -333,7 +375,7 @@ class CraftBeginsTest(TestCase):
 
     def test_a_lifted_channel_lets_the_tier_past_the_cap_and_says_so(self):
         state = crafter(lifted_magic_bounds=[CHANNEL])
-        choose_craft(state, "mend", TIER_CAP + 1)
+        choose_craft(state, "salve", TIER_CAP + 1)
         (action,) = craft_actions(craft(state))
         self.assertEqual(action["tier"], TIER_CAP + 1)
         self.assertEqual(action["lifted_bounds"], [CHANNEL])
@@ -395,7 +437,7 @@ class CraftRefusedTest(TestCase):
 
     def test_a_tier_past_the_cap(self):
         state = crafter()
-        choose_craft(state, "mend", TIER_CAP + 1)
+        choose_craft(state, "salve", TIER_CAP + 1)
         self.assert_refused(state, f"highest tier they may craft is {TIER_CAP}")
 
     def test_an_error_is_raised_before_the_log_refuses_anything(self):
@@ -408,7 +450,7 @@ class CraftRefusedTest(TestCase):
         }
         for situation, state in refused_in_the_log.items():
             with self.subTest(situation=situation):
-                choose_craft(state, "mend", TIER_CAP + 1)
+                choose_craft(state, "salve", TIER_CAP + 1)
                 self.assert_refused(state, f"highest tier they may craft is {TIER_CAP}")
 
     def test_the_debt_cap_is_held_before_the_log_refuses_anything(self):
@@ -445,12 +487,12 @@ class CraftRefusedTest(TestCase):
         # and its 5 mana is past a Channel of 3 x 1 + 1.
         profile = TarmarProfile(magic=craft_rules(tiers_per_level=5))
         state = crafter(skill_levels={KNOT_SKILL: 1})
-        choose_craft(state, "mend", 5)
+        choose_craft(state, "salve", 5)
         self.assert_refused(
-            state, r"crafts Mend \(tier 5\) with 5 mana.*Channel for it is 4", profile
+            state, r"crafts Salve \(tier 5\) with 5 mana.*Channel for it is 4", profile
         )
         # Tier 2 and a push of 3 make the same 5 mana.
-        choose_craft(state, "mend", 2, push=3)
+        choose_craft(state, "salve", 2, push=3)
         self.assert_refused(state, "with 5 mana.*Channel for it is 4", profile)
 
     def test_a_borrowing_the_rules_do_not_allow(self):
@@ -516,7 +558,7 @@ class CraftNotBegunTest(TestCase):
         self.assertEqual(caster.mana, 10)
         # The loss took the action whatever was chosen: a craft that would
         # be an error on any other turn raises nothing here.
-        for effect, tier in (("mend", TIER_CAP + 1), ("omen", 1)):
+        for effect, tier in (("salve", TIER_CAP + 1), ("omen", 1)):
             with self.subTest(effect=effect, tier=tier):
                 choose_craft(state, effect, tier)
                 events.clear()
@@ -531,7 +573,7 @@ class CraftNotBegunTest(TestCase):
         other = state.by_id(2)
         other.skill_levels = {KNOT_SKILL: 1}
         other.mana = 5
-        other.chosen_spell = working_key("mend", 1)
+        other.chosen_spell = working_key("salve", 1)
         turn_runner.craft_working(other)
         self.assertIsNotNone(other.crafting)
 
@@ -601,7 +643,7 @@ class SharesTest(TestCase):
     def test_a_turn_with_nothing_due_is_logged_and_takes_nothing(self):
         # Three turns a tier: tier 2's 2 mana comes in on turns 3 and 6.
         state = crafter()
-        caster = choose_craft(state, "mend", 2)
+        caster = choose_craft(state, "salve", 2)
         logged: list[dict] = []
         messages: list[str] = []
         for _turn in range(6):
@@ -706,7 +748,7 @@ class ContinuationTest(TestCase):
         craft(state)
         # The choice a craft action reads is its target; the working, the
         # push and the borrowing are the craft's own.
-        choose_craft(state, "mend", 1, push=1, borrow=True, target=1)
+        choose_craft(state, "salve", 1, push=1, borrow=True, target=1)
         (action,) = craft_actions(craft(state))
         self.assertEqual(
             (action["craft"], action["spell"], action["push_mana"], action["turn"]),
@@ -786,28 +828,10 @@ class ContinuationTest(TestCase):
 class LoseWorkingTest(TestCase):
     """The one way a craft ends early, asked what only it can answer."""
 
-    def begun(
-        self, turns: int = 2, *, borrow: bool = False, **caster_overrides
-    ) -> BattleState:
-        """The crafter some turns into the steady Scorch, a point gathered
-        each turn, which its pool can pay for."""
-        state = crafter(**caster_overrides)
-        choose_craft(state, **STEADY, borrow=borrow)
-        for _turn in range(turns):
-            craft(state)
-        return state
-
-    def lose(
-        self, state, ending, faces=(), profile=CRAFT_PROFILE, **keywords
-    ) -> tuple[list[dict], set[int]]:
-        turn_runner, events = runner_on(state, faces, profile)
-        turn_runner._lose_working(state.by_id(1), ending, **keywords)
-        return events, turn_runner._crafts_ended
-
     def test_the_craft_is_gone_the_loss_is_logged_and_the_drain_is_taken(self):
-        state = self.begun()
+        state = steady_craft()
         caster = state.by_id(1)
-        events, crafts_ended = self.lose(state, CastingEnding.ABANDONED)
+        events, crafts_ended = lose(state, CastingEnding.ABANDONED)
         self.assertIsNone(caster.crafting)
         self.assertEqual(crafts_ended, {caster.combatant_id})
         self.assertEqual(
@@ -839,14 +863,14 @@ class LoseWorkingTest(TestCase):
             (3, CastingEnding.BLOCKED, 12),
         ):
             with self.subTest(turns=turns, ending=ending):
-                state = self.begun(turns)
-                events, _crafts_ended = self.lose(state, ending)
+                state = steady_craft(turns)
+                events, _crafts_ended = lose(state, ending)
                 self.assertEqual(losses(events)[0]["drain"], drained)
                 self.assertEqual([drain["cost"] for drain in drains(events)], [drained])
 
     def test_an_ending_the_rules_name_no_drain_for_logs_no_cost(self):
-        state = self.begun()
-        events, _crafts_ended = self.lose(state, CastingEnding.UNPAID)
+        state = steady_craft()
+        events, _crafts_ended = lose(state, CastingEnding.UNPAID)
         self.assertEqual([event["event_type"] for event in events], ["status"])
         self.assertEqual(losses(events)[0]["drain"], 0)
         self.assertEqual(state.by_id(1).body, 27)
@@ -858,26 +882,16 @@ class LoseWorkingTest(TestCase):
         state = crafter()
         choose_craft(state, "scorch", 1)
         craft(state)
-        events, _crafts_ended = self.lose(state, CastingEnding.ABANDONED)
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED)
         self.assertEqual([event["event_type"] for event in events], ["status"])
         self.assertEqual(
             (losses(events)[0]["mana_spent"], losses(events)[0]["drain"]), (0, 0)
         )
 
-    def borrowed(self, **caster_overrides) -> BattleState:
-        """The crafter, 1 mana to its name, two turns into the steady
-        Scorch: one share paid and one borrowed."""
-        state = crafter(mana=1, **caster_overrides)
-        choose_craft(state, **STEADY, borrow=True)
-        craft(state)
-        craft(state)
-        self.assertEqual(standing_craft(state.by_id(1)).borrowed, 1)
-        return state
-
     def test_a_craft_that_borrowed_makes_its_debt_roll_before_the_drain(self):
-        state = self.borrowed()
+        state = borrowed_craft()
         caster = state.by_id(1)
-        events, _crafts_ended = self.lose(state, CastingEnding.ABANDONED, [DEBT_HOLDS])
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED, [DEBT_HOLDS])
         self.assertEqual(roll_purposes(events), ["debt"])
         (debt_roll,) = status_payloads(events, "debt_roll")
         self.assertEqual(
@@ -897,12 +911,10 @@ class LoseWorkingTest(TestCase):
         self.assertEqual(caster.debt, 1)
 
     def test_a_failed_debt_roll_costs_its_band_and_the_drain_still_follows(self):
-        state = self.borrowed(debt=1)
+        state = borrowed_craft(debt=1)
         caster = state.by_id(1)
         self.assertEqual(caster.debt, 2)
-        events, _crafts_ended = self.lose(
-            state, CastingEnding.ABANDONED, [DEBT_BACKLASH]
-        )
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED, [DEBT_BACKLASH])
         (failure,) = status_payloads(events, "debt_failure")
         self.assertEqual(failure["debt_failure"], BACKLASH.key)
         # "Backlash" costs 2 Fatigue per point owed; the drain, 2 Body per
@@ -916,9 +928,9 @@ class LoseWorkingTest(TestCase):
         with_runaway = TarmarProfile(
             magic=replace(craft_rules(), runaway=example_runaway_rules())
         )
-        state = self.borrowed()
+        state = borrowed_craft()
         caster = state.by_id(1)
-        events, _crafts_ended = self.lose(
+        events, _crafts_ended = lose(
             state, CastingEnding.ABANDONED, [DEBT_SURGE], with_runaway
         )
         (failure,) = status_payloads(events, "debt_failure")
@@ -935,32 +947,32 @@ class LoseWorkingTest(TestCase):
         )
         self.assertIsNone(caster.crafting)
         # The same band with no Runaway rules injected starts nothing.
-        state = self.borrowed()
-        events, _crafts_ended = self.lose(state, CastingEnding.ABANDONED, [DEBT_SURGE])
+        state = borrowed_craft()
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED, [DEBT_SURGE])
         self.assertEqual(status_payloads(events, "runaway_begins"), [])
         self.assertIsNone(state.by_id(1).runaway)
 
     def test_a_craft_that_borrowed_nothing_makes_no_debt_roll(self):
         # It may borrow, and its caster owes from before: no share of its
         # own was borrowed.
-        state = self.begun(borrow=True, debt=3)
+        state = steady_craft(borrow=True, debt=3)
         self.assertTrue(standing_craft(state.by_id(1)).borrow)
-        events, _crafts_ended = self.lose(state, CastingEnding.ABANDONED)
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED)
         self.assertEqual(roll_purposes(events), [])
 
     def test_a_caster_no_longer_active_rolls_no_debt_and_is_still_drained(self):
-        state = self.borrowed()
+        state = borrowed_craft()
         caster = state.by_id(1)
         caster.conscious = False
-        events, _crafts_ended = self.lose(state, CastingEnding.ABANDONED)
+        events, _crafts_ended = lose(state, CastingEnding.ABANDONED)
         self.assertEqual(roll_purposes(events), [])
         self.assertEqual(caster.debt, 1)
         self.assertEqual([drain["cost"] for drain in drains(events)], [4])
 
     def test_a_drain_that_fells_the_caster_loses_nothing_twice(self):
-        state = self.begun(body=3)
+        state = steady_craft(body=3)
         caster = state.by_id(1)
-        events, crafts_ended = self.lose(state, CastingEnding.ABANDONED)
+        events, crafts_ended = lose(state, CastingEnding.ABANDONED)
         self.assertFalse(caster.conscious)
         self.assertEqual(len(losses(events)), 1)
         self.assertEqual(len(drains(events)), 1)
@@ -970,11 +982,11 @@ class LoseWorkingTest(TestCase):
         )
 
     def test_a_craft_already_taken_off_the_caster_is_lost_as_given(self):
-        state = self.begun()
+        state = steady_craft()
         caster = state.by_id(1)
         taken = caster.crafting
         caster.crafting = None
-        events, crafts_ended = self.lose(state, CastingEnding.BLOCKED, craft=taken)
+        events, crafts_ended = lose(state, CastingEnding.BLOCKED, craft=taken)
         self.assertEqual(
             (losses(events)[0]["mana_spent"], losses(events)[0]["drain"]), (2, 8)
         )
@@ -1045,7 +1057,7 @@ class ChoiceWhileCraftingTest(TestCase):
 
     def test_a_craft_option_that_differs_from_the_craft_is_refused(self):
         differing = {
-            "another working": craft_candidate("mend", 2, push=2),
+            "another working": craft_candidate("salve", 2, push=2),
             "another tier": craft_candidate("scorch", 3, push=2),
             "another push": craft_candidate("scorch", 2, push=1),
             "another borrowing": craft_candidate(**STEADY, borrow=True),
@@ -1099,11 +1111,11 @@ class CraftsEndedResetTest(TestCase):
         # phase and the turn's end.
         self.assertEqual(turn_runner._crafts_ended, {caster.combatant_id})
         events.clear()
-        turn_runner.run(choosing(craft_candidate("mend", 2)))
+        turn_runner.run(choosing(craft_candidate("salve", 2)))
         # The new turn begins a new craft: the last turn's loss is no bar.
         (action,) = craft_actions(events)
         self.assertEqual(
-            (action["craft"], action["spell"]), ("begun", working_key("mend", 2))
+            (action["craft"], action["spell"]), ("begun", working_key("salve", 2))
         )
         self.assertEqual(
             [
@@ -1158,7 +1170,7 @@ class NoCraftNoChangeTest(TestCase):
         state = battle.build()
         state.by_id(1).skill_levels[KNOT_SKILL] = KNOTWORK_LEVEL
         events = run_turn(
-            state, craft_candidate("mend", 1), TarmarProfile(magic=battle.magic)
+            state, craft_candidate("salve", 1), TarmarProfile(magic=battle.magic)
         )
         (action,) = craft_actions(events)
         self.assertEqual(action["craft"], engine.CRAFT_BEGUN)
