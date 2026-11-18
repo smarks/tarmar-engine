@@ -540,36 +540,72 @@ class TrueCastChannelTest(TestCase):
         self.assertEqual(payload["push_mana"], 2)
 
 
-class WorkingNotYetRunTest(TestCase):
-    """The shared sequence runs an instant cast only: a completing working
-    is stopped before anything is rolled, spent or logged, until the slice
-    of tarmar-engine #77 that completes one."""
+class WorkingRunTest(TestCase):
+    """The shared sequence runs a completing working as it runs a cast,
+    handed the craft whose shares have already paid for it. The example
+    rules take three craft turns a tier, so a tier-1 Scorch three turns in
+    has its one point gathered; a casting that went off drains 3 Body per
+    mana."""
 
-    def test_a_casting_handed_a_craft_is_refused(self):
+    WORKING = example_true_magic_rules().working("scorch", 1)
+
+    def run_working(self, faces) -> tuple[BattleState, list[dict]]:
         state = wizard_state(skill_levels={KNOT_SKILL: 2})
-        caster = state.by_id(1)
-        working = example_true_magic_rules().working("scorch", 1)
-        craft = CraftState(working.key, 0, False, 3, 0, 2)
-        turn_runner, events = runner_on(
-            state, [[3, 3, 3]], TarmarProfile(magic=true_magic_rules())
+        turn_runner, events = runner_on(state, faces, TRUE_MAGIC_PROFILE)
+        turn_runner._roll_and_resolve(
+            state.by_id(1),
+            self.WORKING,
+            push_mana=0,
+            target_id=2,
+            true_cast=True,
+            roll_target=12,
+            versus="WIS+Knotwork",
+            shortfall=0,
+            craft=CraftState(self.WORKING.key, 0, False, 3, 0, 2),
+            channel_used=None,
+            lifted_past=(),
         )
-        with self.assertRaises(NotImplementedError):
-            turn_runner._roll_and_resolve(
-                caster,
-                working,
-                push_mana=0,
-                target_id=2,
-                true_cast=True,
-                roll_target=12,
-                versus="WIS+Knotwork",
-                shortfall=0,
-                craft=craft,
-                channel_used=None,
-                lifted_past=(),
-            )
-        self.assertEqual(events, [])
-        self.assertEqual(turn_runner.roller.faces_queue, [[3, 3, 3]])
+        self.assertEqual(turn_runner.roller.faces_queue, [])
+        return state, events
+
+    def test_a_casting_handed_a_craft_is_rolled_and_pays_nothing_here(self):
+        state, events = self.run_working([[3, 3, 3], [2, 2, 2], [3]])
+        caster = state.by_id(1)
+        self.assertEqual(
+            roll_purposes(events), ["casting", "spell aim", "spell damage"]
+        )
+        (action,) = events_of_type(events, "action")
+        self.assertEqual(
+            action["payload"],
+            {
+                "spell": self.WORKING.key,
+                "success": True,
+                "mana_left": 10,
+                "casting_roll": events[0]["sequence"],
+                "true_cast": True,
+                "working": True,
+                "tier": 1,
+            },
+        )
+        # The craft's shares paid for it: the pool is as it was.
         self.assertEqual(caster.mana, 10)
+        self.assertEqual(state.by_id(2).body, 27 - 4)
+        # Unpushed, and drained all the same: a working's drain counts its
+        # whole mana.
+        self.assertEqual(caster.body, 27 - 3)
+
+    def test_a_roll_that_fails_hands_the_gathered_mana_back(self):
+        # No casting failure rules are injected: every failure keeps the
+        # mana, and with no Borrowing rules no debt is named.
+        state, events = self.run_working([[6, 6, 6]])
+        caster = state.by_id(1)
+        self.assertEqual([event["event_type"] for event in events], ["roll", "action"])
+        payload = events[1]["payload"]
+        self.assertIs(payload["success"], False)
+        self.assertEqual(payload["mana_returned"], 1)
+        self.assertNotIn("debt_returned", payload)
+        self.assertEqual(caster.mana, 10 + 1)
+        self.assertEqual(caster.body, 27)
 
 
 class RunawayOfAWorkingTest(TestCase):

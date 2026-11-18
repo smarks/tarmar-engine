@@ -43,6 +43,7 @@ from .test_magic import (
     example_magic_rules,
     example_push_rules,
     roll_purposes,
+    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,
@@ -156,11 +157,7 @@ def failure_event(events) -> dict:
 
 
 def debt_roll_event(events) -> dict:
-    return next(
-        event
-        for event in events_of_type(events, "roll")
-        if event["payload"]["purpose"] == "debt"
-    )
+    return rolls_of(events, "debt")[0]
 
 
 # Lightning Bolt with a natural 9 (no tier), on target, 9 damage.
@@ -443,11 +440,7 @@ class DebtBandCostTest(TestCase):
         self.assertEqual(caster.body, 27 - 45)
         self.assertFalse(caster.alive)
         debt_roll = debt_payload(events)["debt_roll"]
-        survival = next(
-            event["sequence"]
-            for event in events_of_type(events, "roll")
-            if event["payload"]["purpose"] == "survival"
-        )
+        survival = rolls_of(events, "survival")[0]["sequence"]
         [death] = events_of_type(events, "death")
         self.assertEqual(death["payload"]["fatal_chain"], [debt_roll, survival])
 

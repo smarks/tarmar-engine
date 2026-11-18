@@ -26,6 +26,7 @@ from .test_magic import (
     PurposeRoller,
     example_magic_rules,
     roll_purposes,
+    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,
@@ -113,11 +114,7 @@ def countered_cast(state, faces, *, mana=3, profile=COUNTER_PROFILE, push=0):
 
 
 def counter_rolls(events) -> list[dict]:
-    return [
-        event
-        for event in events_of_type(events, "roll")
-        if event["payload"]["purpose"] == "counter"
-    ]
+    return rolls_of(events, "counter")
 
 
 def result_payload(events) -> dict:

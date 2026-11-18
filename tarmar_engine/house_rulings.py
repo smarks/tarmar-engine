@@ -192,7 +192,7 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
         "The Runaway total is among them, because a Runaway's first effect, "
         "the drain, is paid at once out of the casting's mana.",
         True,
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, _complete_working)",
         RULING,
         "#816",
     ),
@@ -382,8 +382,8 @@ HOUSE_RULINGS += (
         "A casting success tier applies only to a roll that already succeeds; "
         "it never turns a failure into a success.",
         "success first",
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _resolve_cast "
-        "(_roll_and_resolve)",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
+        "_complete_working), _resolve_cast (_roll_and_resolve)",
         "Spencer's ruling on tarmar-studio #292's scope (" + RULING + ")",
         "#825 (tarmar-engine #26)",
     ),
@@ -506,8 +506,8 @@ HOUSE_RULINGS += (
         "penalty, as the Control Roll takes them (orchestrator's ruling: one "
         "roll-under reading for the magic rolls).",
         ("casting", "spell aim", "spell damage", "debt"),
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _debt_roll "
-        "(_roll_and_resolve, _lose_working)",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
+        "_complete_working), _debt_roll (_roll_and_resolve, _lose_working)",
         RULING,
         "#825 (tarmar-engine #28)",
     ),
@@ -517,7 +517,7 @@ HOUSE_RULINGS += (
         "success, and on the failures that lose mana. A failure that keeps "
         "its mana borrows nothing and makes no debt roll.",
         "when the cast pays",
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, _complete_working)",
         RULING,
         "#825 (tarmar-engine #28)",
     ),
@@ -674,8 +674,8 @@ HOUSE_RULINGS += (
         "action; a slower one pays it at the cast, and its own action is then "
         "spent. The page's two timings collapse into one roll at the cast.",
         "at the cast",
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _oppose_cast "
-        "(_roll_and_resolve), declare_counter",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
+        "_complete_working), _oppose_cast (_roll_and_resolve), declare_counter",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -723,7 +723,7 @@ HOUSE_RULINGS += (
         "included, and a borrowing cast's debt roll follows), where an "
         "ordinary failed casting roll would keep it.",
         "no casting roll, mana paid",
-        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, _complete_working)",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -776,8 +776,8 @@ HOUSE_RULINGS += (
         "its counter_declared event. A cast or counter within the bounds "
         "carries no such key, lifted or not.",
         "lifted_bounds",
-        "tarmar_engine/engine.py cast_spell, craft_working, _channel_used, "
-        "_cast_cost_keys, declare_counter",
+        "tarmar_engine/engine.py cast_spell, _working_channel (craft_working, "
+        "_complete_working), _channel_used, _cast_cost_keys, declare_counter",
         RULING,
         "#37",
     ),
@@ -959,8 +959,8 @@ HOUSE_RULINGS += (
         "named: each craft action that is counted names the target anew, and "
         "may name another figure than the last did, or none.",
         "latest craft action",
-        "tarmar_engine/engine.py craft_working; "
-        "tarmar_engine/state.py CraftState.target_id",
+        "tarmar_engine/engine.py craft_working, _complete_working "
+        "(_complete_workings); tarmar_engine/state.py CraftState.target_id",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -999,14 +999,18 @@ HOUSE_RULINGS += (
         "The roll to keep a working takes its caster's injury band, by the "
         "one reading every roll a figure makes as its action takes it, and "
         "reads the band after the hit's damage is applied, so the blow that "
-        "forces the roll can itself bring the band on. An off-balance "
-        "penalty never reaches the roll. A figure is put off-balance only by "
-        "its own fumble, which a crafting caster makes none of, or by a "
-        "grapple that takes hold on a natural 20, which ends the craft; and "
-        "a penalty owed as a craft begins is spent by the action that begins "
-        "it, which rolls nothing.",
+        "forces the roll can itself bring the band on. The working's own "
+        "roll takes the band too, as it stands when the working goes off, "
+        "and so does its side of a counter. An off-balance penalty reaches "
+        "none of these rolls. A figure is put off-balance only by its own "
+        "fumble, which a crafting caster makes none of, or by a grapple "
+        "that takes hold on a natural 20, which ends the craft; and a "
+        "penalty owed as a craft begins is spent by the action that begins "
+        "it, which rolls nothing, before the working goes off.",
         "injury band, read after the hit",
-        "tarmar_engine/engine.py _interruption_roll (apply_damage)",
+        "tarmar_engine/engine.py _interruption_roll (apply_damage), "
+        "_roll_and_resolve (cast_spell, _complete_working), _oppose_cast "
+        "(_roll_and_resolve), _action_roll_penalty",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1025,7 +1029,8 @@ HOUSE_RULINGS += (
         "mana gathered",
         "tarmar_engine/engine.py _interruption_roll (apply_damage), "
         "_lose_working (_settle_craft_choice, craft_working, "
-        "_interruption_roll, _fall_unconscious, _establish_grapple), "
+        "_interruption_roll, _fall_unconscious, _establish_grapple, "
+        "_roll_and_resolve), "
         "_begin_runaway (_roll_and_resolve, _push_control_roll, _debt_roll, "
         "_lose_working, anchor_runaway)",
         RULING,
@@ -1054,6 +1059,116 @@ HOUSE_RULINGS += (
         "craft_working, _cast_blocked (cast_spell, craft_working, "
         "_begin_craft), _fall_unconscious (check_unconsciousness, "
         "_feed_runaway)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "working_goes_off_after_the_actions",
+        "A working goes off at the end of the Actions phase of the turn its "
+        "last craft action is taken, after every figure has acted and before "
+        "the counters no spell met lapse. A working whose craft takes one "
+        "turn, begun this turn, can therefore still be broken by a slower "
+        "enemy's hit. Several workings go off in the phase's own order. The "
+        "alternative reading has it go off in its caster's own action.",
+        "end of the Actions phase",
+        "tarmar_engine/engine.py phase_actions, _complete_workings "
+        "(phase_actions), _complete_working (_complete_workings), "
+        "_in_action_order (phase_actions, _complete_workings)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "failed_working_keeps_its_mana",
+        "A working whose roll fails on a total that keeps the mana gets back "
+        "every share its craft gathered: the pool what it paid, and the debt "
+        "what the craft borrowed. It owes no drain and makes no debt roll, "
+        "as a failed cast keeps its mana (mana_on_failure). A failing total "
+        "that loses the mana keeps the shares spent, and the working is "
+        "drained as one that failed. The alternative reading leaves the "
+        "shares spent on any failure, since they had already left the pool.",
+        "shares handed back",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
+        "_complete_working), _return_shares (_roll_and_resolve)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "drain_counts_the_whole_working",
+        "A working's drain counts all its mana, the mana pushed into it and "
+        "the mana its craft borrowed included, before any tier refund, as "
+        "Channel counts a casting. It is taken last, after the debt roll, so "
+        "a caster it fells has made that roll. A working that goes off and "
+        "misses its aim, or lands on no one, still owes it. A True cast of a "
+        "catalog spell is drained for its pushed mana alone.",
+        {"working": "whole mana", "catalog spell": "pushed mana"},
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
+        "_complete_working), _take_drain (_roll_and_resolve, _lose_working)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "healing_working_names_its_figure",
+        "A healing working heals the figure its craft named when that is the "
+        "caster or one of the caster's living teammates, conscious or not, "
+        "and the caster in every other case: an enemy named, a dead figure, "
+        "or none. It wakes no one: the engine has no path back to "
+        "consciousness. A catalog healing spell heals its caster, as it "
+        "always has.",
+        "the caster or a living teammate",
+        "tarmar_engine/engine.py _healed_figure (_resolve_cast), _resolve_cast "
+        "(_roll_and_resolve); tarmar_engine/state.py BattleState.teammates_of",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "narrated_working_rolls_its_tier",
+        "A working whose effect the engine does not apply still takes its "
+        "tier's turns, mana and drain and makes its roll. When it goes off "
+        "the engine rolls the effect's dice at that tier, where it has any, "
+        "and reports the total, with the figure the craft named passed "
+        "through as given; the Game Master says what the total does. It "
+        "makes no aim roll and applies nothing, takes no tier's or push's "
+        "bonus, and cannot be pushed, there being no rolled effect for a "
+        "bonus to add to. Its tier is a Game Master's to name: an effect "
+        "that needs a grant is crafted only at the keys granted.",
+        "the effect's dice at the tier, reported and not applied",
+        "tarmar_engine/engine.py _narrated_effect (_resolve_cast), "
+        "_narrate_working (_resolve_cast), _check_push (cast_spell, "
+        "_begin_craft), _begin_craft (craft_working); tarmar_engine/magic.py "
+        "WorkingEffect.dice_at",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "pushed_working_makes_one_control_roll",
+        "A pushed working makes Push's Control Roll once, when it goes off, "
+        "after its own roll succeeds, with Push's rules and bands as "
+        "injected: no craft turn makes one. The roll to keep a working "
+        "through a hit is a separate roll with its own bands, one for each "
+        "hit, and its penalty already counts the pushed shares, which are "
+        "part of the mana gathered.",
+        "once, when the working goes off",
+        "tarmar_engine/engine.py _resolve_cast (_roll_and_resolve), "
+        "_push_control_roll (_resolve_cast), craft_working, _interruption_roll "
+        "(apply_damage)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "craft_borrows_share_by_share",
+        "A borrowing craft checks the debt cap against its whole projected "
+        "shortfall when it begins, adds each share's shortfall to the debt "
+        "as that share falls due, and makes one debt roll when the craft "
+        "ends, whether its working goes off, is stopped, fails on a total "
+        "that loses the mana or is lost. It makes none on a failure that "
+        "keeps the mana, whose borrowed shares come off the debt again, nor "
+        "for a caster no longer active when the craft is lost.",
+        "one debt roll, when the craft ends",
+        "tarmar_engine/engine.py _begin_craft (craft_working), craft_working, "
+        "_lose_working (_settle_craft_choice, craft_working, "
+        "_interruption_roll, _fall_unconscious, _establish_grapple, "
+        "_roll_and_resolve), _roll_and_resolve (cast_spell, _complete_working), "
+        "_debt_roll (_roll_and_resolve, _lose_working)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),

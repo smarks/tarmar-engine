@@ -178,6 +178,15 @@ def roll_purposes(events) -> list[str]:
     return [event["payload"]["purpose"] for event in events_of_type(events, "roll")]
 
 
+def rolls_of(events, purpose: str) -> list[dict]:
+    """Each roll event of one purpose in an event stream, in order."""
+    return [
+        event
+        for event in events_of_type(events, "roll")
+        if event["payload"]["purpose"] == purpose
+    ]
+
+
 def status_payloads(events, key) -> list[dict]:
     return [
         event["payload"]

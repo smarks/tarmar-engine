@@ -42,6 +42,7 @@ from .test_magic import (
     example_casting_failure_rules,
     example_push_rules,
     roll_purposes,
+    rolls_of,
     status_payloads,
     wizard_state,
 )
@@ -475,12 +476,7 @@ class TrueCastOwnRollTest(TestCase):
     def casting_roll(self, spell: str, faces) -> dict:
         state = true_mage(fatigue=30)
         choose(state, spell)
-        events = cast(state, faces)
-        return next(
-            event["payload"]
-            for event in events_of_type(events, "roll")
-            if event["payload"]["purpose"] == "casting"
-        )
+        return rolls_of(cast(state, faces), "casting")[0]["payload"]
 
     def test_the_target_is_the_spells_own_attribute(self):
         missile = self.casting_roll("fire_missile", [CAST_SUCCEEDS, AIM_HITS, DAMAGE])

@@ -37,6 +37,7 @@ from .test_magic import (
     cast,
     control_payload,
     example_magic_rules,
+    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,
@@ -129,11 +130,7 @@ def anchor_payload(events) -> dict:
 
 
 def anchor_roll(events) -> dict:
-    return next(
-        event["payload"]
-        for event in events_of_type(events, "roll")
-        if event["payload"]["purpose"] == "anchor"
-    )
+    return rolls_of(events, "anchor")[0]["payload"]
 
 
 class RunawayRulesValidationTest(TestCase):

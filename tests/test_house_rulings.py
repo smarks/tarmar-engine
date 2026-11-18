@@ -1195,6 +1195,9 @@ class TrueMagicRulingsTest(TestCase):
 
     def test_working_aimed_by_its_last_craft_action(self):
         from .test_craft import choose_craft, craft, crafter, standing_craft
+        from .test_craft_completion import complete
+        from .test_state import make_combatant
+        from .test_true_cast import AIM_HITS, CAST_SUCCEEDS
 
         self.assertEqual(
             ruling("working_aimed_by_its_last_craft_action").value,
@@ -1209,6 +1212,19 @@ class TrueMagicRulingsTest(TestCase):
                 choose_craft(state, "scorch", 3, target=named)
                 craft(state)
                 self.assertEqual(standing_craft(caster).target_id, named)
+        # The working lands on the figure its last craft action named, not
+        # the one its first did.
+        state = crafter()
+        state.combatants.append(make_combatant(3, q=3, r=2, facing=3))
+        choose_craft(state, "scorch", 1, target=2)
+        craft(state)
+        caster = choose_craft(state, "scorch", 1, target=3)
+        craft(state)
+        # What the caster's choice names once that action is taken is not
+        # read again.
+        caster.chosen_target = 2
+        complete(state, [CAST_SUCCEEDS, AIM_HITS, [3]])
+        self.assertEqual((state.by_id(2).body, state.by_id(3).body), (27, 27 - 4))
 
     def test_craft_fixes_push_and_borrow_at_the_start(self):
         from .test_craft import (
@@ -1330,6 +1346,7 @@ class TrueMagicRulingsTest(TestCase):
 
     def test_interruption_takes_the_injury_band(self):
         from .test_cast_pieces import runner_on
+        from .test_counterspell import CASTER_LOW, DEFENDER_HIGH
         from .test_craft import STEADY, choose_craft, crafter, steady_craft
         from .test_craft_broken import (
             BROKEN_PROFILE,
@@ -1340,7 +1357,9 @@ class TrueMagicRulingsTest(TestCase):
             grapple,
             hit,
         )
+        from .test_craft_completion import COMPLETION_PROFILE, countered, whole_craft
         from .test_engine import events_of_type
+        from .test_true_cast import AIM_MISSES, CAST_SUCCEEDS
 
         self.assertEqual(
             ruling("interruption_takes_the_injury_band").value,
@@ -1378,6 +1397,28 @@ class TrueMagicRulingsTest(TestCase):
         self.assertIsNotNone(caster.crafting)
         self.assertFalse(caster.off_balance)
         self.assertEqual(events_of_type(events, "roll"), [])
+        # The working's own roll takes the band as it stands when the
+        # working goes off, and so does its side of a counter that meets it.
+        for hurt in (False, True):
+            with self.subTest(hurt=hurt):
+                state = whole_craft()
+                caster = state.by_id(1)
+                if hurt:
+                    caster.fatigue = caster.max_fatigue // 2
+                band = COMPLETION_PROFILE.reactions.injury_penalty(caster)
+                self.assertEqual(band > 0, hurt)
+                events, _turn_runner = countered(
+                    state, [DEFENDER_HIGH, CASTER_LOW, CAST_SUCCEEDS, AIM_MISSES]
+                )
+                opposed, _defenders, casting = events_of_type(events, "roll")[:3]
+                self.assertEqual(
+                    (opposed["actor"], opposed["payload"]["purpose"]),
+                    (caster.name, "counter"),
+                )
+                # WIS 12 on each roll, and 2 a level on the working's own.
+                self.assertEqual(opposed["payload"]["modifier"], 12 - band)
+                self.assertEqual(casting["payload"]["purpose"], "casting")
+                self.assertEqual(casting["payload"]["target_number"], 16 - band)
 
     def test_working_runaway_costs_the_mana_gathered(self):
         from tarmar_engine.state import RunawayState
@@ -1513,6 +1554,364 @@ class TrueMagicRulingsTest(TestCase):
         turn_runner.apply_pool_cost(state.by_id(1), FATIGUE_POOL, 40, "running")
         self.assertEqual(endings(events), [value["unconsciousness"]])
         self.assertEqual(concentration_rolls(events), [])
+
+    def test_working_goes_off_after_the_actions(self):
+        from .test_counterspell import CASTER_LOW, DEFENDER_HIGH
+        from .test_craft import craft_actions, losses, steady_craft
+        from .test_craft_broken import ATTACK, KEEPS, SNAGS, STRIKES, beside
+        from .test_craft_completion import COUNTER, completions, defended, turn
+        from .test_magic import roll_purposes, status_payloads
+        from .test_true_cast import CAST_SUCCEEDS, CONTROL_STOPS
+
+        self.assertEqual(
+            ruling("working_goes_off_after_the_actions").value,
+            "end of the Actions phase",
+        )
+
+        def last_turn_struck(faces) -> list[dict]:
+            """The faster caster takes the craft's last turn, and the slower
+            enemy beside them then strikes."""
+            return turn(
+                beside(3),
+                [*STRIKES, *faces],
+                enemy_choice=ATTACK,
+                enemy_dexterity=10,
+            )
+
+        # The enemy's hit lands on a craft still standing, its every share
+        # gathered, and can break it: the working had not gone off in its
+        # caster's own action.
+        events = last_turn_struck([SNAGS])
+        self.assertEqual(craft_actions(events)[0]["turn"], 4)
+        (interrupted,) = status_payloads(events, "craft_interrupted")
+        self.assertEqual((interrupted["gathered"], interrupted["held"]), (4, False))
+        self.assertEqual([lost["ending"] for lost in losses(events)], ["interrupted"])
+        self.assertEqual(completions(events), [])
+        self.assertNotIn("casting", roll_purposes(events))
+        # Kept through the hit, the working goes off after it, in the same
+        # phase.
+        events = last_turn_struck([KEEPS, CAST_SUCCEEDS, CONTROL_STOPS])
+        (struck,) = [event for event in events if event["event_type"] == "damage"]
+        (completed,) = completions(events)
+        self.assertEqual(struck["payload"]["target"], 1)
+        self.assertLess(struck["sequence"], completed["sequence"])
+        self.assertEqual((struck["phase"], completed["phase"]), (5, 5))
+        # It goes off before the counters no spell met lapse: one declared
+        # against its caster this turn meets it.
+        events = turn(
+            defended(steady_craft(3)),
+            [CASTER_LOW, DEFENDER_HIGH],
+            enemy_choice=COUNTER,
+        )
+        self.assertEqual([lost["ending"] for lost in losses(events)], ["countered"])
+        self.assertEqual(status_payloads(events, "counter_lapsed"), [])
+
+    def test_failed_working_keeps_its_mana(self):
+        from tarmar_engine.magic import CastingEnding
+
+        from .test_craft import DEBT_HOLDS
+        from .test_craft_completion import (
+            COMPLETION_DRAINS,
+            complete,
+            completions,
+            whole_borrowed,
+        )
+        from .test_magic import roll_purposes
+        from .test_true_cast import CAST_FAILS_MANA_KEPT, CAST_FAILS_MANA_LOST, drains
+
+        self.assertEqual(
+            ruling("failed_working_keeps_its_mana").value, "shares handed back"
+        )
+        # One share paid and three borrowed: a failure that keeps the mana
+        # hands back all four, and nothing more is owed.
+        state = whole_borrowed()
+        caster = state.by_id(1)
+        self.assertEqual((caster.mana, caster.debt), (0, 3))
+        events, _turn_runner = complete(state, [CAST_FAILS_MANA_KEPT])
+        self.assertEqual((caster.mana, caster.debt), (1, 0))
+        payload = completions(events)[0]["payload"]
+        self.assertEqual((payload["mana_returned"], payload["debt_returned"]), (1, 3))
+        self.assertEqual(drains(events), [])
+        self.assertEqual(roll_purposes(events), ["casting"])
+        # On a total that loses the mana the shares stay spent, the debt
+        # stays owed and rolled for, and the working is drained as failed.
+        state = whole_borrowed()
+        caster = state.by_id(1)
+        events, _turn_runner = complete(state, [CAST_FAILS_MANA_LOST, DEBT_HOLDS])
+        self.assertEqual((caster.mana, caster.debt), (0, 3))
+        self.assertNotIn("mana_returned", completions(events)[0]["payload"])
+        self.assertEqual(roll_purposes(events), ["casting", "debt"])
+        self.assertEqual(
+            [drain["cost"] for drain in drains(events)],
+            [4 * COMPLETION_DRAINS[CastingEnding.FAILED]],
+        )
+
+    def test_drain_counts_the_whole_working(self):
+        from .test_craft import DEBT_HOLDS
+        from .test_craft_completion import (
+            CAST_KEEN,
+            DRAIN_PER_MANA,
+            SCORCH_DICE,
+            STEADY_MANA,
+            complete,
+            steps,
+            whole_borrowed,
+            whole_craft,
+        )
+        from .test_true_cast import (
+            AIM_HITS,
+            AIM_MISSES,
+            CAST_SUCCEEDS,
+            CONTROL_HELD,
+            DAMAGE,
+            cast,
+            choose,
+            drains,
+            true_mage,
+        )
+
+        self.assertEqual(
+            ruling("drain_counts_the_whole_working").value,
+            {"working": "whole mana", "catalog spell": "pushed mana"},
+        )
+        # Tier 2 pushed by 2, three of its four points borrowed, and a tier
+        # that hands a point back: the drain counts all four, and comes
+        # last, after the debt roll.
+        state = whole_borrowed()
+        events, _turn_runner = complete(
+            state, [CAST_KEEN, CONTROL_HELD, AIM_HITS, SCORCH_DICE, DEBT_HOLDS]
+        )
+        self.assertEqual(
+            [drain["cost"] for drain in drains(events)], [STEADY_MANA * DRAIN_PER_MANA]
+        )
+        self.assertEqual(steps(events)[-3:], ["debt", "debt_roll", "drain"])
+        # The tier's point went to the debt, which the drain does not count
+        # less for.
+        caster = state.by_id(1)
+        self.assertEqual((caster.mana, caster.debt), (0, 2))
+        # A working that misses its aim still owes it.
+        events, _turn_runner = complete(whole_craft(), [CAST_SUCCEEDS, AIM_MISSES])
+        self.assertEqual([drain["cost"] for drain in drains(events)], [DRAIN_PER_MANA])
+        # A True cast of a catalog spell is drained for its pushed mana
+        # alone: unpushed, for nothing.
+        for push, drained in ((0, []), (1, [DRAIN_PER_MANA])):
+            with self.subTest(push=push):
+                state = true_mage()
+                choose(state, "fire_missile", push=push)
+                faces = [CAST_SUCCEEDS, *([CONTROL_HELD] if push else []), AIM_HITS]
+                events = cast(state, [*faces, DAMAGE])
+                self.assertEqual([drain["cost"] for drain in drains(events)], drained)
+
+    def test_healing_working_names_its_figure(self):
+        from tarmar_engine.state import FATIGUE_POOL
+
+        from .test_cast_pieces import runner_on
+        from .test_craft_completion import COMPLETION_PROFILE, complete, healing
+        from .test_magic import roll_purposes, status_payloads
+        from .test_true_cast import CAST_SUCCEEDS
+
+        self.assertEqual(
+            ruling("healing_working_names_its_figure").value,
+            "the caster or a living teammate",
+        )
+
+        def healed_by_naming(target, **teammate) -> tuple[list[int], dict]:
+            state = healing(target, **teammate)
+            events, _turn_runner = complete(state, [CAST_SUCCEEDS, [6]])
+            self.assertEqual(roll_purposes(events), ["casting", "healing"])
+            (healed,) = status_payloads(events, "healed")
+            return [state.by_id(figure).fatigue for figure in (1, 2, 3)], healed
+
+        # The caster is down 10 Fatigue, the enemy 20 and the teammate 30.
+        fatigue, healed = healed_by_naming(3)
+        self.assertEqual(fatigue, [30, 20, 16])
+        self.assertEqual(healed, {"healed": 6, FATIGUE_POOL: 16, "target": 3})
+        # An enemy named, a dead teammate or no one: the caster is healed,
+        # never the nearest enemy.
+        for target, teammate in ((2, {}), (3, {"alive": False}), (None, {})):
+            with self.subTest(target=target, teammate=teammate):
+                fatigue, healed = healed_by_naming(target, **teammate)
+                self.assertEqual(fatigue, [36, 20, 10])
+                self.assertNotIn("target", healed)
+        # A teammate who is down is healed, and stays down.
+        state = healing(3, conscious=False, fatigue=-4)
+        complete(state, [CAST_SUCCEEDS, [6]])
+        self.assertEqual(state.by_id(3).fatigue, 2)
+        self.assertFalse(state.by_id(3).conscious)
+        # A catalog healing spell heals its caster, whoever it names.
+        state = healing(3)
+        caster = state.by_id(1)
+        caster.crafting = None
+        caster.chosen_spell = "heal"
+        caster.chosen_target = 3
+        turn_runner, events = runner_on(state, [CAST_SUCCEEDS, [4]], COMPLETION_PROFILE)
+        turn_runner.cast_spell(caster)
+        self.assertEqual(
+            [state.by_id(figure).fatigue for figure in (1, 2, 3)], [34, 20, 10]
+        )
+
+    def test_narrated_working_rolls_its_tier(self):
+        from .test_craft import choose_craft, craft, crafter, working_key
+        from .test_craft_completion import DRAIN_PER_MANA, complete, omen
+        from .test_magic import roll_purposes, status_payloads
+        from .test_true_cast import CAST_SUCCEEDS, drains
+
+        self.assertEqual(
+            ruling("narrated_working_rolls_its_tier").value,
+            "the effect's dice at the tier, reported and not applied",
+        )
+        # The Omen rolls 3d4-1 a tier. It makes its roll and the roll of its
+        # dice, no aim roll, and reports the total with the figure named.
+        for tier, dice, faces, magnitude in (
+            (1, "3d4-1", [4, 3, 2], 8),
+            (2, "6d4-2", [4, 3, 2, 1, 1, 1], 10),
+        ):
+            with self.subTest(tier=tier):
+                state = omen(tier=tier)
+                target = state.by_id(2)
+                events, _turn_runner = complete(state, [CAST_SUCCEEDS, faces])
+                self.assertEqual(
+                    roll_purposes(events), ["casting", "working magnitude"]
+                )
+                self.assertEqual(
+                    [event["payload"]["specification"] for event in events[:3:2]],
+                    ["3d6", dice],
+                )
+                self.assertEqual(
+                    status_payloads(events, "working_effect"),
+                    [
+                        {
+                            "working_effect": "omen",
+                            "tier": tier,
+                            "narrated": True,
+                            "target": 2,
+                            "magnitude": magnitude,
+                        }
+                    ],
+                )
+                # Nothing is applied, and the tier's drain is owed.
+                self.assertEqual((target.fatigue, target.body), (40, 27))
+                self.assertEqual(
+                    [drain["cost"] for drain in drains(events)], [tier * DRAIN_PER_MANA]
+                )
+        # The figure named is passed through as given, no one included: no
+        # other is chosen in its place.
+        events, _turn_runner = complete(omen(None), [CAST_SUCCEEDS])
+        self.assertIsNone(status_payloads(events, "working_effect")[0]["target"])
+        # It cannot be pushed, and only a figure it was named for crafts it.
+        for push, granted in ((1, True), (0, False)):
+            with self.subTest(push=push, granted=granted):
+                key = working_key("omen", 1)
+                state = crafter(granted_workings=[key] if granted else [])
+                choose_craft(state, "omen", 1, push=push)
+                with self.assertRaises(ValueError):
+                    craft(state)
+                self.assertIsNone(state.by_id(1).crafting)
+
+    def test_pushed_working_makes_one_control_roll(self):
+        from .test_craft import STEADY, choose_craft, craft, crafter, steady_craft
+        from .test_craft_broken import KEEPS, concentration_rolls, hit
+        from .test_craft_completion import SCORCH_DICE, complete, whole_steady
+        from .test_magic import roll_purposes
+        from .test_true_cast import (
+            AIM_HITS,
+            CAST_FAILS_MANA_LOST,
+            CAST_SUCCEEDS,
+            CONTROL_HELD,
+        )
+
+        self.assertEqual(
+            ruling("pushed_working_makes_one_control_roll").value,
+            "once, when the working goes off",
+        )
+        # No craft turn of the pushed working makes one.
+        state = crafter()
+        choose_craft(state, **STEADY)
+        for _turn in range(4):
+            self.assertEqual(roll_purposes(craft(state)), [])
+        # It makes one as it goes off, after its own roll succeeds.
+        events, _turn_runner = complete(
+            state, [CAST_SUCCEEDS, CONTROL_HELD, AIM_HITS, SCORCH_DICE]
+        )
+        self.assertEqual(
+            roll_purposes(events), ["casting", "control", "spell aim", "spell damage"]
+        )
+        # A roll that fails makes none.
+        events, _turn_runner = complete(whole_steady(), [CAST_FAILS_MANA_LOST])
+        self.assertEqual(roll_purposes(events), ["casting"])
+        # The roll to keep the working through a hit is another roll, and
+        # its penalty of 2 a point counts the pushed shares gathered: three
+        # turns in, three points, of which the tier's own are fewer.
+        events, _turn_runner = hit(steady_craft(3), [KEEPS])
+        self.assertNotIn("control", roll_purposes(events))
+        (kept,) = concentration_rolls(events)
+        self.assertEqual(kept["payload"]["target_number"], 12 - 2 * 3)
+
+    def test_craft_borrows_share_by_share(self):
+        from tarmar_engine.magic import CastingEnding
+
+        from .test_craft import (
+            DEBT_HOLDS,
+            STEADY,
+            borrowed_craft,
+            choose_craft,
+            craft,
+            crafter,
+            lose,
+        )
+        from .test_craft_completion import (
+            SCORCH_DICE,
+            complete,
+            whole_borrowed,
+        )
+        from .test_magic import roll_purposes
+        from .test_true_cast import (
+            AIM_HITS,
+            CAST_FAILS_MANA_KEPT,
+            CAST_SUCCEEDS,
+            CONTROL_HELD,
+        )
+
+        self.assertEqual(
+            ruling("craft_borrows_share_by_share").value,
+            "one debt roll, when the craft ends",
+        )
+        # The debt cap of 4 is checked against the whole shortfall when the
+        # craft begins: 4 mana on a purse of 1 would borrow 3.
+        state = crafter(mana=1, debt=2)
+        choose_craft(state, **STEADY, borrow=True)
+        with self.assertRaisesRegex(ValueError, "debt cap"):
+            craft(state)
+        # Each share's shortfall joins the debt as that share falls due,
+        # and no craft turn rolls for it.
+        state = crafter(mana=1)
+        caster = choose_craft(state, **STEADY, borrow=True)
+        debts = []
+        for _turn in range(4):
+            self.assertEqual(roll_purposes(craft(state)), [])
+            debts.append(caster.debt)
+        self.assertEqual(debts, [0, 1, 2, 3])
+        # One debt roll when the working goes off.
+        events, _turn_runner = complete(
+            state, [CAST_SUCCEEDS, CONTROL_HELD, AIM_HITS, SCORCH_DICE, DEBT_HOLDS]
+        )
+        self.assertEqual(roll_purposes(events).count("debt"), 1)
+        # None on a failure that keeps the mana: the borrowed shares come
+        # off the debt again.
+        state = whole_borrowed()
+        events, _turn_runner = complete(state, [CAST_FAILS_MANA_KEPT])
+        self.assertNotIn("debt", roll_purposes(events))
+        self.assertEqual(state.by_id(1).debt, 0)
+        # One when the craft is lost, unless its caster is no longer active.
+        for conscious, rolls in ((True, ["debt"]), (False, [])):
+            with self.subTest(conscious=conscious):
+                state = borrowed_craft()
+                state.by_id(1).conscious = conscious
+                events, _crafts_ended = lose(
+                    state, CastingEnding.ABANDONED, [DEBT_HOLDS]
+                )
+                self.assertEqual(roll_purposes(events), rolls)
+                self.assertEqual(state.by_id(1).debt, 1)
 
     #: The list methods that change a list in place.
     LIST_MUTATORS = frozenset(

@@ -52,7 +52,7 @@ from .test_craft import (
     working_key,
 )
 from .test_engine import _box_in, events_of_type
-from .test_magic import roll_purposes, status_payloads
+from .test_magic import roll_purposes, rolls_of, status_payloads
 from .test_runaway import example_runaway_rules
 from .test_state import make_combatant
 from .test_true_cast import drains
@@ -118,11 +118,7 @@ def interruptions(events) -> list[dict]:
 
 def concentration_rolls(events) -> list[dict]:
     """Each roll to keep a working an event stream logged."""
-    return [
-        event
-        for event in events_of_type(events, "roll")
-        if event["payload"]["purpose"] == "concentration"
-    ]
+    return rolls_of(events, "concentration")
 
 
 def status_order(events) -> list[str]:

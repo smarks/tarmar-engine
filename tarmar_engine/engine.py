@@ -47,7 +47,9 @@ working over several turns, a phase-5 action each
 (:meth:`TurnRunner.craft_working`); choosing any other action in phase 3
 abandons the craft, damage that lands on the crafter forces a roll to keep
 it (:meth:`TurnRunner._interruption_roll`), and unconsciousness or a grapple
-that takes hold ends it.
+that takes hold ends it. A working whose last craft turn is taken goes off
+at the end of phase 5, after every action
+(:meth:`TurnRunner._complete_workings`).
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -78,6 +80,7 @@ from .magic import (
     PushRules,
     RunawayRules,
     TrueMagicRules,
+    WorkingEffect,
     attribute_score,
     bound_lifted,
     casting_mana,
@@ -92,6 +95,7 @@ from .profile import TARMAR, RulesProfile
 from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
 from .state import (
     BODY_POOL,
+    CASTER_POOLS,
     FATIGUE_POOL,
     BattleState,
     CombatantState,
@@ -698,15 +702,20 @@ class TurnRunner:
     def phase_actions(self) -> None:
         self.begin_phase(5, "Actions", "adjusted-DEX order, high to low")
         self._counters_taken = set()
-        order = sorted(
-            self.state.active_combatants(),
-            key=lambda c: (-c.dexterity, c.combatant_id),
-        )
-        for combatant in order:
+        for combatant in self._in_action_order():
             if not combatant.active:
                 continue  # felled earlier in this very phase
             self.execute_action(combatant)
+        self._complete_workings()
         self._lapse_counters()
+
+    def _in_action_order(self) -> list[CombatantState]:
+        """The active combatants in the Actions phase's order: adjusted DEX,
+        high to low, ties by combatant id."""
+        return sorted(
+            self.state.active_combatants(),
+            key=lambda c: (-c.dexterity, c.combatant_id),
+        )
 
     # Phase 6 -----------------------------------------------------------------
     def phase_forced_retreat(self) -> None:
@@ -2762,13 +2771,32 @@ class TurnRunner:
         or on a failing total that loses the mana; the ``action`` event; the
         effect of a success (:meth:`_resolve_cast`) or the Runaway a failing
         total starts; the debt roll of a casting that paid and borrowed; and
-        the drain of a True cast that paid (:meth:`_take_drain`), which
-        counts its pushed mana: for a casting that went off, for one whose
-        roll failed (:attr:`~.magic.CastingEnding.FAILED`) or for one a
-        Control band stopped (:attr:`~.magic.CastingEnding.STOPPED`).
-        Countered, the casting makes no roll: it pays, says so, makes its
-        debt roll and, a True cast, takes its drain
+        the drain of a True cast that paid (:meth:`_take_drain`): for a
+        casting that went off, for one whose roll failed
+        (:attr:`~.magic.CastingEnding.FAILED`) or for one a Control band
+        stopped (:attr:`~.magic.CastingEnding.STOPPED`). Countered, an
+        instant cast makes no roll: it pays, says so, makes its debt roll
+        and, a True cast, takes its drain
         (:attr:`~.magic.CastingEnding.COUNTERED`).
+
+        A working differs where its mana does. Its craft gathered the mana
+        in shares, so nothing is paid here: a casting that pays keeps what
+        the shares took, and one that does not (a roll that fails on a total
+        that keeps the mana) hands every share back
+        (:meth:`_return_shares`; house reading
+        ``failed_working_keeps_its_mana``). What it borrowed is what its
+        shares borrowed: each craft action has already reported its own
+        share of that, so this event's ``borrowed`` is 0, and the craft's
+        whole borrowing serves only the tier's refund cap and the one debt
+        roll, made here unless the shares went back (house reading
+        ``craft_borrows_share_by_share``).
+        Its drain counts its whole mana, borrowed mana included, where a
+        catalog spell's counts the mana pushed (house reading
+        ``drain_counts_the_whole_working``). Countered, it is lost
+        (:meth:`_lose_working`, :attr:`~.magic.CastingEnding.COUNTERED`) and
+        leaves no contest to press. Its ``action`` event carries
+        ``working`` and ``tier``, and on a hand-back ``mana_returned`` and,
+        with Borrowing rules injected, ``debt_returned``.
 
         Args:
             caster: The caster.
@@ -2780,22 +2808,20 @@ class TurnRunner:
                 penalties: the injury band and the off-balance penalty come
                 off here, at the roll, after any counter has been met.
             versus: The roll's attribute, as its event names it.
-            shortfall: What an instant cast borrows if it pays.
-            craft: A completing working's craft, or ``None`` for an instant
-                cast, which is paid here.
+            shortfall: What an instant cast borrows if it pays; 0 for a
+                working.
+            craft: A completing working's craft, already taken off the
+                caster, its mana gathered; or ``None`` for an instant cast,
+                which is paid here.
             channel_used: The caster's Channel for the casting and its kind
                 of magic, with Channel rules injected.
             lifted_past: The lifted bounds the casting went past.
 
         Raises:
-            NotImplementedError: for a working. This runs an instant cast
-                only until the slice of tarmar-engine #77 that completes a
-                working lands.
+            ValueError: for a working with no True Magic rules injected.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
         """
-        if craft is not None:
-            raise NotImplementedError(
-                f"{caster.name}'s {spell.name}: a working is not yet run here"
-            )
         # A True cast says so in each of its own events.
         true_cast_keys: dict[str, bool] = {"true_cast": True} if true_cast else {}
         magic = self.profile.magic
@@ -2810,6 +2836,14 @@ class TurnRunner:
             true_cast=true_cast,
             stands=craft is None,
         )
+        if contest is not None and craft is not None:
+            self._lose_working(
+                caster,
+                CastingEnding.COUNTERED,
+                craft=craft,
+                defenders=tuple(contest.defender_ids),
+            )
+            return
         if contest is not None:
             cost_note = self._pay_cast(caster, spell, push_mana, shortfall)
             defenders = self._names_of(contest.defender_ids)
@@ -2870,24 +2904,46 @@ class TurnRunner:
             casting_failure is not None
             and record.total in casting_failure.mana_lost_totals
         )
-        borrowed = shortfall if pays else 0
-        if pays:
-            cost_note = self._pay_cast(caster, spell, push_mana, borrowed)
+        # A working's own keys: what it is, and what a hand-back returned.
+        working_keys: dict[str, int | bool] = {}
+        # What this event borrows: an instant cast's shortfall when it pays,
+        # and nothing for a working, whose shares borrowed as they fell due.
+        borrowed_here = 0
+        if craft is None:
+            deed = "casts"
+            borrowed = borrowed_here = shortfall if pays else 0
+            if pays:
+                cost_note = self._pay_cast(caster, spell, push_mana, borrowed)
+            else:
+                cost_note = f"no mana spent, {caster.mana} left"
         else:
-            cost_note = f"no mana spent, {caster.mana} left"
+            deed = "completes"
+            working_keys = {"working": True, "tier": spell.level}
+            borrowed = craft.borrowed if pays else 0
+            if pays:
+                cost_note = f"{cost} mana gathered, {caster.mana} left"
+            else:
+                mana_returned, debt_returned = self._return_shares(caster, craft)
+                working_keys["mana_returned"] = mana_returned
+                cost_note = f"{mana_returned} mana back, {caster.mana} left"
+                if borrowing is not None:
+                    working_keys["debt_returned"] = debt_returned
+                if debt_returned:
+                    cost_note += f", {debt_returned} off the debt, debt {caster.debt}"
         payload: dict[str, str | int | bool | list[str]] = {
             "spell": spell.key,
             "success": succeeded,
             "mana_left": caster.mana,
             "casting_roll": cast_sequence,
             **self._cast_cost_keys(
-                caster, push_mana, channel_used, borrowed, lifted_past
+                caster, push_mana, channel_used, borrowed_here, lifted_past
             ),
             **true_cast_keys,
+            **working_keys,
         }
         self.emit(
             "action",
-            f"{caster.name} casts {spell.name} "
+            f"{caster.name} {deed} {spell.name} "
             f"({CASTING_DICE} ≤ {versus} {attribute}): "
             f"{'success' if succeeded else 'failure'} "
             f"({cost_note}{channel_note})",
@@ -2925,7 +2981,10 @@ class TurnRunner:
         if borrowed and borrowing is not None:
             self._debt_roll(caster, spell, borrowing, cost=cost)
         if true_cast and pays:
-            self._take_drain(caster, push_mana, ending, [cast_sequence])
+            # A working is drained for its whole mana, a catalog spell for
+            # the mana pushed past its cost.
+            drained_mana = push_mana if craft is None else cost
+            self._take_drain(caster, drained_mana, ending, [cast_sequence])
 
     def _true_magic_rules(self, combatant: CombatantState) -> TrueMagicRules:
         """The profile's injected True Magic rules.
@@ -3016,11 +3075,10 @@ class TurnRunner:
         borrowed. A turn whose share is 0 is logged as any other and says no
         mana was due.
 
-        Nothing here makes the working go off, and nothing else does yet:
-        completing a working is a later slice of tarmar-engine #77
-        (:meth:`_roll_and_resolve` refuses one until then). The craft action
-        that brings ``turns_done`` to the turns the working takes leaves the
-        craft standing on its caster, its whole mana gathered and spent. A
+        Nothing here makes the working go off. The craft action that brings
+        ``turns_done`` to the turns the working takes leaves the craft
+        standing on its caster, its whole mana gathered and spent, for the
+        end of the Actions phase to complete (:meth:`_complete_workings`). A
         further craft action on a craft so gathered is refused, having no
         share left to gather (:meth:`.magic.TrueMagicRules.gathered_after`);
         any other choice abandons it as it would any craft.
@@ -3065,15 +3123,8 @@ class TurnRunner:
         craft.borrowed += borrowed
         craft.turns_done += 1
         craft.target_id = combatant.chosen_target
-        magic = self.profile.magic
-        kind = None if magic is None else magic.cast_kind(working)
-        channel_used = self._channel_used(combatant, working, kind)
-        lifted_past = (
-            ()
-            if magic is None
-            else magic.lifted_bounds_passed(
-                combatant, working, craft.push_mana, kind=kind
-            )
+        channel_used, lifted_past = self._working_channel(
+            combatant, working, craft.push_mana
         )
         channel_note = "" if channel_used is None else f"; Channel {channel_used[0]}"
         stage = CRAFT_BEGUN if standing is None else CRAFT_CONTINUED
@@ -3099,6 +3150,26 @@ class TurnRunner:
                 ),
             },
         )
+
+    def _working_channel(
+        self, caster: CombatantState, working: Spell, push_mana: int
+    ) -> tuple[tuple[int, str] | None, tuple[str, ...]]:
+        """What a working's events say of Channel, for a craft action and
+        for the completed working alike: the caster's Channel for it and
+        the kind of magic that is derived by (:meth:`_channel_used`), and
+        the bounds a Game Master lifted that it goes past
+        (:meth:`.magic.MagicRules.lifted_bounds_passed`). A working names
+        the True kind (:meth:`.magic.MagicRules.cast_kind`).
+        """
+        magic = self.profile.magic
+        kind = None if magic is None else magic.cast_kind(working)
+        channel_used = self._channel_used(caster, working, kind)
+        lifted_past = (
+            ()
+            if magic is None
+            else magic.lifted_bounds_passed(caster, working, push_mana, kind=kind)
+        )
+        return channel_used, lifted_past
 
     def _begin_craft(self, caster: CombatantState) -> CraftState | None:
         """Begin the craft the caster chose for the turn, where it may.
@@ -3398,6 +3469,117 @@ class TurnRunner:
             self._debt_roll(combatant, working, borrowing, cost=gathered)
         self._take_drain(combatant, gathered, ending, chain)
 
+    def _complete_workings(self) -> None:
+        """At the end of the Actions phase, after the last action and before
+        the unmet counters lapse, every working whose last craft turn is
+        taken goes off (house reading
+        ``working_goes_off_after_the_actions``).
+
+        The active combatants are taken in the phase's own order
+        (:meth:`_in_action_order`), and each whose craft has had every turn
+        the working takes (:meth:`.magic.TrueMagicRules.turns_for`)
+        completes it (:meth:`_complete_working`). A craft is looked at when
+        its caster's turn in that order comes, so a working an earlier one
+        broke (its damage forcing the roll to keep it, or felling the
+        caster, whose craft the fall has by then lost) is not completed.
+
+        Raises:
+            ValueError: for a craft standing with no True Magic rules
+                injected.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
+        """
+        for combatant in self._in_action_order():
+            craft = combatant.crafting
+            if craft is None:
+                continue
+            true_magic = self._true_magic_rules(combatant)
+            working = true_magic.working_from_key(craft.spell_key)
+            if craft.turns_done == true_magic.turns_for(working.level):
+                self._complete_working(combatant)
+
+    def _complete_working(self, caster: CombatantState) -> None:
+        """A working whose craft is whole goes off: its roll, and all that
+        follows a casting roll (:meth:`_roll_and_resolve`).
+
+        The roll is the casting dice under the injected attribute plus the
+        injected bonus per level of the True skill; the caster's injury band
+        comes off it at the roll, as it does a cast's (house reading
+        ``interruption_takes_the_injury_band``). The craft is taken off the
+        caster before anything is rolled. The working's own drain may fell
+        its caster, and a debt band's cost may: with no craft standing the
+        fall has none to lose, so no ``craft_lost`` event and no second
+        drain follow, and the caster is not among ``_crafts_ended``. The
+        working lands on the figure its craft's latest action named (house
+        reading ``working_aimed_by_its_last_craft_action``), is a True cast
+        in its events, and borrows nothing here: its shares are paid.
+
+        Args:
+            caster: The caster whose craft has had every turn it takes.
+
+        Raises:
+            ValueError: with no True Magic rules injected, or for a caster
+                with no craft standing.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
+        """
+        magic = self.profile.magic
+        true_magic = self._true_magic_rules(caster)
+        craft = caster.crafting
+        if craft is None:
+            raise ValueError(f"{caster.name} has no craft to complete")
+        working = true_magic.working_from_key(craft.spell_key)
+        true_level = 0 if magic is None else magic.true_level(caster)
+        roll_target = (
+            attribute_score(caster, true_magic.roll_attribute)
+            + true_magic.roll_bonus_per_level * true_level
+        )
+        channel_used, lifted_past = self._working_channel(
+            caster, working, craft.push_mana
+        )
+        caster.crafting = None
+        self._roll_and_resolve(
+            caster,
+            working,
+            push_mana=craft.push_mana,
+            target_id=craft.target_id,
+            true_cast=True,
+            roll_target=roll_target,
+            versus=f"{true_magic.roll_attribute}+{true_magic.skill_label}",
+            shortfall=0,
+            craft=craft,
+            channel_used=channel_used,
+            lifted_past=lifted_past,
+        )
+
+    def _return_shares(
+        self, caster: CombatantState, craft: CraftState
+    ) -> tuple[int, int]:
+        """Hand a craft's gathered mana back to its caster: the pool gets
+        back what it paid and the debt loses what the craft borrowed.
+
+        For a working whose roll failed on a total that keeps the mana
+        (house reading ``failed_working_keeps_its_mana``). The craft has
+        already been taken off the caster.
+
+        Args:
+            caster: The caster.
+            craft: The craft whose shares go back.
+
+        Returns:
+            The mana returned to the pool, and the debt taken off.
+
+        Raises:
+            ValueError: with no True Magic rules injected.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
+        """
+        gathered = self._true_magic_rules(caster).gathered(craft)
+        mana_returned = gathered - craft.borrowed
+        caster.mana += mana_returned
+        caster.debt -= craft.borrowed
+        return mana_returned, craft.borrowed
+
     @staticmethod
     def _anchored_growth(
         combatant: CombatantState, spell: Spell, magic: MagicRules
@@ -3511,6 +3693,13 @@ class TurnRunner:
     ) -> bool:
         """A successful cast's tier, Control Roll, aim and effect, in order.
 
+        The effect is the spell's own: a continuing spell begins, a healing
+        one restores the pool it names to the figure it heals
+        (:meth:`_healed_figure`), and a damaging one is aimed, where it is
+        targeted, and lands on the figure the casting names
+        (:meth:`_living_target`). A working with a narrated effect applies
+        nothing and reports what it rolled (:meth:`_narrate_working`).
+
         Args:
             combatant: The caster.
             spell: The spell cast.
@@ -3524,7 +3713,8 @@ class TurnRunner:
         Returns:
             Whether the spell went off. Only a Control band whose spell does
             not take effect stops it: a missed aim, no living target, damage
-            the armour stops and a continuing spell all went off.
+            the armour stops, a narrated effect and a continuing spell all
+            went off.
         """
         effect_bonus = 0
         bonus_sources: list[str] = []
@@ -3563,6 +3753,10 @@ class TurnRunner:
                 actor=combatant.name,
                 payload={"spell": spell.key, "effect_bonus": effect_bonus},
             )
+        narrated = self._narrated_effect(combatant, spell)
+        if narrated is not None:
+            self._narrate_working(combatant, spell, narrated, target_id)
+            return True
         if spell.continuing:
             combatant.active_spells.append(spell.key)
             self.emit(
@@ -3576,17 +3770,26 @@ class TurnRunner:
             heal_record, _sequence = self.roll(
                 spell.damage or "1d6", purpose="healing", actor=combatant.name
             )
+            figure = self._healed_figure(combatant, spell, target_id)
+            pool = spell.damage_pool
+            maximum = getattr(figure, CASTER_POOLS[pool])
             healed = min(
                 max(0, heal_record.total + effect_bonus),
-                combatant.max_fatigue - combatant.fatigue,
+                maximum - getattr(figure, pool),
             )
-            combatant.fatigue += healed
+            setattr(figure, pool, getattr(figure, pool) + healed)
+            pool_now = getattr(figure, pool)
+            heal_payload: dict[str, int] = {"healed": healed, pool: pool_now}
+            # The caster heals itself unless the event names another figure.
+            whom = ""
+            if figure is not combatant:
+                heal_payload["target"] = figure.combatant_id
+                whom = f" for {figure.name}"
             self.emit(
                 "status",
-                f"{combatant.name} heals {healed} fatigue "
-                f"({combatant.fatigue}/{combatant.max_fatigue})",
+                f"{combatant.name} heals {healed} {pool}{whom} ({pool_now}/{maximum})",
                 actor=combatant.name,
-                payload={"healed": healed, FATIGUE_POOL: combatant.fatigue},
+                payload=heal_payload,
             )
             return True
         target = self._living_target(combatant, target_id)
@@ -3633,6 +3836,96 @@ class TurnRunner:
             body_only=spell.damage_pool == BODY_POOL,
         )
         return True
+
+    def _healed_figure(
+        self, caster: CombatantState, spell: Spell, target_id: int | None
+    ) -> CombatantState:
+        """The figure a healing spell heals.
+
+        A catalog spell heals its caster. A working heals the figure its
+        casting names when that is one of the caster's living teammates,
+        conscious or not (:meth:`.state.BattleState.teammates_of`), and the
+        caster otherwise: when it names the caster, an enemy, a figure that
+        is dead, or none (house reading ``healing_working_names_its_figure``).
+        It never falls back to the nearest enemy, as an attack's target
+        does.
+
+        Args:
+            caster: The caster.
+            spell: The healing spell.
+            target_id: The figure the casting names, or ``None``.
+        """
+        if is_working_key(spell.key):
+            for teammate in self.state.teammates_of(caster):
+                if teammate.combatant_id == target_id:
+                    return teammate
+        return caster
+
+    def _narrated_effect(
+        self, caster: CombatantState, spell: Spell
+    ) -> WorkingEffect | None:
+        """The effect of a working the engine does not apply, or ``None``
+        for a catalog spell and for a working with a rolled effect.
+
+        Raises:
+            ValueError: for a working with no True Magic rules injected.
+            KeyError: for a working's key the injected rules do not build.
+        """
+        if not is_working_key(spell.key):
+            return None
+        effect, _tier = self._true_magic_rules(caster).effect_and_tier(spell.key)
+        return effect if effect.kind is None else None
+
+    def _narrate_working(
+        self,
+        caster: CombatantState,
+        working: Spell,
+        effect: WorkingEffect,
+        target_id: int | None,
+    ) -> None:
+        """A working with a narrated effect goes off: the engine reports it
+        and applies nothing (house reading ``narrated_working_rolls_its_tier``).
+
+        Where the effect carries dice, the working's at its tier are rolled
+        (:meth:`.magic.WorkingEffect.dice_at`) and the total is its
+        magnitude, for the Game Master to read. No aim roll is made. The
+        ``status`` event names the effect, the tier, the magnitude (``None``
+        with no dice) and the figure the craft's latest action named,
+        passed through as given: any figure, or none, with no check on it
+        and no other chosen in its place.
+
+        Args:
+            caster: The caster.
+            working: The working that went off.
+            effect: Its narrated effect.
+            target_id: The figure the craft named, or ``None``.
+        """
+        tier = working.level
+        dice = effect.dice_at(tier)
+        magnitude: int | None = None
+        magnitude_note = ""
+        if dice is not None:
+            record, _sequence = self.roll(
+                dice, purpose="working magnitude", actor=caster.name
+            )
+            magnitude = record.total
+            magnitude_note = f", magnitude {magnitude}"
+        target_note = (
+            "" if target_id is None else f" at {self.state.by_id(target_id).name}"
+        )
+        self.emit(
+            "status",
+            f"{caster.name}'s {working.name} goes off{target_note}"
+            f"{magnitude_note}: its effect is the Game Master's to describe",
+            actor=caster.name,
+            payload={
+                "working_effect": effect.key,
+                "tier": tier,
+                "narrated": True,
+                "target": target_id,
+                "magnitude": magnitude,
+            },
+        )
 
     def _casting_success_tier(
         self,

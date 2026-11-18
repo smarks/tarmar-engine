@@ -150,6 +150,14 @@ def craft(state: BattleState, profile=CRAFT_PROFILE, faces=()) -> list[dict]:
     return events
 
 
+def craft_turns(state: BattleState, turns: int) -> BattleState:
+    """Take the craft action the caster has chosen on each of some turns;
+    the state."""
+    for _turn in range(turns):
+        craft(state)
+    return state
+
+
 def standing_craft(caster: CombatantState) -> CraftState:
     """The craft standing on a caster, for a test that expects one."""
     craft = caster.crafting
@@ -172,9 +180,7 @@ def steady_craft(
     elif caster_overrides:
         raise ValueError("a state given is crafted in as it stands")
     choose_craft(state, **STEADY, borrow=borrow)
-    for _turn in range(turns):
-        craft(state)
-    return state
+    return craft_turns(state, turns)
 
 
 def borrowed_craft(**caster_overrides) -> BattleState:
