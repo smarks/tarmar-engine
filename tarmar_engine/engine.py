@@ -74,6 +74,7 @@ from .magic import (
     bound_lifted,
     casting_mana,
     casting_success_ceiling,
+    failed_band,
     spell_effect_kind,
 )
 from .profile import TARMAR, RulesProfile
@@ -2861,12 +2862,12 @@ class TurnRunner:
             automatic_totals=push.automatic_runaway_totals,
         )
         margin = control.margin
-        if control.automatic:
-            band = push.runaway_band()
-        elif margin > 0:
-            band = push.band_for_margin(margin)
-        else:
-            band = None
+        band = failed_band(
+            push.failure_bands,
+            margin,
+            automatic=control.automatic,
+            automatic_band=push.runaway_band(),
+        )
         held = band is None
         runaway = band is not None and band.is_runaway
         control_sequence = self.emit_roll(
@@ -2940,7 +2941,13 @@ class TurnRunner:
             target=target,
             automatic_totals=borrowing.automatic_failure_totals,
         )
-        held = not debt.automatic and debt.margin <= 0
+        band = failed_band(
+            borrowing.failure_bands,
+            debt.margin,
+            automatic=debt.automatic,
+            automatic_band=borrowing.automatic_band(),
+        )
+        held = band is None
         debt_sequence = self.emit_roll(
             debt.record,
             actor=combatant.name,
@@ -2965,13 +2972,8 @@ class TurnRunner:
                 "automatic": debt.automatic,
             },
         )
-        if held:
+        if band is None:
             return
-        band = (
-            borrowing.automatic_band()
-            if debt.automatic
-            else borrowing.band_for_margin(debt.margin)
-        )
         cost = band.cost(combatant.debt)
         cost_pool = band.cost_pool if cost else None
         message = f"{combatant.name}'s failed debt for {spell.name}: {band.label}"
