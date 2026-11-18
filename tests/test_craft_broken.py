@@ -19,7 +19,7 @@ one used.
 from dataclasses import replace
 from unittest import TestCase
 
-from tarmar_engine import engine, policy
+from tarmar_engine import actions, engine, policy
 from tarmar_engine.magic import CastingEnding, RollUnderRule
 from tarmar_engine.profile import TarmarProfile
 from tarmar_engine.state import (
@@ -46,6 +46,7 @@ from .test_craft import (
     craft_rules,
     crafter_beside,
     lose,
+    loss_events,
     losses,
     standing_craft,
     steady_craft,
@@ -669,7 +670,7 @@ class UnconsciousTest(TestCase):
         turn_runner, events = runner_on(state, (), RUNAWAY_PROFILE)
         turn_runner.phase_renew_spells()
         self.assertFalse(caster.conscious)
-        (lost,) = [event for event in events if "craft_lost" in event["payload"]]
+        (lost,) = loss_events(events)
         self.assertEqual((lost["phase"], lost["payload"]["ending"]), (2, "unconscious"))
         self.assertEqual(turn_runner._crafts_ended, {caster.combatant_id})
 
@@ -880,7 +881,7 @@ class WholeTurnTest(TestCase):
         events, turn_runner = self.turn(
             state, ATTACK, [*STRIKES, SNAGS], enemy_dexterity=14
         )
-        (lost,) = [event for event in events if "craft_lost" in event["payload"]]
+        (lost,) = loss_events(events)
         self.assertEqual(
             (lost["phase"], lost["payload"]["ending"], lost["payload"]["mana_spent"]),
             (5, "interrupted", 2),
@@ -954,3 +955,69 @@ class WholeTurnTest(TestCase):
                 self.assertNotIn("concentration", roll_purposes(events))
                 self.assertEqual(caster.crafting is None, hands is None)
                 self.assertEqual(len(craft_actions(events)), 0 if hands is None else 1)
+
+    def test_a_slower_enemy_closing_to_hand_to_hand_blocks_the_craft_at_the_next_choice(
+        self,
+    ):
+        # The enemy closes after the caster's craft action, so the craft
+        # stands into the next turn. With a weapon in hand that turn's menu
+        # has no continuation, and whatever the caster takes from it the
+        # working is lost as it would have been at a craft action: blocked.
+        # With empty hands the continuation is on offer, and passing it over
+        # abandons the working.
+        blocked = BROKEN_DRAINS[CastingEnding.BLOCKED]
+        abandoned = BROKEN_DRAINS[CastingEnding.ABANDONED]
+        self.assertNotEqual(blocked, abandoned)
+        for hands, ending, drain_per_mana in (
+            (None, "blocked", blocked),
+            (WeaponState(), "abandoned", abandoned),
+        ):
+            with self.subTest(empty_hands=hands is not None):
+                state = beside() if hands is None else beside(weapon=hands)
+                caster = state.by_id(1)
+                events, turn_runner = self.turn(
+                    state, GRAPPLE, [SLIPS], enemy_dexterity=10
+                )
+                (action,) = craft_actions(events)
+                self.assertEqual(action["turn"], 3)
+                self.assertEqual(losses(events), [])
+                self.assertEqual(caster.hth_with, [2])
+                offered = policy.choose_option(state, caster, BROKEN_RULES).candidates
+                continuation = [
+                    candidate
+                    for candidate in offered
+                    if candidate.letter == actions.CRAFT_OPTION
+                ]
+                self.assertEqual(len(continuation), 0 if hands is None else 1)
+                another = next(
+                    candidate
+                    for candidate in offered
+                    if candidate.letter != actions.CRAFT_OPTION
+                )
+                events.clear()
+                turn_runner.run(choosing_for({1: another}))
+                (lost,) = loss_events(events)
+                self.assertEqual(
+                    (
+                        lost["phase"],
+                        lost["payload"]["ending"],
+                        lost["payload"]["mana_spent"],
+                        lost["payload"]["drain"],
+                    ),
+                    (3, ending, 3, 3 * drain_per_mana),
+                )
+                # The one guard a cast answers to says why, before the loss.
+                refusals = [
+                    event
+                    for event in events_of_type(events, "info")
+                    if event["payload"].get("hth_cast_refused")
+                ]
+                self.assertEqual(len(refusals), 1 if hands is None else 0)
+                for refusal in refusals:
+                    self.assertEqual(
+                        (refusal["phase"], refusal["sequence"]),
+                        (3, lost["sequence"] - 1),
+                    )
+                self.assertEqual(craft_actions(events), [])
+                self.assertIsNone(caster.crafting)
+                self.assertNotIn("concentration", roll_purposes(events))

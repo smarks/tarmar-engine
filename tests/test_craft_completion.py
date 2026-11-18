@@ -64,6 +64,7 @@ from .test_craft import (
     craft_rules,
     craft_turns,
     crafter,
+    loss_events,
     losses,
     steady_craft,
     working_key,
@@ -1177,7 +1178,7 @@ class CounteredTest(TestCase):
         events, _turn_runner = countered(
             state, [CASTER_LOW, DEFENDER_HIGH, DEFENDER_HIGH], defenders=(3, 2)
         )
-        (lost,) = [event for event in events if "craft_lost" in event["payload"]]
+        (lost,) = loss_events(events)
         self.assertEqual(lost["payload"]["defenders"], [2, 3])
         self.assertEqual(
             lost["message"],

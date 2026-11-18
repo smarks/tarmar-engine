@@ -282,6 +282,145 @@ class CounterMenuTest(TestCase):
         state = counter_state(spells=[], spell_skill_levels={"shield": 1})
         self.assertEqual(len(counters(decide(state, 2))), 4)
 
+    def test_a_generic_counter_alone_makes_a_mage_with_nothing_to_cast(self):
+        # A figure whose only spells are Counter rungs may counter, and
+        # casts nothing for another to counter, whatever spell skill is
+        # recorded beside them.
+        for skills in ({}, {"shield": 2}):
+            with self.subTest(spell_skill_levels=skills):
+                state = counter_state(
+                    spells=["counter_2", "counter_4"], spell_skill_levels=skills
+                )
+                self.assertEqual(len(counters(decide(state, 2))), 4)
+                self.assertEqual(counters(decide(state, 1)), [])
+        # A spell beside the rung is something to cast.
+        castable = counter_state(spells=["counter_2", "shield"])
+        named = counters(decide(castable, 1))
+        self.assertEqual({candidate.target_id for candidate in named}, {2})
+
+    def test_a_spell_skill_with_no_spell_known_is_still_a_caster_to_counter(self):
+        # A recorded spell skill makes a mage, who may counter (above) and
+        # whom a counter may name, as it always could, with no spell known.
+        state = counter_state()
+        caster = state.by_id(1)
+        caster.spells = []
+        caster.spell_skill_levels = {"fire_missile": 3}
+        against = counters(decide(state, 2))
+        self.assertEqual({candidate.target_id for candidate in against}, {1})
+        self.assertEqual(len(against), 4)
+        by_it = counters(decide(state, 1))
+        self.assertEqual({candidate.target_id for candidate in by_it}, {2})
+
+    def test_a_spell_the_catalog_lacks_is_looked_up_no_sooner_than_it_was(self):
+        # A figure that knows a key the catalog does not hold is refused
+        # where its own cast letter is built, as it always was. Naming it as
+        # a caster to counter looks nothing up.
+        state = counter_state()
+        caster = state.by_id(1)
+        caster.spells = ["no_such_spell"]
+        caster.chosen_letter = ""
+        against = counters(decide(state, 2))
+        self.assertEqual({candidate.target_id for candidate in against}, {1})
+        with self.assertRaises(KeyError):
+            decide(state, 1)
+        # A defender with nothing to commit looks up no cast either, even
+        # one the caster has chosen: it is offered no counter to name it in.
+        caster.chosen_letter = "h"
+        caster.chosen_spell = "no_such_spell"
+        state.by_id(2).mana = 0
+        self.assertEqual(counters(decide(state, 2)), [])
+        state.by_id(2).mana = 6
+        with self.assertRaises(KeyError):
+            decide(state, 2)
+        caster.chosen_letter = ""
+        # Prone, it has no cast letter, and its menu is built.
+        caster.prone = True
+        letters = [candidate.letter for candidate in decide(state, 1).candidates]
+        self.assertEqual(letters, ["g", *[actions.COUNTER_OPTION] * 4])
+
+    #: The defender (WIS 11, 6 mana) committing 3 against the Fire Missile
+    #: its caster has chosen, and against a caster that has chosen nothing.
+    AGAINST_THE_MISSILE = (
+        "Oppose Fighter 1's Fire Missile: commit 3 mana (3 left) for +1 on the "
+        "opposed roll 2d8 + WIS 11 less 0 injury"
+    )
+    BLIND = (
+        "Oppose whatever Fighter 1 casts this turn (not yet known): commit 3 "
+        "mana (3 left) for +1 on the opposed roll 2d8 + WIS 11 less 0 injury"
+    )
+    NOT_THE_AIS = "; the AI does not counter = 0.000"
+
+    def forecast(self, state, magic=None) -> str:
+        """The rationale of the defender's counter of 3 mana."""
+        (committing_three,) = (
+            offered
+            for offered in counters(decide(state, 2, magic))
+            if offered.counter_mana == 3
+        )
+        return committing_three.rationale
+
+    def test_with_no_familiarity_bonus_the_forecast_is_as_it_was(self):
+        # Whatever either side knows of the spell.
+        state = counter_state(
+            spell_skill_levels={"fire_missile": 2}, spells=["shield", "counter_4"]
+        )
+        state.by_id(1).spell_skill_levels = {"fire_missile": 5}
+        self.assertEqual(
+            self.forecast(state), self.AGAINST_THE_MISSILE + self.NOT_THE_AIS
+        )
+        state.by_id(1).chosen_letter = ""
+        self.assertEqual(self.forecast(state), self.BLIND + self.NOT_THE_AIS)
+
+    def test_the_forecast_adds_the_defenders_own_familiarity(self):
+        familiarity = FAMILIARITY_PROFILE.magic
+        state = counter_state(spell_skill_levels={"fire_missile": 2})
+        knows_the_spell = (
+            self.AGAINST_THE_MISSILE
+            + ", and +6 for familiarity (spell level 2)"
+            + self.NOT_THE_AIS
+        )
+        self.assertEqual(self.forecast(state, familiarity), knows_the_spell)
+        # The caster's own familiarity is no part of it: the defender
+        # counters it blind.
+        state.by_id(1).spell_skill_levels = {"fire_missile": 5}
+        self.assertEqual(self.forecast(state, familiarity), knows_the_spell)
+        # The highest of what the defender has, not their sum: Counter 4
+        # reaches the level-1 Missile.
+        state.by_id(2).spells = ["shield", "counter_4"]
+        self.assertEqual(
+            self.forecast(state, familiarity),
+            self.AGAINST_THE_MISSILE
+            + ", and +12 for familiarity (generic level 4)"
+            + self.NOT_THE_AIS,
+        )
+
+    def test_a_defender_with_no_familiarity_reads_as_it_did(self):
+        familiarity = FAMILIARITY_PROFILE.magic
+        # A level in another spell, and a Counter rung below the spell cast.
+        state = counter_state(
+            spell_skill_levels={"shield": 3}, spells=["shield", "counter_2"]
+        )
+        caster = state.by_id(1)
+        caster.spells = ["lightning_bolt"]
+        caster.chosen_spell = "lightning_bolt"
+        self.assertEqual(
+            self.forecast(state, familiarity),
+            self.forecast(state),
+        )
+        self.assertIn("Lightning Bolt", self.forecast(state, familiarity))
+
+    def test_a_blind_counter_forecasts_only_what_it_is_sure_of(self):
+        # A level in a spell and a Counter rung count only for the spells
+        # they reach, and the cast is not yet known.
+        state = counter_state(
+            spell_skill_levels={"fire_missile": 2}, spells=["shield", "counter_4"]
+        )
+        state.by_id(1).chosen_letter = ""
+        self.assertEqual(
+            self.forecast(state, FAMILIARITY_PROFILE.magic),
+            self.BLIND + self.NOT_THE_AIS,
+        )
+
     def test_no_counter_without_counterspell_rules(self):
         self.assertEqual(
             counters(decide(counter_state(), 2, example_magic_rules())), []

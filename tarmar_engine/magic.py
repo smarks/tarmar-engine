@@ -212,9 +212,10 @@ class CastingEnding(StrEnum):
 
     #: A failed interruption roll.
     INTERRUPTED = "interrupted"
-    #: The caster chose another action.
+    #: The caster chose another action with the craft's continuation on offer.
     ABANDONED = "abandoned"
-    #: The craft action was refused, as a cast is where none may be made.
+    #: The caster stood where no cast may be made: its craft action was
+    #: refused, or its menu held no continuation to choose.
     BLOCKED = "blocked"
     #: A share the pool could not pay, with no borrowing.
     UNPAID = "unpaid"
@@ -1598,6 +1599,60 @@ class TrueMagicRules:
             craft.turns_done,
         )
 
+    def share_due(self, craft: CraftState) -> int:
+        """The mana a craft's next craft action gathers: what the craft will
+        have gathered after that turn (:meth:`gathered_after`), less what it
+        has gathered (:meth:`gathered`). The one place a share is worked
+        out, for the engine that takes it and the menu that forecasts it.
+
+        Raises:
+            KeyError: for a craft whose key is not a working these rules
+                build.
+            ValueError: for a craft whose every turn is taken, which has no
+                share left to gather, and for one :meth:`gathered` refuses.
+        """
+        working = self.working_from_key(craft.spell_key)
+        after = self.gathered_after(
+            casting_mana(working, craft.push_mana),
+            self.turns_for(working.level),
+            craft.turns_done + 1,
+        )
+        return after - self.gathered(craft)
+
+    def roll_target(self, caster: CombatantState, true_level: int) -> int:
+        """The target of a working's casting roll, before any penalty its
+        caster's own state takes off it: the caster's :attr:`roll_attribute`
+        and :attr:`roll_bonus_per_level` for each level in the True skill.
+
+        Args:
+            caster: The caster.
+            true_level: The caster's level in the True skill
+                (:meth:`MagicRules.true_level`).
+        """
+        return (
+            attribute_score(caster, self.roll_attribute)
+            + self.roll_bonus_per_level * true_level
+        )
+
+    @property
+    def versus(self) -> str:
+        """What a working's casting roll is under, as a roll event and a
+        menu line name it: the attribute and the True skill's label."""
+        return f"{self.roll_attribute}+{self.skill_label}"
+
+    def drained_mana(self, spell: Spell, push_mana: int) -> int:
+        """The mana the drain of a True cast or a working counts: a
+        working's whole mana (:func:`casting_mana`), and for a True cast of a
+        catalog spell the mana pushed past its cost alone.
+
+        Args:
+            spell: The spell cast, a working included.
+            push_mana: The mana pushed past the spell's cost.
+        """
+        if is_working_key(spell.key):
+            return casting_mana(spell, push_mana)
+        return push_mana
+
     def drain(self, drained_mana: int, ending: CastingEnding | None) -> int:
         """What a True cast or a working drains from its caster.
 
@@ -1732,11 +1787,13 @@ class MagicRules:
         """
         if self.true_magic is not None and bound_lifted(caster, CHANNEL):
             return None
-        return self._unlifted_tier_cap(caster)
+        return self.unlifted_tier_cap(caster)
 
-    def _unlifted_tier_cap(self, caster: CombatantState) -> int:
+    def unlifted_tier_cap(self, caster: CombatantState) -> int:
         """The tier cap the caster's level in the True skill gives, whether
-        or not a Game Master has lifted it; 0 with no True Magic rules."""
+        or not a Game Master has lifted it; 0 with no True Magic rules.
+        Public so the menu's line for a working past it names it, as it
+        names the Channel a casting is past."""
         if self.true_magic is None:
             return 0
         return self.true_magic.tier_cap(self.true_level(caster))
@@ -1942,14 +1999,16 @@ class MagicRules:
             passed.append(PUSH_CAP)
         channel = self.channel_for(caster, spell, kind)
         past_channel = channel is not None and casting_mana(spell, push_mana) > channel
-        if past_channel or self._past_tier_cap(caster, spell):
+        if past_channel or self.past_tier_cap(caster, spell):
             passed.append(CHANNEL)
         return tuple(passed)
 
-    def _past_tier_cap(self, caster: CombatantState, spell: Spell) -> bool:
+    def past_tier_cap(self, caster: CombatantState, spell: Spell) -> bool:
         """Is the spell a working whose tier is past what the caster's level
-        in the True skill allows, whether or not the cap is lifted?"""
-        return is_working_key(spell.key) and spell.level > self._unlifted_tier_cap(
+        in the True skill allows, whether or not the cap is lifted? Public
+        so the menu's line for such a working asks it, as
+        :meth:`lifted_bounds_passed` does."""
+        return is_working_key(spell.key) and spell.level > self.unlifted_tier_cap(
             caster
         )
 

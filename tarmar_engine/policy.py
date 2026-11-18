@@ -44,12 +44,23 @@ and its DISENGAGE (n, v) and Struggle Free leave the step to the engine when
 the figure acts (straight back, then either flank), the forecast printing
 the step it expects. A player may give any option
 :func:`movement.legal_destinations` allows a hex, and the engine checks it.
+
+**True Magic** (tarmar-engine #77). With True Magic rules among the injected
+magic rules, a figure with a level in the True skill is offered, wherever a
+cast is, a True cast of each spell it may True cast and each working it may
+begin to craft (:func:`_cast_candidates`), and a figure with a craft standing
+is offered that craft's continuation (:func:`_score_options`). The AI True
+casts nothing. It crafts: a damaging working is weighed turn for turn against
+its other options, never pushed and never borrowing (:func:`_crafts_of`).
+With no True Magic rules, or for a figure with no level in the True skill,
+none of it is on the menu.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field, replace
+from itertools import count
 from typing import TypeVar
 
 from . import actions, combat_math, hexes, movement, weapons
@@ -63,19 +74,22 @@ from .magic import (
     BorrowingRules,
     CastingFailureRules,
     ChannelUnclassifiedSpell,
-    CounterspellRules,
+    FamiliaritySource,
     MagicRules,
     PushRules,
     RollUnderRule,
-    RunawayRules,
+    TrueMagicRules,
+    WorkingEffect,
     attribute_score,
     bound_lifted,
     casting_mana,
     casting_success_ceiling,
+    is_working_key,
+    spell_for,
 )
 from .reactions import TarmarReactions
-from .spells import DODGE_DEX_CHECK_PENALTY, Spell, get_spell
-from .state import BattleState, CombatantState, WeaponState
+from .spells import DODGE_DEX_CHECK_PENALTY, SPELLS, Spell, get_spell
+from .state import BattleState, CombatantState, CraftState, WeaponState
 
 #: Whatever an option is aimed with (tarmar-engine #21): its targets, or its
 #: candidates at them.
@@ -119,6 +133,9 @@ OWN_RUNAWAY_ANCHOR_SCORE = 10.0
 #: The menu key of the anchor option (tarmar-engine #30): a whole action,
 #: like a cast, that stands still.
 ANCHOR_OPTION = "anchor"
+#: What the name of a cast offered as a True cast adds to the cast's own
+#: (tarmar-engine #77).
+TRUE_CAST_MARK = "TRUE CAST"
 
 #: Decimal places every score and every factor behind it is printed to.
 #: Scores are *built* from factors already rounded to this precision (see
@@ -159,7 +176,8 @@ class Forecast:
     and rationale are built from (tarmar-engine #22).
 
     Filled for an attack (ATTACK, a CHARGE that reaches, MISSILE, ONE LAST
-    SHOT, a hand-to-hand strike) and for a damaging cast; ``None`` on every
+    SHOT, a hand-to-hand strike), for a damaging cast and for a craft action
+    on a damaging working; ``None`` on every
     other option. Each figure is held at :data:`SCORE_PRECISION`, as the
     rationale prints it: the rationale's working is :meth:`working`, and the
     forecast's own score, :attr:`score`, is the product of the two factors it
@@ -167,9 +185,12 @@ class Forecast:
 
     The forecast is what one attempt would do. The option's score may be
     adjusted after it, as its rationale then says: a wounded beast's caution
-    scales it, and a throw of the only hand weapon carried, a borrowing cast
-    and a cast pressing a countered spell again (:func:`_mark_escalations`)
-    are scored :data:`PLAYER_ONLY_SCORE` with their forecasts kept.
+    scales it, and a throw of the only hand weapon carried, a borrowing cast,
+    a True cast and a cast pressing a countered spell again
+    (:func:`_mark_escalations`)
+    are scored :data:`PLAYER_ONLY_SCORE` with their forecasts kept. A craft
+    action's score is its forecast over the craft turns left, and nothing for
+    a working whose drain would fell its caster (:func:`_crafts_of`).
     """
 
     #: The chance the option lands: P(hit) for a d20 attack; P(land) for a
@@ -624,6 +645,187 @@ def _charge(
     )
 
 
+def _one_casting_failure(
+    magic: MagicRules | None, casting_failure: CastingFailureRules | None
+) -> CastingFailureRules | None:
+    """The casting failure rules a menu is priced under, from their one
+    source (tarmar-engine #77).
+
+    With no ``magic`` passed they are the ``casting_failure`` argument, as
+    they always were. With ``magic`` passed they are its own
+    (``MagicRules.casting_failure``), and the argument may only be left out
+    or name that same object.
+
+    Raises:
+        ValueError: for a ``casting_failure`` argument beside ``magic`` that
+            is neither ``None`` nor the rules ``magic`` carries.
+    """
+    if magic is None:
+        return casting_failure
+    if casting_failure is not None and casting_failure is not magic.casting_failure:
+        raise ValueError(
+            "the casting failure rules passed are not the ones the magic rules "
+            "carry; pass the magic rules alone"
+        )
+    return magic.casting_failure
+
+
+@dataclass(frozen=True)
+class _CastingRoll:
+    """A casting roll's chance of success and how a rationale prints it."""
+
+    probability: float
+    #: "3d6 ≤ INT 14 — P(cast) 0.907"
+    note: str
+
+
+def _casting_roll(
+    roll: _RollUnder, casting_failure: CastingFailureRules | None
+) -> _CastingRoll:
+    """The casting roll under ``roll``, judged as the engine judges it
+    (:func:`cast_success_chance`), naming the fumble floor where it bounds
+    the chance."""
+    probability = cast_success_chance(roll.target, casting_failure)
+    floor_note = ""
+    if (
+        casting_failure is not None
+        and casting_success_ceiling(roll.target, casting_failure) < roll.target
+    ):
+        floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
+    return _CastingRoll(
+        probability,
+        f"3d6 ≤ {roll.text}{floor_note} — P(cast) {score_text(probability)}",
+    )
+
+
+def _aimed_casting(
+    actor: CombatantState,
+    enemy: CombatantState,
+    spell: Spell,
+    casting: _CastingRoll,
+    deductions: list[_Deduction],
+) -> tuple[Forecast, str]:
+    """A damaging spell's forecast at one enemy, and the rationale that
+    prints it: the casting roll, the aim roll where the spell is targeted,
+    and the expected damage after the enemy's armour.
+
+    ``deductions`` are what the caster's own rolls take off
+    (:func:`_action_roll_deductions`): the casting roll's are already in
+    ``casting``, and the aim roll takes the same.
+
+    Raises:
+        ValueError: for a spell that rolls no damage.
+    """
+    if spell.damage is None:
+        raise ValueError(f"{spell.name} rolls no damage to forecast")
+    aim_note = ""
+    probability = casting.probability
+    if spell.targeted:
+        # The engine's aim roll: DEX less the penalties and, at a dodging
+        # target, the dodge's re-mapped +4 TN (#56).
+        aim_roll = _roll_under(
+            "DEX",
+            actor.dexterity,
+            [
+                *deductions,
+                (
+                    DODGE_DEX_CHECK_PENALTY if enemy.dodging else 0,
+                    "for the target's dodge",
+                ),
+            ],
+        )
+        aim_probability = three_d6_at_most(aim_roll.target)
+        probability = probability * aim_probability
+        aim_note = f" x P(aim) {score_text(aim_probability)} (3d6 ≤ {aim_roll.text})"
+    stops = 0 if spell.ignores_armour else enemy.stops
+    forecast = Forecast(
+        hit_chance=round_score(probability),
+        damage_expression=spell.damage,
+        armour_stops=stops,
+        expected_damage=round_score(combat_math.expected_damage(spell.damage, stops)),
+    )
+    working = forecast.working(f" on {enemy.name}")
+    return forecast, f"{casting.note}{aim_note} — {working}"
+
+
+def _casts_of(
+    actor: CombatantState,
+    letter: str,
+    spell: Spell,
+    aimed_at: list[CombatantState],
+    beyond_purse: bool,
+    casting_failure: CastingFailureRules | None,
+) -> list[Candidate]:
+    """The casts of one catalog spell under a cast letter: none for a spell
+    past the purse (unless ``beyond_purse``) or one already kept up, one for
+    a healing spell or a buff, and one at each of ``aimed_at`` for a damaging
+    spell."""
+    if spell.level > actor.mana and not beyond_purse:
+        return []
+    if spell.continuing and spell.key in actor.active_spells:
+        return []  # already up; renewal happens in phase 2
+    deductions = _action_roll_deductions(actor)
+    casting = _casting_roll(
+        _roll_under(
+            spell.attribute, attribute_score(actor, spell.attribute), deductions
+        ),
+        casting_failure,
+    )
+    name = f"CAST SPELL {spell.name}"
+    if spell.heals:
+        missing = actor.max_fatigue - actor.fatigue
+        healed = min(missing, 3.5)
+        value = product_of(casting.probability, healed, HEAL_SCORE_PER_POINT)
+        rationale = (
+            f"{casting.note} x {score_text(healed)} fatigue restored "
+            f"({missing} fatigue missing, capped at 3.500 per cast) "
+            f"x {score_text(HEAL_SCORE_PER_POINT)} per point "
+            f"= {score_text(value)}"
+        )
+        return [Candidate(letter, name, value, rationale, spell_key=spell.key)]
+    if spell.damage is None:
+        value = product_of(casting.probability, BUFF_SCORE)
+        rationale = (
+            f"{casting.note} x {score_text(BUFF_SCORE)} flat value of a "
+            f"defensive buff = {score_text(value)}"
+        )
+        return [Candidate(letter, name, value, rationale, spell_key=spell.key)]
+    candidates = []
+    for enemy in aimed_at:
+        forecast, rationale = _aimed_casting(actor, enemy, spell, casting, deductions)
+        candidates.append(
+            Candidate(
+                letter,
+                name,
+                forecast.score,
+                rationale,
+                target_id=enemy.combatant_id,
+                spell_key=spell.key,
+                forecast=forecast,
+            )
+        )
+    return candidates
+
+
+def _as_true_cast(candidate: Candidate, true_magic: TrueMagicRules) -> Candidate:
+    """A cast as the True cast of its spell (tarmar-engine #77): marked
+    ``true_cast``, named as one, and scored :data:`PLAYER_ONLY_SCORE`, for a
+    player. It makes the spell's own casting roll (house reading
+    ``true_cast_rolls_the_spells_own_roll``), so the cast's forecast stands
+    and is kept."""
+    return replace(
+        candidate,
+        name=f"{candidate.name} ({TRUE_CAST_MARK})",
+        score=PLAYER_ONLY_SCORE,
+        rationale=(
+            f"True cast, its Channel by {true_magic.skill_label}: "
+            f"{candidate.rationale}; the AI does not True cast = "
+            f"{score_text(PLAYER_ONLY_SCORE)}"
+        ),
+        true_cast=True,
+    )
+
+
 def _cast_candidates(
     state: BattleState,
     actor: CombatantState,
@@ -631,6 +833,8 @@ def _cast_candidates(
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
@@ -646,106 +850,409 @@ def _cast_candidates(
     offers it at every active enemy as well, the nearest first, each priced
     against its own target (tarmar-engine #21): a spell has no range, and the
     engine lands a cast on whichever active enemy it names.
+
+    ``magic`` is the injected magic rules (tarmar-engine #77); with none the
+    list is the recipe casts above and nothing else. With them, and for an
+    actor with a level in the True skill
+    (:meth:`.magic.MagicRules.true_level`), the recipe casts are followed by
+    two more kinds of casting, each on the menu exactly where this function
+    is called, which is where a cast is legal:
+
+    * the True casts, under the same letter: one per spell of
+      :meth:`.magic.MagicRules.true_castable`, priced as the cast of that
+      spell is and left to a player (:func:`_as_true_cast`);
+    * the workings the actor may begin to craft, under
+      :data:`.actions.CRAFT_OPTION` (:func:`_craft_candidates`), unless a
+      craft already stands: its continuation is :func:`_score_options`'s to
+      offer, and no second craft is begun beside it.
+
+    The casting failure rules are then ``magic``'s own
+    (:func:`_one_casting_failure`).
+
+    Raises:
+        ValueError: for a ``casting_failure`` that is not ``magic``'s own;
+            for a figure granted a working the rules do not build; and for
+            ``beyond_purse`` crafts with no Borrowing rules to bound them.
     """
-    candidates = []
+    casting_failure = _one_casting_failure(magic, casting_failure)
     aimed_at = _aimed_at(enemies_by_distance(state, actor), every_target)
+    candidates: list[Candidate] = []
     for key in actor.spells:
         spell = get_spell(key)
         if spell.generic_counter:
             continue  # learned, never cast
-        if spell.level > actor.mana and not beyond_purse:
-            continue
-        if spell.continuing and key in actor.active_spells:
-            continue  # already up; renewal happens in phase 2
-        attribute_name = spell.attribute
-        cast_roll = _roll_under(
-            attribute_name,
-            actor.intelligence if attribute_name == "INT" else actor.wisdom,
-            _action_roll_deductions(actor),
+        candidates += _casts_of(
+            actor, letter, spell, aimed_at, beyond_purse, casting_failure
         )
-        attribute = cast_roll.target
-        cast_probability = cast_success_chance(attribute, casting_failure)
-        floor_note = ""
-        if (
-            casting_failure is not None
-            and casting_success_ceiling(attribute, casting_failure) < attribute
-        ):
-            floor_note = f", under the fumble floor {casting_failure.fumble_floor}"
-        cast_note = (
-            f"3d6 ≤ {cast_roll.text}{floor_note} — P(cast) "
-            f"{score_text(cast_probability)}"
+    true_magic = None if magic is None else magic.true_magic
+    if magic is None or true_magic is None or magic.true_level(actor) <= 0:
+        return candidates
+    for spell in magic.true_castable(actor):
+        candidates += [
+            _as_true_cast(candidate, true_magic)
+            for candidate in _casts_of(
+                actor, letter, spell, aimed_at, beyond_purse, casting_failure
+            )
+        ]
+    if actor.crafting is None:
+        candidates += _craft_candidates(
+            state, actor, magic, true_magic, beyond_purse, casting_failure, every_target
         )
-        if spell.heals:
-            missing = actor.max_fatigue - actor.fatigue
-            healed = min(missing, 3.5)
-            value = product_of(cast_probability, healed, HEAL_SCORE_PER_POINT)
-            rationale = (
-                f"{cast_note} x {score_text(healed)} fatigue restored "
-                f"({missing} fatigue missing, capped at 3.500 per cast) "
-                f"x {score_text(HEAL_SCORE_PER_POINT)} per point "
-                f"= {score_text(value)}"
+    return candidates
+
+
+def _craft_mana_bound(
+    actor: CombatantState, magic: MagicRules, working: Spell, beyond_purse: bool
+) -> int:
+    """The most mana a working the actor begins to craft may take: its tier
+    is at most this.
+
+    On the menu the actor pays from, the purse. On the menu the borrowing
+    variants are built from (``beyond_purse``), the most a borrowing casting
+    of the working may take
+    (:meth:`.magic.BorrowingRules.borrowing_ceiling`, within
+    :meth:`.magic.MagicRules.channel_bound` by the True kind), which is
+    finite whether or not Channel is lifted for the actor.
+
+    Raises:
+        ValueError: for ``beyond_purse`` with no Borrowing rules injected,
+            which leaves nothing to bound the list.
+    """
+    if not beyond_purse:
+        return actor.mana
+    if magic.borrowing is None:
+        raise ValueError(
+            "the crafts past the purse are listed for the borrowing variants, "
+            "and no Borrowing rules are injected to bound them"
+        )
+    bound = magic.channel_bound(
+        actor, working, borrowing=True, kind=magic.cast_kind(working)
+    )
+    return magic.borrowing.borrowing_ceiling(actor.mana, actor.debt, bound)
+
+
+def _craft_tiers(
+    actor: CombatantState,
+    magic: MagicRules,
+    true_magic: TrueMagicRules,
+    effect: WorkingEffect,
+    beyond_purse: bool,
+) -> Iterator[int]:
+    """The tiers of one effect the actor may begin a craft at, from 1 up.
+
+    The list ends at the first tier past any of three bounds: the actor's
+    tier cap (:meth:`.magic.MagicRules.tier_cap`, none with Channel lifted
+    for the actor), the mana the working may take
+    (:func:`_craft_mana_bound`), and the highest tier the effect can be built
+    at (:meth:`.magic.WorkingEffect.highest_buildable_tier`). The mana bound
+    is always finite, so the list always ends.
+    """
+    tier_cap = magic.tier_cap(actor)
+    buildable = effect.highest_buildable_tier()
+    for tier in count(1):
+        if tier_cap is not None and tier > tier_cap:
+            return
+        if buildable is not None and tier > buildable:
+            return
+        working = true_magic.working(effect.key, tier)
+        if tier > _craft_mana_bound(actor, magic, working, beyond_purse):
+            return
+        yield tier
+
+
+def _craft_candidates(
+    state: BattleState,
+    actor: CombatantState,
+    magic: MagicRules,
+    true_magic: TrueMagicRules,
+    beyond_purse: bool,
+    casting_failure: CastingFailureRules | None,
+    every_target: bool,
+) -> list[Candidate]:
+    """The workings the actor may begin to craft (tarmar-engine #77): one
+    per injected effect and tier (:func:`_craft_tiers`), in the effects'
+    order and then by tier, each at the targets :func:`_crafts_of` gives it.
+
+    An effect that needs a Game Master's grant appears only at the keys the
+    actor's ``granted_workings`` holds (:meth:`.magic.MagicRules.granted`).
+    The AI may begin any of them it can pay for, at any tier up to its cap,
+    never pushed and never borrowing (house reading
+    ``ai_crafts_up_to_its_cap``): the pushed and borrowing variants are
+    :func:`_push_candidates`' and :func:`_borrow_candidates`', for a player.
+
+    Raises:
+        ValueError: for a figure granted a working the rules do not build,
+            and for ``beyond_purse`` with no Borrowing rules injected.
+    """
+    candidates: list[Candidate] = []
+    for effect in true_magic.effects:
+        for tier in _craft_tiers(actor, magic, true_magic, effect, beyond_purse):
+            key = true_magic.working_key(effect.key, tier)
+            if effect.needs_grant and not magic.granted(actor, key):
+                continue
+            begun = CraftState(
+                spell_key=key,
+                push_mana=0,
+                borrow=False,
+                turns_done=0,
+                borrowed=0,
+                target_id=None,
             )
-            candidates.append(
-                Candidate(
-                    letter, f"CAST SPELL {spell.name}", value, rationale, spell_key=key
-                )
+            candidates += _crafts_of(
+                state,
+                actor,
+                magic,
+                true_magic,
+                begun,
+                casting_failure,
+                every_target,
+                standing=False,
             )
-            continue
-        if spell.damage is None:
-            value = product_of(cast_probability, BUFF_SCORE)
-            rationale = (
-                f"{cast_note} x {score_text(BUFF_SCORE)} flat value of a "
-                f"defensive buff = {score_text(value)}"
+    return candidates
+
+
+@dataclass(frozen=True)
+class _Drain:
+    """What a casting drains from its caster when it goes off, and what that
+    leaves in the pool it is taken from. A casting that drains nothing
+    drains 0 from no pool."""
+
+    amount: int
+    pool: str
+    left: int
+
+    @property
+    def survivable(self) -> bool:
+        """Does the caster stay up: nothing drained, or the pool left above
+        0?"""
+        return not self.amount or self.left > 0
+
+    @property
+    def note(self) -> str:
+        """The drain as a rationale adds it: "; drains 6 body when it goes
+        off, leaving 4", or "" for a casting that drains nothing."""
+        if not self.amount:
+            return ""
+        return (
+            f"; drains {self.amount} {self.pool} when it goes off, leaving {self.left}"
+        )
+
+
+def _drain_of(
+    actor: CombatantState,
+    magic: MagicRules,
+    spell: Spell,
+    push_mana: int,
+    *,
+    true_cast: bool,
+) -> _Drain:
+    """The drain of a casting that goes off, as the engine counts it
+    (:meth:`.magic.TrueMagicRules.drained_mana`): a working's whole mana
+    (house reading ``drain_counts_the_whole_working``), the mana a True cast
+    of a catalog spell pushes past its cost, and nothing for any other
+    casting."""
+    true_magic = magic.true_magic
+    if true_magic is None or not (true_cast or is_working_key(spell.key)):
+        return _Drain(0, "", 0)
+    amount = true_magic.drain(true_magic.drained_mana(spell, push_mana), None)
+    pool = true_magic.drain_pool
+    return _Drain(amount, pool, getattr(actor, pool) - amount)
+
+
+def _left_to_a_player(*, push: bool, borrow: bool) -> str:
+    """Why a pushed or borrowing casting scores :data:`PLAYER_ONLY_SCORE`,
+    as its rationale ends: "the AI does not push or borrow = 0.000".
+
+    Raises:
+        ValueError: for a casting that neither pushes nor borrows, which is
+            not left to a player on that account.
+    """
+    deeds = " or ".join(
+        deed for deed, varied in (("push", push), ("borrow", borrow)) if varied
+    )
+    if not deeds:
+        raise ValueError("a casting that neither pushes nor borrows is the AI's too")
+    return f"the AI does not {deeds} = {score_text(PLAYER_ONLY_SCORE)}"
+
+
+def _crafts_of(
+    state: BattleState,
+    actor: CombatantState,
+    magic: MagicRules,
+    true_magic: TrueMagicRules,
+    craft: CraftState,
+    casting_failure: CastingFailureRules | None,
+    every_target: bool,
+    *,
+    standing: bool,
+) -> list[Candidate]:
+    """The craft action that takes a craft's next turn, at each figure it
+    may name (tarmar-engine #77): the beginning of a craft, and with
+    ``standing`` the continuation of the craft the actor has standing.
+
+    Each candidate carries the working, its pushed mana and whether it
+    borrows, which are fixed when the craft begins; a continuation's name
+    says what its craft carries, as a pushed or borrowing variant's does.
+    Each craft action names the working's target anew (house reading
+    ``working_aimed_by_its_last_craft_action``):
+
+    * a damaging working is aimed as a damaging cast is, at the nearest
+      enemy, and with ``every_target`` at each. With no enemy active a new
+      craft of one is not offered, as a damaging cast is not; the
+      continuation of one that stands is, naming no figure;
+    * a healing working is offered at the actor, and with ``every_target``
+      at each of its teammates (:meth:`.state.BattleState.teammates_of`);
+    * a narrated working names no figure, and with ``every_target`` is also
+      offered at each living figure, conscious or not, for the Game Master
+      to read.
+
+    The working's roll is the casting dice under the target the rules give
+    (:meth:`.magic.TrueMagicRules.roll_target`), less the injury band alone:
+    the craft action spends an owed off-balance penalty, and the roll comes
+    after it.
+
+    The score is the AI's (house reading ``ai_crafts_what_it_can_survive``).
+    A damaging working scores its forecast divided by the craft turns left,
+    this one included, so it is weighed turn for turn against the AI's other
+    options and rises as the craft nears its end. One whose drain would take
+    the pool it is taken from to 0 or below scores
+    :data:`PLAYER_ONLY_SCORE`, as a healing and a narrated working do, and a
+    damaging one with no enemy to aim at. So does the continuation of a
+    craft that was begun pushed or borrowing, which carries no forecast, as
+    a pushed cast carries none: the AI begins no such craft, so only a
+    player's is ever carried on.
+
+    Raises:
+        KeyError: for a craft whose key is not a working the rules build.
+        ValueError: for a craft with every turn already taken.
+    """
+    working = true_magic.working_from_key(craft.spell_key)
+    turns = true_magic.turns_for(working.level)
+    turns_left = turns - craft.turns_done
+    mana_total = casting_mana(working, craft.push_mana)
+    # The roll comes at the end of the Actions phase, after the craft action
+    # has spent any off-balance penalty owed: only the injury band is left.
+    deductions = _action_roll_deductions(actor, next_turn=True)
+    casting = _casting_roll(
+        _roll_under(
+            true_magic.versus,
+            true_magic.roll_target(actor, magic.true_level(actor)),
+            deductions,
+        ),
+        casting_failure,
+    )
+    drain = _drain_of(actor, magic, working, craft.push_mana, true_cast=True)
+    turn_note = (
+        f"Craft turn {craft.turns_done + 1} of {turns}, gathering "
+        f"{true_magic.share_due(craft)} of its {mana_total} mana"
+    )
+    carried = [
+        *([f"PUSH {craft.push_mana} MANA"] if craft.push_mana else []),
+        *(["BORROWING"] if craft.borrow else []),
+    ]
+    option = Candidate(
+        actions.CRAFT_OPTION,
+        f"{actions.option_name(actions.CRAFT_OPTION)} {working.name}"
+        + (f" ({', '.join(carried)})" if carried else ""),
+        PLAYER_ONLY_SCORE,
+        "",
+        spell_key=working.key,
+        push_mana=craft.push_mana,
+        borrow=craft.borrow,
+    )
+    not_the_ais = (
+        _left_to_a_player(push=craft.push_mana > 0, borrow=craft.borrow)
+        if carried
+        else f"the AI crafts only a damaging working = {score_text(PLAYER_ONLY_SCORE)}"
+    )
+    if working.heals:
+        return [
+            replace(
+                option,
+                rationale=(
+                    f"{turn_note}: {casting.note} — restores {working.damage} "
+                    f"{working.damage_pool} to {healed.name}{drain.note}; "
+                    f"{not_the_ais}"
+                ),
+                target_id=healed.combatant_id,
             )
-            candidates.append(
-                Candidate(
-                    letter, f"CAST SPELL {spell.name}", value, rationale, spell_key=key
+            for healed in _aimed_at([actor, *state.teammates_of(actor)], every_target)
+        ]
+    if working.damage is None:
+        effect, tier = true_magic.effect_and_tier(working.key)
+        magnitude = effect.dice_at(tier)
+        magnitude_note = "" if magnitude is None else f", magnitude {magnitude}"
+        narrated = (
+            f"{turn_note}: {casting.note} — the Game Master describes the "
+            f"effect{magnitude_note}"
+        )
+        living = [figure for figure in state.combatants if figure.alive]
+        return [
+            replace(option, rationale=f"{narrated}{drain.note}; {not_the_ais}"),
+            *(
+                replace(
+                    option,
+                    rationale=(
+                        f"{narrated}, named for {figure.name}{drain.note}; "
+                        f"{not_the_ais}"
+                    ),
+                    target_id=figure.combatant_id,
                 )
-            )
-            continue
-        for enemy in aimed_at:
-            aim_note = ""
-            probability = cast_probability
-            if spell.targeted:
-                # The engine's aim roll: DEX less the penalties and, at a
-                # dodging target, the dodge's re-mapped +4 TN (#56).
-                aim_roll = _roll_under(
-                    "DEX",
-                    actor.dexterity,
-                    [
-                        *_action_roll_deductions(actor),
-                        (
-                            DODGE_DEX_CHECK_PENALTY if enemy.dodging else 0,
-                            "for the target's dodge",
-                        ),
-                    ],
-                )
-                aim_probability = three_d6_at_most(aim_roll.target)
-                probability = probability * aim_probability
-                aim_note = (
-                    f" x P(aim) {score_text(aim_probability)} (3d6 ≤ {aim_roll.text})"
-                )
-            stops = 0 if spell.ignores_armour else enemy.stops
-            forecast = Forecast(
-                hit_chance=round_score(probability),
-                damage_expression=spell.damage,
-                armour_stops=stops,
-                expected_damage=round_score(
-                    combat_math.expected_damage(spell.damage, stops)
+                for figure in (living if every_target else [])
+            ),
+        ]
+    enemies = _aimed_at(enemies_by_distance(state, actor), every_target)
+    if standing and not enemies:
+        return [
+            replace(
+                option,
+                rationale=(
+                    f"{turn_note}: {casting.note} — no enemy is left to aim it "
+                    f"at{drain.note}; nothing for it to land on = "
+                    f"{score_text(PLAYER_ONLY_SCORE)}"
                 ),
             )
-            working = forecast.working(f" on {enemy.name}")
+        ]
+    candidates = []
+    for enemy in enemies:
+        if carried:
+            # Begun pushed or borrowing, by a player: no forecast is made of
+            # it, as none is of a pushed cast.
             candidates.append(
-                Candidate(
-                    letter,
-                    f"CAST SPELL {spell.name}",
-                    forecast.score,
-                    f"{cast_note}{aim_note} — {working}",
+                replace(
+                    option,
+                    rationale=(
+                        f"{turn_note}: {casting.note} — aimed at {enemy.name}"
+                        f"{drain.note}; {not_the_ais}"
+                    ),
                     target_id=enemy.combatant_id,
-                    spell_key=key,
-                    forecast=forecast,
                 )
             )
+            continue
+        forecast, forecast_note = _aimed_casting(
+            actor, enemy, working, casting, deductions
+        )
+        if drain.survivable:
+            score = round_score(forecast.score / turns_left)
+            verdict = (
+                f"{score_text(forecast.score)} / {turns_left} craft turn(s) "
+                f"left = {score_text(score)}"
+            )
+        else:
+            score = PLAYER_ONLY_SCORE
+            verdict = (
+                "the AI crafts no working whose drain would fell it = "
+                f"{score_text(score)}"
+            )
+        candidates.append(
+            replace(
+                option,
+                score=score,
+                rationale=f"{turn_note}: {forecast_note}{drain.note}; {verdict}",
+                target_id=enemy.combatant_id,
+                forecast=forecast,
+            )
+        )
     return candidates
 
 
@@ -755,6 +1262,8 @@ def _grappled_decision(
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> Decision:
     """A held figure's fixed turn choice: always Struggle Free.
 
@@ -762,6 +1271,7 @@ def _grappled_decision(
     Free, Strike Back, Hold Still — replace the whole normal candidate set.
     No weighing: escaping always outscores fighting back or waiting, by
     construction (module docstring's "deliberately dumb" grapple AI).
+    ``magic`` is passed on to the casts (:func:`_mastery_three_casts`).
     """
     grappler_id = actor.grappled_by
     # The step the engine expects to take, for the forecast; the engine works
@@ -811,7 +1321,7 @@ def _grappled_decision(
             )
         )
     candidates += _mastery_three_casts(
-        state, actor, beyond_purse, casting_failure, every_target
+        state, actor, beyond_purse, casting_failure, every_target, magic=magic
     )
     return Decision(chosen=candidates[0], candidates=candidates)
 
@@ -822,21 +1332,27 @@ def _mastery_three_casts(
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> list[Candidate]:
-    """Casts open to either side of a grapple: Spell Mastery 3 spells only."""
+    """Casts open to either side of a grapple: Spell Mastery 3 spells only.
+
+    With ``magic`` passed, a True cast of a spell known at that mastery is
+    among them. A working, and a True cast of a spell the actor never
+    studied, have no mastery level and read at level 1: neither is offered
+    in a grapple.
+    """
     return [
-        Candidate(
-            candidate.letter,
-            candidate.name,
-            PLAYER_ONLY_SCORE,
-            f"Spell Mastery 3: cast without gestures or words "
-            f"({GRAPPLE_TACTICS_RATIONALE}; {candidate.rationale})",
-            target_id=candidate.target_id,
-            spell_key=candidate.spell_key,
-            forecast=candidate.forecast,
+        replace(
+            candidate,
+            score=PLAYER_ONLY_SCORE,
+            rationale=(
+                f"Spell Mastery 3: cast without gestures or words "
+                f"({GRAPPLE_TACTICS_RATIONALE}; {candidate.rationale})"
+            ),
         )
         for candidate in _cast_candidates(
-            state, actor, "r", beyond_purse, casting_failure, every_target
+            state, actor, "r", beyond_purse, casting_failure, every_target, magic=magic
         )
         if actor.spell_mastery.get(candidate.spell_key, 1) >= 3
     ]
@@ -848,6 +1364,8 @@ def _grappler_decision(
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> Decision:
     """A grappler's fixed turn choice: always Squeeze.
 
@@ -856,6 +1374,7 @@ def _grappler_decision(
     them (module docstring's "deliberately dumb" grapple AI): the point of
     grappling is landing Squeeze, so that is what the AI always does once
     it holds someone (even though it never chooses to start holding one).
+    ``magic`` is passed on to the casts (:func:`_mastery_three_casts`).
     """
     target_id = actor.grappling
     candidates = [
@@ -884,7 +1403,7 @@ def _grappler_decision(
     # The grappler's hands are full too ("holding on or being held"): a
     # spell known at Spell Mastery 3 is on its list, for a player (#821).
     candidates += _mastery_three_casts(
-        state, actor, beyond_purse, casting_failure, every_target
+        state, actor, beyond_purse, casting_failure, every_target, magic=magic
     )
     return Decision(chosen=candidates[0], candidates=candidates)
 
@@ -980,27 +1499,39 @@ def _grapple_targets(hth_targets: list[CombatantState]) -> list[CombatantState]:
     ]
 
 
+def _hth_allows_casting(actor: CombatantState, spell_key: str) -> bool:
+    """The HTH table's condition on a casting: "If hands free or no-gesture
+    spell".
+
+    Hands free is no weapon in hand (a shield is a standing fact of the
+    snapshot, not a held item); a no-gesture spell is one known at Spell
+    Mastery 2 (spell-mastery.md; tarmar-engine #19). A working, and a spell
+    the actor never studied, have no mastery level and read at level 1.
+    """
+    return (
+        actor.weapon.item_id == ""
+        or actor.spell_mastery.get(spell_key, 1) >= HTH_NO_GESTURE_MASTERY
+    )
+
+
 def _hth_casts(
     state: BattleState,
     actor: CombatantState,
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> list[Candidate]:
-    """Casts the HTH table allows: "If hands free or no-gesture spell".
-
-    Hands free is no weapon in hand (a shield is a standing fact of the
-    snapshot, not a held item); a no-gesture spell is one known at Spell
-    Mastery 2 (spell-mastery.md; tarmar-engine #19).
-    """
-    hands_free = actor.weapon.item_id == ""
+    """Casts the HTH table allows (:func:`_hth_allows_casting`), and with
+    ``magic`` passed the True casts and the new crafts it allows by the same
+    condition."""
     return [
         candidate
         for candidate in _cast_candidates(
-            state, actor, "r", beyond_purse, casting_failure, every_target
+            state, actor, "r", beyond_purse, casting_failure, every_target, magic=magic
         )
-        if hands_free
-        or actor.spell_mastery.get(candidate.spell_key, 1) >= HTH_NO_GESTURE_MASTERY
+        if _hth_allows_casting(actor, candidate.spell_key)
     ]
 
 
@@ -1127,7 +1658,12 @@ def choose_option(
     countered spell again is flagged and left to a player
     (:func:`_mark_escalations`), and a counter against each enemy mage is
     offered, for a player (:func:`_counter_candidates`);
-    the AI neither counters nor escalates. A figure a Game Master has lifted
+    the AI neither counters nor escalates. With True Magic rules, a figure
+    with a level in the True skill is offered a True cast of each spell it
+    may True cast, for a player, and the workings it may begin to craft,
+    which the AI weighs too (:func:`_cast_candidates`); a figure with a craft
+    standing is offered its continuation (:func:`_score_options`). A figure
+    a Game Master has lifted
     Channel, Push's own cap or the counter bounds for
     (``CombatantState.lifted_magic_bounds``) is offered the wider amounts;
     every other figure's menu is unchanged. A caller driving the engine with this
@@ -1149,12 +1685,7 @@ def choose_option(
     the AI's own choice, unchanged, and is one of the candidates. A figure
     in a grapple keeps its fixed menu, but for its casts.
     """
-    decision = _score_options(
-        state,
-        actor,
-        casting_failure=None if magic is None else magic.casting_failure,
-        every_target=every_target,
-    )
+    decision = _score_options(state, actor, every_target=every_target, magic=magic)
     if magic is not None and magic.channel is not None:
         decision = _within_channel(actor, decision, magic)
     if magic is not None and magic.push is not None:
@@ -1166,9 +1697,9 @@ def choose_option(
             _borrow_candidates(state, actor, magic, magic.borrowing, every_target)
         )
     if magic is not None and magic.counterspell is not None:
-        _mark_escalations(actor, decision)
-    if magic is not None and magic.runaway is not None:
-        anchors = _anchor_candidates(state, actor, magic.runaway)
+        _mark_escalations(actor, decision, magic)
+    if magic is not None:
+        anchors = _anchor_candidates(state, actor, magic)
         decision.candidates.extend(anchors)
         own = next(
             (
@@ -1180,10 +1711,7 @@ def choose_option(
         )
         if own is not None:
             decision.chosen = own
-    if magic is not None and magic.counterspell is not None:
-        decision.candidates.extend(
-            _counter_candidates(state, actor, magic.counterspell)
-        )
+        decision.candidates.extend(_counter_candidates(state, actor, magic))
     if every_target:
         # The AI's choice is made on its own menu, so an option it aims
         # elsewhere can never displace it, whatever it scores.
@@ -1211,12 +1739,66 @@ def _the_ais_choice(candidates: list[Candidate], chosen: Candidate) -> Candidate
     )
 
 
-def _is_mage(actor: CombatantState) -> bool:
-    """A spell known, or a spell skill recorded."""
-    return bool(actor.spells or actor.spell_skill_levels)
+def _is_mage(actor: CombatantState, magic: MagicRules | None) -> bool:
+    """A spell known, a spell skill recorded, or a level in the True skill
+    the injected rules name (:meth:`.magic.MagicRules.true_level`)."""
+    return bool(actor.spells or actor.spell_skill_levels) or (
+        magic is not None and magic.true_level(actor) > 0
+    )
 
 
-def _mark_escalations(actor: CombatantState, decision: Decision) -> None:
+def _is_generic_counter(key: str) -> bool:
+    """Is the key a generic counter's, which is learned and never cast? A
+    key the catalog does not hold is none: the cast letter refuses it where
+    it always did, and nothing here asks sooner."""
+    spell = SPELLS.get(key)
+    return spell is not None and spell.generic_counter
+
+
+def _has_castings(actor: CombatantState, magic: MagicRules | None) -> bool:
+    """Has the figure anything to cast: a spell it knows that can be cast
+    (any but a generic counter, which is learned and never cast), or a level
+    in the True skill, which lets it craft a working with no spell known?
+
+    Narrower than :func:`_is_mage`: a figure whose only spell is a generic
+    counter is a mage, who may counter and anchor, with nothing to cast.
+    """
+    if any(not _is_generic_counter(key) for key in actor.spells):
+        return True
+    return magic is not None and magic.true_level(actor) > 0
+
+
+def _may_be_countered(caster: CombatantState, magic: MagicRules) -> bool:
+    """May a counter name this figure as the caster it opposes?
+
+    Any mage may be named (:func:`_is_mage`: a spell known, a spell skill
+    recorded, or a level in the True skill), as it always could, but for one
+    figure: a figure with no level in the True skill whose known spells are
+    all generic counters, which casts nothing to oppose. A figure with a
+    spell skill recorded and no spell known is named still.
+    """
+    if not _is_mage(caster, magic):
+        return False
+    return not caster.spells or _has_castings(caster, magic)
+
+
+def _continues_craft(actor: CombatantState, candidate: Candidate) -> bool:
+    """Is the candidate the continuation of the craft the actor has
+    standing: the craft option, while a craft stands?
+
+    A continuation takes no pushed or borrowing variant
+    (:func:`_push_candidates`, :func:`_borrow_candidates`): the craft's push
+    and borrowing were fixed when it began and ride on the continuation
+    itself (house reading ``craft_fixes_push_and_borrow_at_the_start``), and
+    the engine refuses a craft option that differs from the craft. Nor does
+    it answer to Channel again (:func:`_within_channel`).
+    """
+    return candidate.letter == actions.CRAFT_OPTION and actor.crafting is not None
+
+
+def _mark_escalations(
+    actor: CombatantState, decision: Decision, magic: MagicRules
+) -> None:
     """Flag every cast that presses the actor's countered spell again.
 
     A cast of the contest's spell at the contest's target escalates
@@ -1231,7 +1813,7 @@ def _mark_escalations(actor: CombatantState, decision: Decision) -> None:
     contest = actor.contest
     if contest is None:
         return
-    spell = get_spell(contest.spell_key)
+    spell = spell_for(contest.spell_key, magic)
     for candidate in decision.candidates:
         if (
             candidate.spell_key != contest.spell_key
@@ -1253,12 +1835,15 @@ def _mark_escalations(actor: CombatantState, decision: Decision) -> None:
 
 
 def _counter_candidates(
-    state: BattleState, actor: CombatantState, counterspell: CounterspellRules
+    state: BattleState, actor: CombatantState, magic: MagicRules
 ) -> list[Candidate]:
-    """The counters the actor may declare (tarmar-engine #31).
+    """The counters the actor may declare (tarmar-engine #31); none with no
+    Counterspell rules in ``magic``.
 
-    A mage counters a named enemy caster, not a chosen cast (house reading
-    ``counter_names_a_caster``): for each enemy mage, one candidate per
+    A mage (:func:`_is_mage`) counters a named enemy caster, not a chosen
+    cast (house reading ``counter_names_a_caster``): for each enemy mage a
+    counter may name (:func:`_may_be_countered`; one whose only spells are
+    generic counters casts nothing to oppose), one candidate per
     commitment the actor can afford
     (:meth:`.magic.CounterspellRules.commitments`), whether or not that
     caster has chosen its action yet, so a defender that chooses first
@@ -1269,19 +1854,28 @@ def _counter_candidates(
     appended last, for a player; the AI does not counter (house reading
     ``ai_neither_counters_nor_escalates``). The rationale names the bonus the
     commitment buys on the opposed roll, less the injury band the defender's
-    roll takes. A figure whose counter bounds a Game Master has lifted is
+    roll takes; and, with a familiarity bonus injected, what the defender
+    knows of its own (:func:`_familiarity_note`). A figure whose counter
+    bounds a Game Master has lifted is
     offered every commitment from nothing to its whole purse.
     """
-    if not _is_mage(actor):
+    counterspell = magic.counterspell
+    if counterspell is None or not _is_mage(actor, magic):
         return []
     bounds_lifted = bound_lifted(actor, COUNTER_BOUNDS)
     candidates: list[Candidate] = []
     injury, _off_balance = action_roll_penalties(actor)
     attribute = attribute_score(actor, counterspell.opposed_attribute)
+    commitments = counterspell.commitments(actor.mana, bounds_lifted=bounds_lifted)
+    if not commitments:
+        # Nothing it can commit: no enemy's cast is looked up for a note.
+        return candidates
     for caster in state.enemies_of(actor):
-        if not _is_mage(caster):
+        if not _may_be_countered(caster, magic):
             continue
-        for mana in counterspell.commitments(actor.mana, bounds_lifted=bounds_lifted):
+        chosen_cast = _chosen_cast(caster, magic)
+        familiarity = _familiarity_note(actor, chosen_cast, magic)
+        for mana in commitments:
             bonus = counterspell.bonus_for(mana)
             candidates.append(
                 Candidate(
@@ -1289,11 +1883,11 @@ def _counter_candidates(
                     f"{actions.option_name(actions.COUNTER_OPTION)} "
                     f"{caster.name} ({mana} MANA)",
                     PLAYER_ONLY_SCORE,
-                    f"{_counter_note(caster)}: "
+                    f"{_counter_note(caster, chosen_cast)}: "
                     f"commit {mana} mana ({actor.mana - mana} left) for "
                     f"{bonus:+d} on the opposed roll {counterspell.opposed_dice} "
                     f"+ {counterspell.opposed_attribute} {attribute} less "
-                    f"{injury} injury; the AI does not counter = "
+                    f"{injury} injury{familiarity}; the AI does not counter = "
                     f"{score_text(PLAYER_ONLY_SCORE)}",
                     target_id=caster.combatant_id,
                     counter_mana=mana,
@@ -1303,36 +1897,94 @@ def _counter_candidates(
     return candidates
 
 
-def _counter_note(caster: CombatantState) -> str:
-    """What a counter against this caster meets, as far as the menu knows:
-    the cast it has chosen, or that it has chosen nothing yet."""
+def _chosen_cast(caster: CombatantState, magic: MagicRules) -> Spell | None:
+    """The spell a caster has chosen to cast this turn, as far as the menu
+    knows, or ``None``: it has chosen nothing yet, or something other than a
+    cast. A craft is no cast: the menu says nothing of one in progress."""
     if actions.base_option(caster.chosen_letter) not in actions.CAST_OPTIONS:
+        return None
+    return spell_for(caster.chosen_spell, magic)
+
+
+def _counter_note(caster: CombatantState, chosen_cast: Spell | None) -> str:
+    """What a counter against this caster meets, as far as the menu knows:
+    the cast it has chosen (:func:`_chosen_cast`), or that it has chosen
+    none yet."""
+    if chosen_cast is None:
         return f"Oppose whatever {caster.name} casts this turn (not yet known)"
-    spell = get_spell(caster.chosen_spell)
     pressed = (
         f", pressed again after {caster.contest.turns} counter(s)"
         if caster.contest is not None
         else ""
     )
-    return f"Oppose {caster.name}'s {spell.name}{pressed}"
+    return f"Oppose {caster.name}'s {chosen_cast.name}{pressed}"
+
+
+def _familiarity_note(
+    defender: CombatantState, chosen_cast: Spell | None, magic: MagicRules
+) -> str:
+    """What a counter's forecast adds for the defender's own familiarity
+    with the spell it opposes (tarmar-engine #77): ", and +6 for familiarity
+    (spell level 2)".
+
+    A defender knows its own familiarity, so the forecast counts it. Against
+    a cast the caster has chosen it is the level the engine will add
+    (:meth:`.magic.CounterspellRules.defender_familiarity`), with what that
+    level rests on. Against a cast not yet known it is the least the engine
+    can add whatever is cast, which is the defender's level in the True
+    skill: its level in a spell and its generic counter count only against
+    the spells they reach. The caster's own familiarity is no part of the
+    forecast: the defender counters it blind.
+
+    "" with no familiarity bonus injected, when nothing reads either side's
+    familiarity, and where the bonus is nothing.
+
+    Raises:
+        KeyError: with a familiarity bonus injected, for a spell the
+            defender knows that the catalog does not hold.
+    """
+    counterspell = magic.counterspell
+    if counterspell is None or not counterspell.counts_familiarity:
+        return ""
+    true_level = magic.true_level(defender)
+    if chosen_cast is None:
+        level, source, least = true_level, FamiliaritySource.TRUE, "at least "
+    else:
+        level, source = counterspell.defender_familiarity(
+            defender, chosen_cast, true_level
+        )
+        least = ""
+    bonus = counterspell.familiarity_bonus(level)
+    if bonus <= 0 or source is None:
+        return ""
+    whatever = ", whatever is cast" if chosen_cast is None else ""
+    return (
+        f", and {least}{bonus:+d} for familiarity ({source.value} level "
+        f"{level}){whatever}"
+    )
 
 
 def _anchor_candidates(
-    state: BattleState, actor: CombatantState, runaway: RunawayRules
+    state: BattleState, actor: CombatantState, magic: MagicRules
 ) -> list[Candidate]:
-    """The Runaways the actor may anchor (tarmar-engine #30).
+    """The Runaways the actor may anchor (tarmar-engine #30); none with no
+    Runaway rules in ``magic``.
 
     Its own, when one is running: scored :data:`OWN_RUNAWAY_ANCHOR_SCORE`,
     and :func:`choose_option` makes it the AI's choice. Another living
-    combatant's, when the actor is a mage (a spell known, or a spell skill
-    recorded) and has the mana the helper pays: scored
+    combatant's, when the actor is a mage (:func:`_is_mage`) and has the
+    mana the helper pays: scored
     :data:`PLAYER_ONLY_SCORE`, for a player; the AI anchors only its own
     (house reading ``ai_anchors_only_itself``). The rationale gives the
-    anchor roll's target as the engine will roll it.
+    anchor roll's target as the engine will roll it. A Runaway may be a
+    working's, so each is named through :func:`.magic.spell_for`.
     """
+    runaway = magic.runaway
+    if runaway is None:
+        return []
     candidates: list[Candidate] = []
     if actor.runaway is not None:
-        spell = get_spell(actor.runaway.spell_key)
+        spell = spell_for(actor.runaway.spell_key, magic)
         candidates.append(
             Candidate(
                 ANCHOR_OPTION,
@@ -1347,7 +1999,7 @@ def _anchor_candidates(
                 anchor_target=actor.combatant_id,
             )
         )
-    if not _is_mage(actor):
+    if not _is_mage(actor, magic):
         return candidates
     for caster in state.combatants:
         if caster is actor or not caster.alive or caster.runaway is None:
@@ -1355,7 +2007,7 @@ def _anchor_candidates(
         cost = runaway.helper_cost(caster.runaway.original_cost)
         if actor.mana < cost:
             continue
-        spell = get_spell(caster.runaway.spell_key)
+        spell = spell_for(caster.runaway.spell_key, magic)
         candidates.append(
             Candidate(
                 ANCHOR_OPTION,
@@ -1396,9 +2048,20 @@ def _within_channel(
     :attr:`Candidate.lifted_bounds` and its rationale names the Channel it
     passes), or when the Channel rules give the spell no kind of magic (the
     engine would refuse either), and :attr:`Decision.withheld` says why, once
-    per spell. The withheld casts leave the player's menu and the AI's choice
+    per spell and kind of magic. The withheld casts leave the player's menu
+    and the AI's choice
     alike. When the AI had chosen one, it takes the best of what remains by
     the rule it chose with (the highest score, the first listed on a tie).
+
+    The Channel is the one the casting names
+    (:meth:`.magic.MagicRules.cast_kind`): a True cast's and a working's by
+    the True kind, any other cast's by its spell's own. So a recipe cast and
+    a True cast of one spell are judged apart, each keeps its own withheld
+    line, and a True cast's says it is one. A working the actor begins to
+    craft is held as a cast is. The continuation of a craft that stands
+    (:func:`_continues_craft`) is never withheld: the craft answered to
+    Channel when it began and the engine does not ask again. It carries the
+    bounds its craft action will report.
 
     The MOVE fallback for a menu left empty is defensive: every menu
     :func:`_score_options` builds holds an option that is not a cast (DODGE,
@@ -1411,30 +2074,38 @@ def _within_channel(
     if channel is None:
         return decision
     kept: list[Candidate] = []
-    withheld: dict[str, str] = {}
+    withheld: dict[tuple[str, str | None], str] = {}
     for candidate in decision.candidates:
         if not candidate.spell_key:
             kept.append(candidate)
             continue
-        spell = get_spell(candidate.spell_key)
+        spell = spell_for(candidate.spell_key, magic)
+        kind = magic.cast_kind(spell, true_cast=candidate.true_cast)
+        if _continues_craft(actor, candidate):
+            candidate.lifted_bounds = magic.lifted_bounds_passed(
+                actor, spell, candidate.push_mana, kind=kind
+            )
+            kept.append(candidate)
+            continue
+        named = f"{spell.name} as a True cast" if candidate.true_cast else spell.name
         try:
-            actor_channel = channel.channel_for(actor, spell)
-            within = magic.cast_within_channel(actor, spell)
+            actor_channel = channel.channel_for(actor, spell, kind)
+            within = magic.cast_within_channel(actor, spell, kind=kind)
         except ChannelUnclassifiedSpell as unclassified:
-            withheld.setdefault(spell.key, f"{spell.name} withheld: {unclassified}")
+            withheld.setdefault((spell.key, kind), f"{named} withheld: {unclassified}")
             continue
         if not within:
             withheld.setdefault(
-                spell.key,
-                f"{spell.name} withheld: it costs {spell.level} mana, past "
+                (spell.key, kind),
+                f"{named} withheld: it costs {spell.level} mana, past "
                 f"{actor.name}'s Channel {actor_channel} for it",
             )
             continue
-        candidate.lifted_bounds = magic.lifted_bounds_passed(actor, spell)
+        candidate.lifted_bounds = magic.lifted_bounds_passed(actor, spell, kind=kind)
         if CHANNEL in candidate.lifted_bounds:
             candidate.rationale = (
                 f"{candidate.rationale}; {spell.level} mana, "
-                f"{_channel_note(actor_channel, candidate.lifted_bounds)}"
+                f"{_channel_note(actor, spell, 0, actor_channel, magic)}"
             )
         kept.append(candidate)
     reasons = list(withheld.values())
@@ -1469,37 +2140,50 @@ def _push_candidates(
     as the engine will roll it: less the injury band (the Tarmar profile's,
     the only one Push runs under) and an owed off-balance penalty. A spell
     the rules give no push effect gets no pushed variant.
+
+    A True cast and a working the actor begins to craft are pushed as a cast
+    is, within the Channel their casting names
+    (:meth:`.magic.MagicRules.cast_kind`), and the note names what the
+    pushed casting drains (:func:`_drain_of`). Each variant is the candidate
+    it varies with only the push changed, so it stays the True cast or the
+    craft that candidate is. The continuation of a craft that stands takes
+    none (:func:`_continues_craft`).
     """
     pushed: list[Candidate] = []
     cap_lifted = bound_lifted(actor, PUSH_CAP)
     channel_rules = magic.channel
     for candidate in candidates:
-        if not candidate.spell_key or candidate.push_mana:
+        if (
+            not candidate.spell_key
+            or candidate.push_mana
+            or _continues_craft(actor, candidate)
+        ):
             continue
-        spell = get_spell(candidate.spell_key)
+        spell = spell_for(candidate.spell_key, magic)
+        kind = magic.cast_kind(spell, true_cast=candidate.true_cast)
         channel, bound = (
             (None, None)
             if channel_rules is None
             else (
-                channel_rules.channel_for(actor, spell),
-                channel_rules.bound_for(actor, spell),
+                channel_rules.channel_for(actor, spell, kind),
+                channel_rules.bound_for(actor, spell, kind),
             )
         )
         room = push.push_room(spell, actor.mana, bound, cap_lifted=cap_lifted)
         for extra_mana in range(1, room + 1):
-            passed = magic.lifted_bounds_passed(actor, spell, extra_mana)
-            note = _push_note(actor, spell, push, extra_mana, channel, passed)
+            passed = magic.lifted_bounds_passed(actor, spell, extra_mana, kind=kind)
+            note = _push_note(
+                actor, candidate, spell, magic, push, extra_mana, channel, passed
+            )
             pushed.append(
-                Candidate(
-                    candidate.letter,
-                    f"{candidate.name} (PUSH {extra_mana} MANA)",
-                    PLAYER_ONLY_SCORE,
-                    f"{note}; the AI does not push = "
-                    f"{score_text(PLAYER_ONLY_SCORE)}",
-                    target_id=candidate.target_id,
-                    spell_key=candidate.spell_key,
+                replace(
+                    candidate,
+                    name=f"{candidate.name} (PUSH {extra_mana} MANA)",
+                    score=PLAYER_ONLY_SCORE,
+                    rationale=f"{note}; {_left_to_a_player(push=True, borrow=False)}",
                     push_mana=extra_mana,
                     lifted_bounds=passed,
+                    forecast=None,
                 )
             )
     return pushed
@@ -1507,7 +2191,9 @@ def _push_candidates(
 
 def _push_note(
     actor: CombatantState,
+    candidate: Candidate,
     spell: Spell,
+    magic: MagicRules,
     push: PushRules,
     extra_mana: int,
     channel: int | None,
@@ -1517,12 +2203,16 @@ def _push_note(
 
     The target is the one the engine will roll against: less the injury
     band and an owed off-balance penalty (:func:`action_roll_penalties`).
-    ``channel`` is the actor's Channel for the spell (``None`` with no
+    ``channel`` is the actor's Channel for the casting (``None`` with no
     Channel rules), named whether or not it bounds the actor. ``passed`` is
     the bounds the push goes past (:meth:`.magic.MagicRules.
     lifted_bounds_passed`), which only a Game Master's lifting allows; each
     is named with its value. Saying that a ruling allowed it is the caller's,
     from :attr:`Candidate.lifted_bounds` (tarmar-engine #55).
+
+    ``candidate`` is the cast pushed, ``spell`` its spell. For a True cast
+    or a working the note ends with what the pushed casting drains from its
+    caster when it goes off (:func:`_drain_of`).
     """
     injury, off_balance = action_roll_penalties(actor)
     attribute = attribute_score(actor, push.control_attribute)
@@ -1531,28 +2221,46 @@ def _push_note(
     total = casting_mana(spell, extra_mana)
     bound_notes: list[str] = []
     if channel is not None:
-        bound_notes.append(_channel_note(channel, passed))
+        bound_notes.append(_channel_note(actor, spell, extra_mana, channel, magic))
     if PUSH_CAP in passed:
         bound_notes.append(f"past the push cap {push.max_push_mana}")
     channel_note = "".join(f", {note}" for note in bound_notes)
+    drain = _drain_of(actor, magic, spell, extra_mana, true_cast=candidate.true_cast)
     return (
         f"Push {extra_mana} extra mana ({total} "
         f"in all{channel_note}): Control Roll {push.control_dice} ≤ "
         f"{push.control_attribute} {attribute} less "
         f"{push.penalty_per_mana} x {invested} invested, "
-        f"{injury} injury and {off_balance} off-balance = {target}"
+        f"{injury} injury and {off_balance} off-balance = {target}{drain.note}"
     )
 
 
-def _channel_note(channel: int, passed: tuple[str, ...]) -> str:
-    """The actor's Channel as a menu line names it for a casting that goes
-    past ``passed`` (:meth:`.magic.MagicRules.lifted_bounds_passed`). Past it
-    only on a Game Master's lifting, which the line leaves to the caller to
-    say from :attr:`Candidate.lifted_bounds`, in its own words
+def _channel_note(
+    actor: CombatantState,
+    spell: Spell,
+    push_mana: int,
+    channel: int,
+    magic: MagicRules,
+) -> str:
+    """The actor's Channel as a menu line names it for a casting of the
+    spell with ``push_mana`` pushed: "Channel 7", or "past Channel 7" for a
+    casting whose whole mana is past it. A working whose tier is past the
+    cap the actor's level in the True skill gives
+    (:meth:`.magic.MagicRules.past_tier_cap`) names that cap too ("Channel
+    7, past the tier cap 4", :meth:`.magic.MagicRules.unlifted_tier_cap`);
+    lifting Channel lifts it with it (house reading
+    ``channel_lift_lifts_the_tier_cap``).
+
+    Past either only on a Game Master's lifting
+    (:meth:`.magic.MagicRules.lifted_bounds_passed` reports
+    :data:`~.magic.CHANNEL` for both), which the line leaves to the caller
+    to say from :attr:`Candidate.lifted_bounds`, in its own words
     (tarmar-engine #55)."""
-    if CHANNEL not in passed:
-        return f"Channel {channel}"
-    return f"past Channel {channel}"
+    past = "past " if casting_mana(spell, push_mana) > channel else ""
+    note = f"{past}Channel {channel}"
+    if magic.past_tier_cap(actor, spell):
+        note += f", past the tier cap {magic.unlifted_tier_cap(actor)}"
+    return note
 
 
 def _borrow_candidates(
@@ -1582,43 +2290,47 @@ def _borrow_candidates(
     ``ai_never_borrows``). The rationale names the shortfall and the debt
     roll's target as the engine will roll it, before any refund pays some of
     the debt back.
+
+    A True cast and a working the actor begins to craft borrow as a cast
+    does, within the Channel their casting names
+    (:meth:`.magic.MagicRules.cast_kind`); a figure with a level in the True
+    skill and no spell to cast is offered its crafts' variants
+    (:func:`_has_castings`). Each variant is the candidate it varies with
+    only the borrowing, and any push, changed, so it stays the True cast or
+    the craft that candidate is. The continuation of a craft that stands
+    takes none (:func:`_continues_craft`).
     """
-    if not actor.spells:
+    if not _has_castings(actor, magic):
         return []
     if borrowing.max_debt is not None and actor.debt >= borrowing.max_debt:
         return []
     menu = _score_options(
-        state,
-        actor,
-        beyond_purse=True,
-        casting_failure=magic.casting_failure,
-        every_target=every_target,
+        state, actor, beyond_purse=True, every_target=every_target, magic=magic
     )
     menu = _within_channel(actor, menu, magic)
-    no_borrowing = f"the AI does not borrow = {score_text(PLAYER_ONLY_SCORE)}"
+    no_borrowing = _left_to_a_player(push=False, borrow=True)
     cap_lifted = bound_lifted(actor, PUSH_CAP)
     borrowed: list[Candidate] = []
     for candidate in menu.candidates:
-        if not candidate.spell_key:
+        if not candidate.spell_key or _continues_craft(actor, candidate):
             continue
-        spell = get_spell(candidate.spell_key)
-        channel = magic.channel_for(actor, spell)
-        bound = magic.channel_bound(actor, spell, borrowing=True)
+        spell = spell_for(candidate.spell_key, magic)
+        kind = magic.cast_kind(spell, true_cast=candidate.true_cast)
+        channel = magic.channel_for(actor, spell, kind)
+        bound = magic.channel_bound(actor, spell, borrowing=True, kind=kind)
         ceiling = borrowing.borrowing_ceiling(actor.mana, actor.debt, bound)
         if actor.mana < spell.level <= ceiling:
             shortfall = spell.level - actor.mana
             borrowed.append(
-                Candidate(
-                    candidate.letter,
-                    f"{candidate.name} (BORROW {shortfall} MANA)",
-                    PLAYER_ONLY_SCORE,
-                    f"{_borrow_note(actor, borrowing, spell.level)}; "
-                    f"{candidate.rationale}; {no_borrowing}",
-                    target_id=candidate.target_id,
-                    spell_key=candidate.spell_key,
+                replace(
+                    candidate,
+                    name=f"{candidate.name} (BORROW {shortfall} MANA)",
+                    score=PLAYER_ONLY_SCORE,
+                    rationale=(
+                        f"{_borrow_note(actor, borrowing, spell.level)}; "
+                        f"{candidate.rationale}; {no_borrowing}"
+                    ),
                     borrow=True,
-                    lifted_bounds=candidate.lifted_bounds,
-                    forecast=candidate.forecast,
                 )
             )
         if magic.push is None:
@@ -1627,22 +2339,26 @@ def _borrow_candidates(
         last = magic.push.push_room(spell, ceiling, bound, cap_lifted=cap_lifted)
         for extra_mana in range(first_short, last + 1):
             cost = casting_mana(spell, extra_mana)
-            passed = magic.lifted_bounds_passed(actor, spell, extra_mana)
-            note = _push_note(actor, spell, magic.push, extra_mana, channel, passed)
+            passed = magic.lifted_bounds_passed(actor, spell, extra_mana, kind=kind)
+            note = _push_note(
+                actor, candidate, spell, magic, magic.push, extra_mana, channel, passed
+            )
             borrowed.append(
-                Candidate(
-                    candidate.letter,
-                    f"{candidate.name} (PUSH {extra_mana} MANA, "
-                    f"BORROW {cost - actor.mana} MANA)",
-                    PLAYER_ONLY_SCORE,
-                    f"{note}; {_borrow_note(actor, borrowing, cost)}; "
-                    f"the AI does not push or borrow = "
-                    f"{score_text(PLAYER_ONLY_SCORE)}",
-                    target_id=candidate.target_id,
-                    spell_key=candidate.spell_key,
+                replace(
+                    candidate,
+                    name=(
+                        f"{candidate.name} (PUSH {extra_mana} MANA, "
+                        f"BORROW {cost - actor.mana} MANA)"
+                    ),
+                    score=PLAYER_ONLY_SCORE,
+                    rationale=(
+                        f"{note}; {_borrow_note(actor, borrowing, cost)}; "
+                        f"{_left_to_a_player(push=True, borrow=True)}"
+                    ),
                     push_mana=extra_mana,
                     borrow=True,
                     lifted_bounds=passed,
+                    forecast=None,
                 )
             )
     return borrowed
@@ -1772,6 +2488,8 @@ def _score_options(
     beyond_purse: bool = False,
     casting_failure: CastingFailureRules | None = None,
     every_target: bool = False,
+    *,
+    magic: MagicRules | None = None,
 ) -> Decision:
     """Score the actor's legal options and choose the best.
 
@@ -1791,14 +2509,37 @@ def _score_options(
     ``every_target`` adds each aimed option at every other legal target
     (:func:`choose_option`), after the AI's own; the choice made here is
     then not the AI's, and :func:`choose_option` replaces it.
+
+    ``magic`` is the injected magic rules (tarmar-engine #77); with none the
+    menu is the one above. With them the casting failure rules are their own
+    (:func:`_one_casting_failure`), a figure with a level in the True skill
+    has something to cast whatever spells it knows (:func:`_has_castings`),
+    and wherever a cast is offered its True casts and the workings it may
+    begin to craft are offered with it (:func:`_cast_candidates`).
+
+    A figure with a craft standing is offered that craft's continuation
+    after every lettered option (:func:`_crafts_of`): the craft option
+    again, carrying the craft's working, push and borrowing. It is there for
+    a prone figure, beside STAND UP, since a fall ends no craft. It is
+    withheld where the engine would refuse the craft action: in hand-to-hand
+    with a weapon in hand (:func:`_hth_allows_casting`). A figure it is
+    withheld from loses the working whatever it chooses (house reading
+    ``what_else_breaks_a_craft``). No craft stands in a grapple, which ends
+    one.
+
+    Raises:
+        ValueError: for a ``casting_failure`` that is not ``magic``'s own,
+            and for a figure with a craft standing when no True Magic rules
+            are passed to name it.
     """
+    casting_failure = _one_casting_failure(magic, casting_failure)
     if actor.grappled_by is not None:
         return _grappled_decision(
-            state, actor, beyond_purse, casting_failure, every_target
+            state, actor, beyond_purse, casting_failure, every_target, magic=magic
         )
     if actor.grappling is not None:
         return _grappler_decision(
-            state, actor, beyond_purse, casting_failure, every_target
+            state, actor, beyond_purse, casting_failure, every_target, magic=magic
         )
     engaged = combat_math.is_engaged(state, actor)
     enemy = nearest_enemy(state, actor)
@@ -1827,7 +2568,7 @@ def _score_options(
         engaged=engaged,
         prone=actor.prone,
         has_missile=weapons.can_shoot(actor),
-        has_spells=bool(actor.spells) and (actor.mana > 0 or beyond_purse),
+        has_spells=(actor.mana > 0 or beyond_purse) and _has_castings(actor, magic),
         has_melee_target=enemy is not None and not actor.weapon.is_missile,
         can_grapple=can_grapple,
         can_run=actor.move_run > 0,
@@ -2106,12 +2847,25 @@ def _score_options(
             )
         elif letter == "r" and in_hth:
             candidates.extend(
-                _hth_casts(state, actor, beyond_purse, casting_failure, every_target)
+                _hth_casts(
+                    state,
+                    actor,
+                    beyond_purse,
+                    casting_failure,
+                    every_target,
+                    magic=magic,
+                )
             )
         elif letter in ("h", "r"):
             candidates.extend(
                 _cast_candidates(
-                    state, actor, letter, beyond_purse, casting_failure, every_target
+                    state,
+                    actor,
+                    letter,
+                    beyond_purse,
+                    casting_failure,
+                    every_target,
+                    magic=magic,
                 )
             )
         elif letter == "u" and in_hth:
@@ -2262,20 +3016,39 @@ def _score_options(
                 if candidate.letter == actions.base_option(letter)
             ]
             candidates.extend(
-                Candidate(
-                    letter,
-                    actions.option_name(letter),
-                    base.score,
-                    f"As {base.name}, moving in Final Movement instead: "
-                    f"{base.rationale}",
-                    target_id=base.target_id,
-                    spell_key=base.spell_key,
-                    destination=base.destination,
-                    forecast=base.forecast,
+                replace(
+                    base,
+                    letter=letter,
+                    name=actions.option_name(letter),
+                    rationale=(
+                        f"As {base.name}, moving in Final Movement instead: "
+                        f"{base.rationale}"
+                    ),
                 )
                 for base in _aimed_at(bases, every_target)
             )
 
+    craft = actor.crafting
+    if craft is not None:
+        true_magic = None if magic is None else magic.true_magic
+        if magic is None or true_magic is None:
+            raise ValueError(
+                f"{actor.name} has a craft standing, and the menu was passed no "
+                "True Magic rules to name it"
+            )
+        if not in_hth or _hth_allows_casting(actor, craft.spell_key):
+            candidates.extend(
+                _crafts_of(
+                    state,
+                    actor,
+                    magic,
+                    true_magic,
+                    craft,
+                    casting_failure,
+                    every_target,
+                    standing=True,
+                )
+            )
     if not candidates:
         candidates = [Candidate("a", "MOVE", 0.0, "Nothing else is legal")]
     chosen = max(candidates, key=lambda candidate: candidate.score)

@@ -45,7 +45,8 @@ whatever the two figures' DEX order (house reading
 (tarmar-engine #77) a caster with a level in the True skill may craft a
 working over several turns, a phase-5 action each
 (:meth:`TurnRunner.craft_working`); choosing any other action in phase 3
-abandons the craft, damage that lands on the crafter forces a roll to keep
+ends the craft, abandoned or, where no cast may be made, blocked; damage
+that lands on the crafter forces a roll to keep
 it (:meth:`TurnRunner._interruption_roll`), and unconsciousness or a grapple
 that takes hold ends it. A working whose last craft turn is taken goes off
 at the end of phase 5, after every action
@@ -614,8 +615,8 @@ class TurnRunner:
             if combatant.crafting is not None:
                 self._settle_craft_choice(combatant)
                 if not combatant.active:
-                    # What the abandoned working cost felled them: they
-                    # neither move nor act.
+                    # What the abandoned or blocked working cost felled
+                    # them: they neither move nor act.
                     continue
             # A hex the option may not take is refused here, in the log, and
             # the option makes its derived move instead (tarmar-engine #20).
@@ -650,23 +651,41 @@ class TurnRunner:
         that stands: the one place the two are compared.
 
         The craft option chosen again is the craft's continuation. Any other
-        option abandons the working, here, where the choice is recorded
-        (house reading ``another_action_abandons_the_craft``): the working is
-        lost (:meth:`_lose_working`,
-        :attr:`~.magic.CastingEnding.ABANDONED`) before the combatant moves.
+        option ends the working, here, where the choice is recorded, before
+        the combatant moves (:meth:`_lose_working`). How it ends turns on
+        whether the continuation was theirs to choose. A combatant where no
+        cast may be made (:meth:`_cast_blocked`, which says why in the log)
+        had none on the menu, and the working is lost as it would be at
+        their craft action (:attr:`~.magic.CastingEnding.BLOCKED`, house
+        reading ``what_else_breaks_a_craft``): the one cause ends it one
+        way, whether the enemy that closed to hand-to-hand acted before the
+        combatant's last craft action or after it. Anywhere else the
+        combatant chose otherwise with the continuation on offer, and the
+        working is abandoned (:attr:`~.magic.CastingEnding.ABANDONED`, house
+        reading ``another_action_abandons_the_craft``).
 
         Raises:
             ValueError: for the craft option naming another working, another
                 push or another borrowing than the craft began with (house
                 reading ``craft_fixes_push_and_borrow_at_the_start``). The
                 menu offers a crafting combatant its continuation alone, so
-                this is a caller's error.
+                this is a caller's error. And with no True Magic rules
+                injected.
+            KeyError: for a craft whose key is not a working the injected
+                rules build.
         """
         craft = combatant.crafting
         if craft is None:
             raise ValueError(f"{combatant.name} has no craft standing to settle")
         if actions.base_option(combatant.chosen_letter) != actions.CRAFT_OPTION:
-            self._lose_working(combatant, CastingEnding.ABANDONED)
+            working = self._true_magic_rules(combatant).working_from_key(
+                craft.spell_key
+            )
+            blocked = self._cast_blocked(combatant, working)
+            self._lose_working(
+                combatant,
+                CastingEnding.BLOCKED if blocked else CastingEnding.ABANDONED,
+            )
             return
         chosen = (
             combatant.chosen_spell,
@@ -2874,7 +2893,12 @@ class TurnRunner:
                 self._debt_roll(caster, spell, borrowing, cost=cost)
             if true_cast:
                 # No casting roll was made: the drain cites none.
-                self._take_drain(caster, push_mana, CastingEnding.COUNTERED, None)
+                self._take_drain(
+                    caster,
+                    self._true_magic_rules(caster).drained_mana(spell, push_mana),
+                    CastingEnding.COUNTERED,
+                    None,
+                )
             return
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
@@ -2988,7 +3012,7 @@ class TurnRunner:
         if true_cast and pays:
             # A working is drained for its whole mana, a catalog spell for
             # the mana pushed past its cost.
-            drained_mana = push_mana if craft is None else cost
+            drained_mana = self._true_magic_rules(caster).drained_mana(spell, push_mana)
             self._take_drain(caster, drained_mana, ending, [cast_sequence])
 
     def _true_magic_rules(self, combatant: CombatantState) -> TrueMagicRules:
@@ -3085,8 +3109,9 @@ class TurnRunner:
         standing on its caster, its whole mana gathered and spent, for the
         end of the Actions phase to complete (:meth:`_complete_workings`). A
         further craft action on a craft so gathered is refused, having no
-        share left to gather (:meth:`.magic.TrueMagicRules.gathered_after`);
-        any other choice abandons it as it would any craft.
+        share left to gather (:meth:`.magic.TrueMagicRules.share_due`); any
+        other choice ends it, abandoned or blocked, as it would any craft
+        (:meth:`_settle_craft_choice`).
 
         Raises:
             ValueError: with no True Magic rules injected, for a craft the
@@ -3113,8 +3138,8 @@ class TurnRunner:
             return
         mana_total = casting_mana(working, craft.push_mana)
         turns = true_magic.turns_for(working.level)
-        gathered = true_magic.gathered_after(mana_total, turns, craft.turns_done + 1)
-        share = gathered - true_magic.gathered(craft)
+        share = true_magic.share_due(craft)
+        gathered = true_magic.gathered(craft) + share
         borrowed = max(0, share - combatant.mana)
         if borrowed and not craft.borrow:
             self._lose_working(combatant, CastingEnding.UNPAID)
@@ -3539,10 +3564,7 @@ class TurnRunner:
             raise ValueError(f"{caster.name} has no craft to complete")
         working = true_magic.working_from_key(craft.spell_key)
         true_level = 0 if magic is None else magic.true_level(caster)
-        roll_target = (
-            attribute_score(caster, true_magic.roll_attribute)
-            + true_magic.roll_bonus_per_level * true_level
-        )
+        roll_target = true_magic.roll_target(caster, true_level)
         channel_used, lifted_past = self._working_channel(
             caster, working, craft.push_mana
         )
@@ -3554,7 +3576,7 @@ class TurnRunner:
             target_id=craft.target_id,
             true_cast=True,
             roll_target=roll_target,
-            versus=f"{true_magic.roll_attribute}+{true_magic.skill_label}",
+            versus=true_magic.versus,
             shortfall=0,
             craft=craft,
             channel_used=channel_used,

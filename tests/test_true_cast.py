@@ -633,17 +633,16 @@ class TrueCastChoiceTest(TestCase):
     def true_casting_water_missile(
         self, state: BattleState, actor: CombatantState
     ) -> policy.Decision:
-        """The menu's choice, but for the caster: its Fire Missile cast,
-        turned into a True cast of Water Missile."""
+        """The menu's choice, but for the caster: the True cast of Water
+        Missile the menu offers."""
         decision = self.menu_choice(state, actor)
         if actor.combatant_id == 1:
-            fire_missile = next(
+            decision.chosen = next(
                 candidate
                 for candidate in decision.candidates
-                if candidate.spell_key == "fire_missile" and not candidate.push_mana
-            )
-            decision.chosen = replace(
-                fire_missile, spell_key="water_missile", true_cast=True
+                if candidate.spell_key == "water_missile"
+                and candidate.true_cast
+                and not candidate.push_mana
             )
         return decision
 
@@ -663,8 +662,15 @@ class TrueCastChoiceTest(TestCase):
         (decision,) = self.decisions_of(first_turn, caster.name)
         self.assertIs(decision["chosen"]["true_cast"], True)
         self.assertEqual(decision["chosen"]["spell_key"], "water_missile")
+        # Only the casts the menu names as True casts carry the key.
+        marked = [
+            offered for offered in decision["candidates"] if "true_cast" in offered
+        ]
+        self.assertIn(decision["chosen"], marked)
         for offered in decision["candidates"]:
-            self.assertNotIn("true_cast", offered)
+            self.assertEqual(
+                "true_cast" in offered, policy.TRUE_CAST_MARK in offered["name"]
+            )
         payload = cast_payload(first_turn)
         self.assertEqual(
             (payload["spell"], payload["true_cast"]), ("water_missile", True)

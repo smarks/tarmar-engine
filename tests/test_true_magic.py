@@ -1011,6 +1011,16 @@ class DrainTest(TestCase):
         self.assertEqual(rules.drain(4, CastingEnding.INTERRUPTED), 8)
         self.assertEqual(rules.drain(4, CastingEnding.COUNTERED), 20)
 
+    def test_a_drain_counts_a_workings_whole_mana_and_a_spells_pushed_mana(self):
+        rules = example_true_magic_rules()
+        working = rules.working("scorch", 2)
+        self.assertEqual(rules.drained_mana(working, 0), 2)
+        self.assertEqual(rules.drained_mana(working, 3), 2 + 3)
+        # A True cast of a level-3 catalog spell: its cost is no part of it.
+        bolt = get_spell("lightning_bolt")
+        self.assertEqual(rules.drained_mana(bolt, 0), 0)
+        self.assertEqual(rules.drained_mana(bolt, 4), 4)
+
     def test_an_ending_with_no_entry_drains_nothing(self):
         rules = example_true_magic_rules()
         named = set(rules.lost_drain_per_mana)
@@ -1019,6 +1029,28 @@ class DrainTest(TestCase):
                 continue
             with self.subTest(ending=ending.value):
                 self.assertEqual(rules.drain(4, ending), 0)
+
+
+class WorkingRollTest(TestCase):
+    """What a working's casting roll is under, for the engine that rolls it
+    and the menu that forecasts it."""
+
+    def test_the_target_adds_the_bonus_for_each_level(self):
+        # WIS 12, and the example rules' 2 a level.
+        rules = example_true_magic_rules()
+        caster = knot_caster(3)
+        self.assertEqual(caster.wisdom, 12)
+        self.assertEqual(rules.roll_target(caster, 3), 12 + 2 * 3)
+        self.assertEqual(rules.roll_target(caster, 0), 12)
+        by_int = example_true_magic_rules(roll_attribute="INT", roll_bonus_per_level=0)
+        self.assertEqual(by_int.roll_target(caster, 3), caster.intelligence)
+
+    def test_it_is_named_by_its_attribute_and_the_skills_label(self):
+        self.assertEqual(example_true_magic_rules().versus, "WIS+Knotwork")
+        self.assertEqual(
+            example_true_magic_rules(roll_attribute="INT", skill_label="Loom").versus,
+            "INT+Loom",
+        )
 
 
 class TrueLevelTest(TestCase):
@@ -1246,6 +1278,25 @@ class WorkingLiftedBoundsTest(TestCase):
     def test_it_reports_the_bound_whether_or_not_it_is_lifted(self):
         self.assertEqual(self.passed(5, lifted_magic_bounds=[CHANNEL]), (CHANNEL,))
 
+    def test_past_the_tier_cap_is_asked_of_the_tier_alone(self):
+        rules = example_true_magic_rules()
+        lifted = replace(self.caster, lifted_magic_bounds=[CHANNEL])
+        # The cap the level gives stands to be named, lifted or not.
+        self.assertEqual(self.rules.unlifted_tier_cap(self.caster), 4)
+        self.assertEqual(self.rules.unlifted_tier_cap(lifted), 4)
+        self.assertIsNone(self.rules.tier_cap(lifted))
+        self.assertEqual(MagicRules().unlifted_tier_cap(lifted), 0)
+        for tier, past in ((3, False), (4, False), (5, True)):
+            with self.subTest(tier=tier):
+                working = rules.working("scorch", tier)
+                self.assertIs(self.rules.past_tier_cap(self.caster, working), past)
+                # Lifted or not: it says what the tier is past, not whether
+                # the caster may craft it.
+                self.assertIs(self.rules.past_tier_cap(lifted, working), past)
+        self.assertIs(
+            self.rules.past_tier_cap(self.caster, get_spell("lightning_bolt")), False
+        )
+
     def test_a_catalog_spell_is_held_to_no_tier_cap(self):
         # A level-3 spell cast by a caster whose tier cap is 0: only its
         # Channel is asked.
@@ -1285,6 +1336,22 @@ class GatheredTest(TestCase):
             self.gathered_each_turn(example_true_magic_rules(), 2, 3),
             [0, 0, 1, 2, 3, 4, 5],
         )
+
+    def test_the_share_due_is_what_the_next_turn_gathers(self):
+        # Tier 2 pushed by 3: 5 mana over 6 turns, nothing on the first.
+        rules = example_true_magic_rules()
+        key = rules.working_key("scorch", 2)
+        shares = [
+            rules.share_due(craft_of(key, push_mana=3, turns_done=turns_done))
+            for turns_done in range(6)
+        ]
+        self.assertEqual(shares, [0, 1, 1, 1, 1, 1])
+        self.assertEqual(sum(shares), 5)
+        # A craft with every turn taken has no share left to gather.
+        with self.assertRaises(ValueError):
+            rules.share_due(craft_of(key, push_mana=3, turns_done=6))
+        with self.assertRaises(KeyError):
+            rules.share_due(craft_of("working:fog:1"))
 
     def test_an_unpushed_craft_gathers_its_tier(self):
         # Tier 3 at 2 turns a tier: 3 mana over 6 turns.

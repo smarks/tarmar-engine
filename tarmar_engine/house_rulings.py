@@ -203,7 +203,7 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
         "either side is offered its Mastery 3 casts.",
         {"cast": 3, "renew": 2},
         "tarmar_engine/engine.py _cast_blocked (cast_spell, craft_working, "
-        "_begin_craft), phase_renew_spells",
+        "_begin_craft, _settle_craft_choice), phase_renew_spells",
         RULING + " (cast: the grappling page's 'no hand gestures and no "
         "verbal component'; the HTH table's 'no-gesture spell' would allow 2)",
         "#821",
@@ -329,8 +329,9 @@ HOUSE_RULINGS += (
         "no weapon in hand (a shield is a standing fact of the snapshot, not a "
         "held item); a no-gesture spell is one known at Spell Mastery 2.",
         2,
-        "tarmar_engine/policy.py _hth_casts; engine.py _cast_blocked "
-        "(cast_spell, craft_working, _begin_craft)",
+        "tarmar_engine/policy.py _hth_allows_casting (_hth_casts, "
+        "_score_options); engine.py _cast_blocked (cast_spell, craft_working, "
+        "_begin_craft, _settle_craft_choice)",
         RULING,
         "#19",
     ),
@@ -694,9 +695,16 @@ HOUSE_RULINGS += (
         "that caster has chosen its action yet, and the counter opposes that "
         "caster's cast this turn whatever its target. The page does not say "
         "who may counter; whether only the spell's target may is left to the "
-        "canon's own rulings. A counter is a whole action, standing still.",
+        "canon's own rulings. A counter is a whole action, standing still. "
+        "With True Magic injected a level in the True skill makes a mage "
+        "too. One enemy mage is not named: a figure with no level in the "
+        "True skill whose known spells are all generic counters, which "
+        "casts nothing to oppose.",
         "any mage against an enemy mage",
-        "tarmar_engine/policy.py _counter_candidates",
+        "tarmar_engine/policy.py _counter_candidates (choose_option), _is_mage "
+        "(_counter_candidates, _anchor_candidates, _may_be_countered), "
+        "_may_be_countered (_counter_candidates), _has_castings "
+        "(_score_options, _borrow_candidates, _may_be_countered)",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -803,7 +811,8 @@ HOUSE_RULINGS += (
         "Awaiting Spencer's word: the ruling lifts Channel without saying "
         "what then bounds a borrowing.",
         "mana + Channel, when Borrowing has no debt cap",
-        "tarmar_engine/magic.py MagicRules.channel_bound",
+        "tarmar_engine/magic.py MagicRules.channel_bound; "
+        "tarmar_engine/policy.py _craft_mana_bound (_craft_tiers)",
         RULING,
         "#37",
     ),
@@ -823,7 +832,10 @@ HOUSE_RULINGS += (
         "no element." + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
         "learned, never cast",
         "tarmar_engine/spells.py Spell.generic_counter; "
-        "tarmar_engine/policy.py _cast_candidates; "
+        "tarmar_engine/policy.py _cast_candidates (_score_options, _hth_casts, "
+        "_mastery_three_casts), _has_castings (_score_options, "
+        "_borrow_candidates, _may_be_countered), _is_generic_counter "
+        "(_has_castings); "
         "tarmar_engine/engine.py cast_spell",
         "Spencer's confirmation of 2026-11-17 that the Counter rungs are five "
         "spells (" + RULING + ")",
@@ -876,8 +888,9 @@ HOUSE_RULINGS += (
         "differ by more than a point, and the last turn brings the whole. "
         "The alternative reading pays the whole mana when the craft begins.",
         "even shares, rounded down",
-        "tarmar_engine/magic.py TrueMagicRules.gathered_after; "
-        "tarmar_engine/engine.py craft_working",
+        "tarmar_engine/magic.py TrueMagicRules.gathered_after, "
+        "TrueMagicRules.share_due (engine.py craft_working, policy.py "
+        "_crafts_of); tarmar_engine/engine.py craft_working",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -891,8 +904,13 @@ HOUSE_RULINGS += (
         "bound it went past. The alternative reading is a further bound, "
         "lifted on its own.",
         "channel",
-        "tarmar_engine/magic.py MagicRules.tier_cap, lifted_bounds_passed; "
-        "tarmar_engine/engine.py _begin_craft",
+        "tarmar_engine/magic.py MagicRules.tier_cap, lifted_bounds_passed, "
+        "MagicRules.past_tier_cap (MagicRules.lifted_bounds_passed, policy.py "
+        "_channel_note), MagicRules.unlifted_tier_cap (MagicRules.tier_cap, "
+        "MagicRules.past_tier_cap, policy.py _channel_note); "
+        "tarmar_engine/engine.py _begin_craft; "
+        "tarmar_engine/policy.py _craft_tiers (_craft_candidates), "
+        "_channel_note (_within_channel, _push_note)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -907,7 +925,8 @@ HOUSE_RULINGS += (
         "stands until withdrawn",
         "tarmar_engine/magic.py MagicRules.granted; "
         "tarmar_engine/state.py CombatantState.granted_workings; "
-        "tarmar_engine/engine.py _begin_craft",
+        "tarmar_engine/engine.py _begin_craft; tarmar_engine/policy.py "
+        "_craft_candidates (_cast_candidates)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -918,7 +937,8 @@ HOUSE_RULINGS += (
         "level in the True skill. Only a working's roll takes that bonus. "
         "The alternative reading adds the bonus to a True cast too.",
         "the spell's own roll",
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py "
+        "_as_true_cast (_cast_candidates)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -943,9 +963,16 @@ HOUSE_RULINGS += (
         "option chosen again is the craft's continuation; choosing any other "
         "option ends the working when the choice is recorded in Initial "
         "Movement, before the caster moves. The working is lost with the "
-        "mana it had gathered.",
+        "mana it had gathered. It is abandoned when the continuation was on "
+        "the menu to choose, as it is wherever the craft may go on, with or "
+        "without an enemy left to aim the working at; a caster the menu "
+        "withholds it from loses the working another way "
+        "(what_else_breaks_a_craft).",
         "abandoned",
-        "tarmar_engine/engine.py phase_initial_movement, _settle_craft_choice",
+        "tarmar_engine/engine.py _settle_craft_choice "
+        "(phase_initial_movement); tarmar_engine/policy.py _score_options "
+        "(choose_option, _borrow_candidates), _crafts_of (_craft_candidates, "
+        "_score_options)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -960,7 +987,10 @@ HOUSE_RULINGS += (
         "a standing figure prone between its choice and its action but "
         "unconsciousness.",
         "where a cast may be made",
-        "tarmar_engine/engine.py _begin_craft, _cast_blocked",
+        "tarmar_engine/engine.py _begin_craft (craft_working), _cast_blocked "
+        "(cast_spell, craft_working, _begin_craft, _settle_craft_choice); "
+        "tarmar_engine/policy.py _cast_candidates (_score_options, _hth_casts, "
+        "_mastery_three_casts), _craft_candidates (_cast_candidates)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -971,7 +1001,8 @@ HOUSE_RULINGS += (
         "may name another figure than the last did, or none.",
         "latest craft action",
         "tarmar_engine/engine.py craft_working, _complete_working "
-        "(_complete_workings); tarmar_engine/state.py CraftState.target_id",
+        "(_complete_workings); tarmar_engine/state.py CraftState.target_id; "
+        "tarmar_engine/policy.py _crafts_of (_craft_candidates, _score_options)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -985,7 +1016,9 @@ HOUSE_RULINGS += (
         "where the choice is recorded.",
         "fixed when the craft begins",
         "tarmar_engine/engine.py _begin_craft, _settle_craft_choice; "
-        "tarmar_engine/state.py CraftState",
+        "tarmar_engine/state.py CraftState; tarmar_engine/policy.py "
+        "_continues_craft (_within_channel, _push_candidates, "
+        "_borrow_candidates)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1021,7 +1054,8 @@ HOUSE_RULINGS += (
         "injury band, read after the hit",
         "tarmar_engine/engine.py _interruption_roll (apply_damage), "
         "_roll_and_resolve (cast_spell, _complete_working), _oppose_cast "
-        "(_roll_and_resolve), _action_roll_penalty",
+        "(_roll_and_resolve), _action_roll_penalty; tarmar_engine/policy.py "
+        "_crafts_of (_craft_candidates, _score_options)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1053,13 +1087,20 @@ HOUSE_RULINGS += (
         "that takes hold ends the working with no roll, since a held figure "
         "casts only at a Spell Mastery a working has none of. An enemy "
         "entering hand-to-hand with a caster who has a weapon in hand ends "
-        "it with no roll, at the caster's next craft action, where the one "
-        "guard a cast answers to refuses it; a caster with empty hands "
-        "crafts on, and the blow that opened the hand-to-hand forces the "
-        "usual roll if it lands. A fall does not end it: a prone caster's "
-        "craft action goes on. Unconsciousness ends it, which is no choice. "
-        "The alternative reading for the grapple and the hand-to-hand is "
-        "that they force the roll a hit does.",
+        "it with no roll, where the one guard a cast answers to refuses it; "
+        "a caster with empty hands crafts on, and the blow that opened the "
+        "hand-to-hand forces the usual roll if it lands. The working is lost "
+        "the same way, as blocked, whenever the enemy closed. One who acts "
+        "before the caster that turn makes the caster's craft action the "
+        "refusal. One who acts after it leaves the craft standing into the "
+        "next turn, whose menu withholds the continuation; the working is "
+        "then lost where the caster's choice is recorded, whatever it "
+        "chooses, and is no abandonment, since no continuation was on offer "
+        "to pass over. A fall does not end it: a prone caster is offered the "
+        "continuation beside STAND UP, and its craft action goes on. "
+        "Unconsciousness ends it, which is no choice. The alternative "
+        "reading for the grapple and the hand-to-hand is that they force the "
+        "roll a hit does.",
         {
             "grapple": "grappled",
             "hand-to-hand, weapon in hand": "blocked",
@@ -1067,9 +1108,12 @@ HOUSE_RULINGS += (
             "unconsciousness": "unconscious",
         },
         "tarmar_engine/engine.py _establish_grapple (attempt_grapple), "
-        "craft_working, _cast_blocked (cast_spell, craft_working, "
-        "_begin_craft), _fall_unconscious (check_unconsciousness, "
-        "_feed_runaway)",
+        "craft_working, _settle_craft_choice (phase_initial_movement), "
+        "_cast_blocked (cast_spell, craft_working, _begin_craft, "
+        "_settle_craft_choice), _fall_unconscious (check_unconsciousness, "
+        "_feed_runaway); tarmar_engine/policy.py _score_options "
+        "(choose_option, _borrow_candidates), _hth_allows_casting "
+        "(_hth_casts, _score_options)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1113,7 +1157,10 @@ HOUSE_RULINGS += (
         "catalog spell is drained for its pushed mana alone.",
         {"working": "whole mana", "catalog spell": "pushed mana"},
         "tarmar_engine/engine.py _roll_and_resolve (cast_spell, "
-        "_complete_working), _take_drain (_roll_and_resolve, _lose_working)",
+        "_complete_working), _take_drain (_roll_and_resolve, _lose_working); "
+        "tarmar_engine/magic.py TrueMagicRules.drained_mana (engine.py "
+        "_roll_and_resolve, policy.py _drain_of); tarmar_engine/policy.py "
+        "_drain_of (_crafts_of, _push_note)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1127,7 +1174,8 @@ HOUSE_RULINGS += (
         "always has.",
         "the caster or a living teammate",
         "tarmar_engine/engine.py _healed_figure (_resolve_cast), _resolve_cast "
-        "(_roll_and_resolve); tarmar_engine/state.py BattleState.teammates_of",
+        "(_roll_and_resolve); tarmar_engine/state.py BattleState.teammates_of; "
+        "tarmar_engine/policy.py _crafts_of (_craft_candidates, _score_options)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1246,9 +1294,58 @@ HOUSE_RULINGS += (
         + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
         "tier",
         "tarmar_engine/magic.py CounterspellRules.defender_familiarity "
-        "(engine.py _oppose_cast), TrueMagicRules.working "
-        "(TrueMagicRules.__post_init__, TrueMagicRules.working_from_key)",
+        "(engine.py _oppose_cast, policy.py _familiarity_note), "
+        "TrueMagicRules.working "
+        "(TrueMagicRules.__post_init__, TrueMagicRules.working_from_key, "
+        "policy.py _craft_tiers)",
         RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "ai_crafts_up_to_its_cap",
+        "An AI caster with a level in the True skill may begin a craft of "
+        "any working it is offered, at any tier from 1 to its tier cap that "
+        "its mana covers: the cap is a ceiling, not the one tier it crafts "
+        "at. It never pushes a working and never borrows for one: those "
+        "variants are on the menu at a score of 0, for a player, as a cast's "
+        "are. Nor does it True cast a spell, which is on the menu the same "
+        "way. The alternative reading has it craft at its cap and no lower.",
+        "any tier from 1 to its cap, never pushed, never borrowing",
+        "tarmar_engine/policy.py _craft_tiers (_craft_candidates), "
+        "_craft_candidates (_cast_candidates), _as_true_cast "
+        "(_cast_candidates), _push_candidates (choose_option), "
+        "_borrow_candidates (choose_option)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "ai_crafts_what_it_can_survive",
+        "The AI weighs a craft action turn for turn against its other "
+        "options. A damaging working scores its forecast (the chance of its "
+        "roll, times the chance of its aim, times the expected damage after "
+        "armour) divided by the craft turns left, this one included, so the "
+        "score of a craft that stands rises as it nears its end. A working "
+        "whose drain, when it goes off, would take the pool it is drained "
+        "from to 0 or below scores 0: the AI crafts nothing that would fell "
+        "it. A healing working and a narrated one score 0, as does a "
+        "damaging one with no enemy left to aim at, and as every pushed and "
+        "every borrowing variant does. The continuation of a craft that was "
+        "begun pushed or borrowing scores 0 too and carries no forecast, as "
+        "a pushed cast carries none: the AI begins no such craft "
+        "(ai_crafts_up_to_its_cap), so only a player's is ever carried on, "
+        "and the AI weighs none.",
+        {
+            "damaging": "forecast / craft turns left",
+            "drain to 0 or below": 0.0,
+            "healing": 0.0,
+            "narrated": 0.0,
+            "pushed or borrowing": 0.0,
+        },
+        "tarmar_engine/policy.py _crafts_of (_craft_candidates, "
+        "_score_options), _drain_of (_crafts_of, _push_note), "
+        "_left_to_a_player (_crafts_of, _push_candidates, _borrow_candidates), "
+        "_push_candidates (choose_option), _borrow_candidates (choose_option)",
+        TACTIC,
         "#208 (tarmar-engine #77)",
     ),
 )

@@ -218,6 +218,12 @@ def losses(events) -> list[dict]:
     return status_payloads(events, "craft_lost")
 
 
+def loss_events(events) -> list[dict]:
+    """The event of each craft an event stream lost, whole: its phase and
+    sequence with its payload."""
+    return [event for event in events if "craft_lost" in event["payload"]]
+
+
 def craft_candidate(
     effect: str,
     tier: int,
@@ -903,9 +909,10 @@ class LoseWorkingTest(TestCase):
             (debt_roll["spell"], debt_roll["debt"], debt_roll["held"]),
             (working_key("scorch", 2), 1, True),
         )
+        lost = loss_events(events)
         order = [
             "craft_lost"
-            if "craft_lost" in event["payload"]
+            if event in lost
             else "debt_roll"
             if "debt_roll" in event["payload"]
             else "drain"
@@ -1031,11 +1038,7 @@ class ChoiceWhileCraftingTest(TestCase):
         state = self.crafting()
         caster = state.by_id(1)
         events = run_turn(state, DEFEND)
-        (lost_event,) = [
-            event
-            for event in events_of_type(events, "status")
-            if "craft_lost" in event["payload"]
-        ]
+        (lost_event,) = loss_events(events)
         self.assertEqual(lost_event["phase"], 3)
         self.assertEqual(
             (lost_event["payload"]["ending"], lost_event["payload"]["mana_spent"]),
