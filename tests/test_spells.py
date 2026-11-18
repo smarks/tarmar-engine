@@ -1,9 +1,13 @@
-"""The spell catalog's Elemental ladders (tarmar-engine #75).
+"""The spell catalog's ladders: the Elemental ones (tarmar-engine #75) and
+the generic counters' (tarmar-engine #77).
 
 A student of Elemental magic studies one element as a track and climbs it
 tier by tier: Missile (1), Ball (2), Bolt (3). The catalog says each spell's
 element and holds every element's full ladder, so a caller enforcing that
 ruling can ask for the rung below any Elemental spell.
+
+Protection's Counter 1 to Counter 5 are generic counters: learned, never
+cast, and climbed on one ladder of their own.
 """
 
 from dataclasses import replace
@@ -12,9 +16,13 @@ from unittest import TestCase
 from tarmar_engine.spells import (
     ELEMENTAL_SCHOOL,
     ELEMENTS,
+    GENERIC_COUNTER_LADDER,
+    PROTECTION_SCHOOL,
     SPELLS,
     Spell,
     _index_ladders,
+    element_siblings,
+    generic_counter_level,
     get_spell,
     lower_tier,
 )
@@ -22,9 +30,13 @@ from tarmar_engine.state import CASTER_POOLS
 
 TIER_NAMES_BY_LEVEL = {1: "missile", 2: "ball", 3: "bolt"}
 
-# Every catalog spell outside the Elemental school, none of which names an
-# element.
+# Every catalog spell outside the Elemental school that can be cast, none of
+# which names an element.
 NON_ELEMENTAL_KEYS = ("shield", "blur", "fatigue", "wound", "heal")
+
+# The generic counters, lowest rung first: schools-of-magic.md's Protection
+# list, Counter 1 to Counter 5.
+GENERIC_COUNTER_KEYS = ("counter_1", "counter_2", "counter_3", "counter_4", "counter_5")
 
 # The three Elemental spells the catalog carried before the ladders, field for
 # field as they were written then, plus the element each now names.
@@ -100,7 +112,10 @@ class ElementalLadderTests(TestCase):
         others = [
             spell for spell in SPELLS.values() if spell.school != ELEMENTAL_SCHOOL
         ]
-        self.assertEqual({spell.key for spell in others}, set(NON_ELEMENTAL_KEYS))
+        self.assertEqual(
+            {spell.key for spell in others},
+            {*NON_ELEMENTAL_KEYS, *GENERIC_COUNTER_KEYS},
+        )
         for spell in others:
             with self.subTest(key=spell.key):
                 self.assertIsNone(spell.element)
@@ -165,15 +180,46 @@ class LowerTierTests(TestCase):
             with self.subTest(key=key):
                 self.assertIsNone(lower_tier(get_spell(key)))
 
+    def test_each_counter_steps_down_to_the_counter_below(self) -> None:
+        self.assertIsNone(lower_tier(get_spell("counter_1")))
+        for key_below, key in zip(GENERIC_COUNTER_KEYS, GENERIC_COUNTER_KEYS[1:]):
+            with self.subTest(key=key):
+                self.assertIs(lower_tier(get_spell(key)), get_spell(key_below))
+
+    def test_a_counter_steps_down_its_ladder_whatever_its_school(self) -> None:
+        elsewhere = replace(get_spell("counter_4"), school="Passage")
+        self.assertIs(lower_tier(elsewhere), get_spell("counter_3"))
+
+    def test_a_counter_rung_missing_below_is_an_error_not_none(self) -> None:
+        off_the_ladder = replace(get_spell("counter_5"), key="counter_7", level=7)
+        with self.assertRaisesRegex(KeyError, "no level 6 generic counter spell"):
+            lower_tier(off_the_ladder)
+
 
 class LadderIndexTests(TestCase):
-    def test_the_catalog_indexes_every_rung_by_element_and_level(self) -> None:
+    def test_the_catalog_indexes_every_rung_by_ladder_and_level(self) -> None:
         index = _index_ladders(SPELLS.values())
-        self.assertEqual(len(index), len(ELEMENTS) * len(TIER_NAMES_BY_LEVEL))
+        self.assertEqual(
+            len(index),
+            len(ELEMENTS) * len(TIER_NAMES_BY_LEVEL) + len(GENERIC_COUNTER_KEYS),
+        )
         self.assertIs(index[("wind", 2)], get_spell("wind_ball"))
+        self.assertIs(index[(GENERIC_COUNTER_LADDER, 4)], get_spell("counter_4"))
 
-    def test_spells_without_an_element_are_left_out(self) -> None:
+    def test_spells_on_no_ladder_are_left_out(self) -> None:
         self.assertEqual(_index_ladders([get_spell("heal")]), {})
+
+    def test_two_generic_counters_on_one_rung_are_refused(self) -> None:
+        counter = get_spell("counter_1")
+        twin = replace(counter, key="counter_one", name="Counter One")
+        with self.assertRaisesRegex(ValueError, "'counter_one' and 'counter_1'"):
+            _index_ladders([counter, twin])
+
+    def test_a_gap_in_the_counter_ladder_is_refused(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"generic counter ladder holds levels \[1, 3\]"
+        ):
+            _index_ladders([get_spell("counter_1"), get_spell("counter_3")])
 
     def test_two_spells_on_one_rung_are_refused(self) -> None:
         missile = get_spell("earth_missile")
@@ -188,3 +234,129 @@ class LadderIndexTests(TestCase):
     def test_a_ladder_that_does_not_start_at_one_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, r"fire ladder holds levels \[2, 3\]"):
             _index_ladders([get_spell("fire_ball"), get_spell("fire_bolt")])
+
+
+class GenericCounterCatalogTests(TestCase):
+    def test_the_catalog_holds_counter_one_to_five(self) -> None:
+        for level, key in enumerate(GENERIC_COUNTER_KEYS, start=1):
+            with self.subTest(key=key):
+                # Field for field: nothing to aim, roll, keep up or climb an
+                # element by.
+                self.assertEqual(
+                    get_spell(key),
+                    Spell(
+                        key=key,
+                        name=f"Counter {level}",
+                        school="Protection",
+                        level=level,
+                        attribute="WIS",
+                        targeted=False,
+                        generic_counter=True,
+                    ),
+                )
+
+    def test_only_the_counter_rungs_are_generic_counters(self) -> None:
+        self.assertEqual(
+            {spell.key for spell in SPELLS.values() if spell.generic_counter},
+            set(GENERIC_COUNTER_KEYS),
+        )
+
+    def test_a_spell_is_no_generic_counter_unless_it_says_so(self) -> None:
+        plain = Spell(
+            key="ward",
+            name="Ward",
+            school=PROTECTION_SCHOOL,
+            level=1,
+            attribute="WIS",
+            targeted=False,
+        )
+        self.assertFalse(plain.generic_counter)
+
+
+class GenericCounterValidationTests(TestCase):
+    def test_a_generic_counter_sets_nothing_a_cast_would_use(self) -> None:
+        for field_name, value in (
+            ("targeted", True),
+            ("continuing", True),
+            ("heals", True),
+            ("damage", "1d6"),
+            ("tn_bonus", 1),
+            ("tn_bonus", -1),
+            ("attacker_penalty", 2),
+            ("element", "fire"),
+        ):
+            with (
+                self.subTest(field=field_name, value=value),
+                self.assertRaisesRegex(ValueError, rf"never cast.*'{field_name}'"),
+            ):
+                replace(get_spell("counter_1"), **{field_name: value})
+
+    def test_every_field_set_is_named(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"\['targeted', 'damage'\]"):
+            replace(get_spell("counter_1"), targeted=True, damage="2d6")
+
+    def test_a_castable_spell_may_not_be_marked_a_generic_counter(self) -> None:
+        for key in ("fire_missile", "shield", "heal"):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                replace(get_spell(key), generic_counter=True)
+
+
+class GenericCounterLevelTests(TestCase):
+    def test_no_generic_counter_is_level_zero(self) -> None:
+        self.assertEqual(generic_counter_level([]), 0)
+        self.assertEqual(generic_counter_level(["heal", "fire_ball", "shield"]), 0)
+
+    def test_one_generic_counter_is_its_level(self) -> None:
+        for level, key in enumerate(GENERIC_COUNTER_KEYS, start=1):
+            with self.subTest(key=key):
+                self.assertEqual(generic_counter_level([key]), level)
+                self.assertEqual(generic_counter_level(["wound", key, "blur"]), level)
+
+    def test_several_give_the_highest_not_the_sum(self) -> None:
+        self.assertEqual(
+            generic_counter_level(["counter_1", "shield", "counter_4", "counter_3"]),
+            4,
+        )
+        self.assertEqual(generic_counter_level(GENERIC_COUNTER_KEYS), 5)
+
+    def test_it_reads_any_iterable_of_keys(self) -> None:
+        self.assertEqual(generic_counter_level(key for key in ("counter_2", "heal")), 2)
+        self.assertEqual(generic_counter_level({"counter_3": 1, "heal": 4}), 3)
+
+    def test_a_key_outside_the_catalog_is_a_key_error(self) -> None:
+        with self.assertRaises(KeyError):
+            generic_counter_level(["counter_1", "counter_6"])
+
+
+class ElementSiblingsTests(TestCase):
+    def test_a_rung_has_the_same_rung_of_every_other_element(self) -> None:
+        self.assertEqual(
+            [spell.key for spell in element_siblings(get_spell("fire_ball"))],
+            ["water_ball", "lightning_ball", "earth_ball", "wind_ball"],
+        )
+
+    def test_siblings_keep_the_level_and_leave_out_the_spell_itself(self) -> None:
+        for element in ELEMENTS:
+            for tier_name in TIER_NAMES_BY_LEVEL.values():
+                spell = get_spell(f"{element}_{tier_name}")
+                siblings = element_siblings(spell)
+                with self.subTest(key=spell.key):
+                    self.assertEqual(
+                        [sibling.element for sibling in siblings],
+                        [other for other in ELEMENTS if other != element],
+                    )
+                    self.assertEqual(
+                        {sibling.level for sibling in siblings}, {spell.level}
+                    )
+                    for sibling in siblings:
+                        self.assertIs(sibling, get_spell(sibling.key))
+
+    def test_a_spell_with_no_element_has_none(self) -> None:
+        for key in (*NON_ELEMENTAL_KEYS, *GENERIC_COUNTER_KEYS):
+            with self.subTest(key=key):
+                self.assertEqual(element_siblings(get_spell(key)), ())
+
+    def test_a_rung_no_other_element_holds_has_none(self) -> None:
+        # No element's ladder reaches level 5 in the catalog.
+        off_the_ladder = replace(get_spell("fire_bolt"), key="fire_storm", level=5)
+        self.assertEqual(element_siblings(off_the_ladder), ())

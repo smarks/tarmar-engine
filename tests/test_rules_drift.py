@@ -13,8 +13,10 @@ import tarmar_engine
 from tarmar_engine import actions, combat_math, engine, hexes, movement
 from tarmar_engine.spells import (
     _ELEMENTAL_TIERS,
+    _GENERIC_COUNTER_LEVELS,
     ELEMENTAL_SCHOOL,
     ELEMENTS,
+    PROTECTION_SCHOOL,
     SPELLS,
 )
 from tarmar_engine.state import BARE_HANDED_DAMAGE_TABLE, WeaponState
@@ -343,27 +345,52 @@ class GrappleDriftGuard(TestCase):
 
 
 class SpellCatalogDriftGuard(TestCase):
-    def test_spell_names_and_levels_come_from_schools_of_magic_md(self):
+    @staticmethod
+    def school_level_lines(school: str) -> dict[int, str]:
+        """schools-of-magic.md's numbered spell list for a school: each
+        level's line, by level."""
         markdown = (RULES / "magic" / "schools-of-magic.md").read_text()
+        school_section = markdown.split(f"### {school}", 1)[1].split("### ", 1)[0]
+        return {
+            int(match.group(1)): match.group(2)
+            for match in re.finditer(r"^(\d+)\. (.+)$", school_section, re.MULTILINE)
+        }
+
+    def test_spell_names_and_levels_come_from_schools_of_magic_md(self):
         for spell in SPELLS.values():
-            school_section = markdown.split(f"### {spell.school}", 1)[1].split(
-                "### ", 1
-            )[0]
-            level_lines = {
-                int(match.group(1)): match.group(2)
-                for match in re.finditer(
-                    r"^(\d+)\. (.+)$", school_section, re.MULTILINE
-                )
-            }
+            level_lines = self.school_level_lines(spell.school)
             self.assertIn(spell.level, level_lines, spell.key)
+            not_on_the_page = (
+                f"{spell.name} is not a level-{spell.level} {spell.school} spell"
+            )
+            if spell.generic_counter:
+                # A Counter rung's last word is its number, which the line
+                # for its level would hold whatever the rung was called: its
+                # whole name must be one of the line's entries.
+                self.assertIn(
+                    spell.name, level_lines[spell.level].split(", "), not_on_the_page
+                )
+                continue
             # The catalog name (bare, or its Elemental variant like "Fire
             # Missile") must appear in that school's line for that level.
             base_name = spell.name.split()[-1]
-            self.assertIn(
-                base_name,
-                level_lines[spell.level],
-                f"{spell.name} is not a level-{spell.level} {spell.school} spell",
-            )
+            self.assertIn(base_name, level_lines[spell.level], not_on_the_page)
+
+    def test_generic_counters_are_the_protection_lists_counter_rungs(self):
+        # Both ways: every Counter rung the page lists is in the catalog at
+        # the page's level, and the catalog holds no other generic counter.
+        page_rungs = {
+            (level, entry)
+            for level, line in self.school_level_lines(PROTECTION_SCHOOL).items()
+            for entry in line.split(", ")
+            if re.fullmatch(r"Counter \d+", entry)
+        }
+        catalog_rungs = {
+            (spell.level, spell.name)
+            for spell in SPELLS.values()
+            if spell.generic_counter
+        }
+        self.assertEqual(catalog_rungs, page_rungs)
 
     def test_mana_cost_equals_spell_level(self):
         # casting-spells.md: "Spells cost mana equal to the spell's level."
@@ -382,13 +409,16 @@ class SpellCatalogDriftGuard(TestCase):
         self.assertEqual(page_elements, ELEMENTS)
 
     def test_catalog_size_is_the_ladders_plus_three_to_seven_others(self):
-        # Every element's Missile/Ball/Bolt ladder (#75), beside a small set
-        # of other schools' spells: the bound the whole catalog held at six
-        # to ten when the Elemental school had three spells.
+        # Every element's Missile/Ball/Bolt ladder (#75) and the generic
+        # counters' ladder (#77), each counted exactly, beside a small set of
+        # other spells: the bound the whole catalog held at six to ten when
+        # the Elemental school had three spells.
         elemental = [
             spell for spell in SPELLS.values() if spell.school == ELEMENTAL_SCHOOL
         ]
         self.assertEqual(len(elemental), len(ELEMENTS) * len(_ELEMENTAL_TIERS))
-        others = len(SPELLS) - len(elemental)
+        generic_counters = [spell for spell in SPELLS.values() if spell.generic_counter]
+        self.assertEqual(len(generic_counters), len(_GENERIC_COUNTER_LEVELS))
+        others = len(SPELLS) - len(elemental) - len(generic_counters)
         self.assertGreaterEqual(others, 3)
         self.assertLessEqual(others, 7)

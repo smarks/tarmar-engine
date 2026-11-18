@@ -28,6 +28,11 @@ PAGE = "page"
 RULING = "ruling — marked for Spencer"
 TACTIC = "AI tactic, not a rule — marked for Spencer"
 
+#: What each reading on the generic counters rests on (tarmar-engine #77).
+_WHILE_COUNTERS_ARE_FIVE_SPELLS = (
+    " It stands only while the consuming game holds the Counter rungs as five spells."
+)
+
 
 @dataclass(frozen=True)
 class HouseRuling:
@@ -777,6 +782,53 @@ HOUSE_RULINGS += (
         "tarmar_engine/magic.py MagicRules.channel_bound",
         RULING,
         "#37",
+    ),
+    HouseRuling(
+        "generic_counter_is_learned_never_cast",
+        "schools-of-magic.md lists Counter 1 to Counter 5 among Protection's "
+        "spells. spell-descriptions.md's Counter row describes one spell of "
+        "levels 1 to 5 that is cast, investing mana in the Counterspell duel: "
+        "'Its five tiers are the five levels of investment a caster can bring "
+        "to that duel, not five different spells.' The catalog departs from "
+        "that row, on the consuming game's reading that the rungs are five "
+        "spells, which Spencer confirmed on 2026-11-17. It holds each rung as "
+        "a generic counter: a figure learns it as it learns any spell, and "
+        "its level is the highest spell level its holder's counter is helped "
+        "against. It is never cast: the menu offers no cast of one, the "
+        "engine refuses one, and it names no aim, no effect, no renewal and "
+        "no element." + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
+        "learned, never cast",
+        "tarmar_engine/spells.py Spell.generic_counter; "
+        "tarmar_engine/policy.py _cast_candidates; "
+        "tarmar_engine/engine.py cast_spell",
+        "Spencer's confirmation of 2026-11-17 that the Counter rungs are five "
+        "spells (" + RULING + ")",
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "generic_counter_level_is_the_highest_rung_known",
+        "A figure's generic counter level is the level of the highest generic "
+        "counter among the spells it knows, and 0 with none. The rungs do not "
+        "add together, and a rung's mastery level changes nothing: the level "
+        "is read off the list of spells known and nothing else."
+        + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
+        "highest rung known",
+        "tarmar_engine/spells.py generic_counter_level",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "generic_counters_climb_one_ladder",
+        "The generic counters stand on one ladder of their own, indexed "
+        "beside the elements' ladders, so a rung's lower tier is the generic "
+        "counter one level down, whatever its school. A caller that holds a "
+        "student to an element's ladder rung by rung can hold the Counter "
+        "rungs to theirs the same way. A generic counter has no element and "
+        "no element siblings." + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
+        "generic counter",
+        "tarmar_engine/spells.py GENERIC_COUNTER_LADDER, _index_ladders, lower_tier",
+        RULING,
+        "#208 (tarmar-engine #77)",
     ),
 )
 

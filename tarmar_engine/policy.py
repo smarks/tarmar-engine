@@ -628,6 +628,9 @@ def _cast_candidates(
 ) -> list[Candidate]:
     """A candidate per castable spell the actor can afford.
 
+    A generic counter is learned and never cast, so it gives none (house
+    reading ``generic_counter_is_learned_never_cast``).
+
     ``beyond_purse`` lists the spells the actor cannot afford too, for the
     borrowing variants to be built from (:func:`_borrow_candidates`).
     ``casting_failure`` is the injected casting failure rules, whose fumble
@@ -642,6 +645,8 @@ def _cast_candidates(
     aimed_at = _aimed_at(enemies_by_distance(state, actor), every_target)
     for key in actor.spells:
         spell = get_spell(key)
+        if spell.generic_counter:
+            continue  # learned, never cast
         if spell.level > actor.mana and not beyond_purse:
             continue
         if spell.continuing and key in actor.active_spells:

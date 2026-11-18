@@ -852,3 +852,65 @@ class LiftedBoundsRulingsTest(TestCase):
         self.assertEqual(rules.channel_bound(caster, bolt, borrowing=True), 2 + 1)
         capped = replace(rules, borrowing=example_borrowing_rules(max_debt=4))
         self.assertIsNone(capped.channel_bound(caster, bolt, borrowing=True))
+
+
+class GenericCounterRulingsTest(TestCase):
+    """The readings on the Counter rungs as generic counters (tarmar-engine
+    #77), each pinned to the code that makes it."""
+
+    def test_generic_counter_is_learned_never_cast(self):
+        from .test_engine import ScriptedRoller
+        from .test_state import make_combatant
+
+        self.assertEqual(
+            ruling("generic_counter_is_learned_never_cast").value,
+            "learned, never cast",
+        )
+        self.assertTrue(spells.get_spell("counter_2").generic_counter)
+        state = BattleState(
+            combatants=[
+                make_combatant(1, spells=["counter_2", "shield"], mana=10, q=-4, r=0),
+                make_combatant(2, q=4, r=0),
+            ]
+        )
+        caster = state.by_id(1)
+        offered = [
+            candidate.spell_key
+            for candidate in policy._cast_candidates(state, caster, "h")
+        ]
+        self.assertEqual(offered, ["shield"])
+        caster.chosen_spell = "counter_2"
+        events: list[dict] = []
+        runner = engine.TurnRunner(state, ScriptedRoller(), events.append)
+        with self.assertRaises(ValueError):
+            runner.cast_spell(caster)
+        self.assertEqual(caster.mana, 10)
+        self.assertEqual(events, [])
+
+    def test_generic_counter_level_is_the_highest_rung_known(self):
+        self.assertEqual(
+            ruling("generic_counter_level_is_the_highest_rung_known").value,
+            "highest rung known",
+        )
+        self.assertEqual(spells.generic_counter_level(["heal"]), 0)
+        # Counter 1 and Counter 3 give 3, not 4.
+        self.assertEqual(spells.generic_counter_level(["counter_1", "counter_3"]), 3)
+
+    def test_generic_counters_climb_one_ladder(self):
+        self.assertEqual(
+            ruling("generic_counters_climb_one_ladder").value,
+            spells.GENERIC_COUNTER_LADDER,
+        )
+        rungs = [spells.get_spell(f"counter_{level}") for level in range(1, 6)]
+        self.assertIsNone(spells.lower_tier(rungs[0]))
+        for below, rung in zip(rungs, rungs[1:]):
+            with self.subTest(rung=rung.key):
+                self.assertIs(spells.lower_tier(rung), below)
+                self.assertIs(
+                    spells._LADDER_INDEX[(spells.GENERIC_COUNTER_LADDER, rung.level)],
+                    rung,
+                )
+                self.assertEqual(spells.element_siblings(rung), ())
+        # The ladder is the generic counters', not a school's.
+        elsewhere = replace(rungs[2], school="Passage")
+        self.assertIs(spells.lower_tier(elsewhere), rungs[1])

@@ -2317,12 +2317,20 @@ class TurnRunner:
         none of these runs and a cast logs exactly what it always has.
 
         Raises:
-            ValueError: for a push or a borrowing the profile's rules do not
+            ValueError: for a generic counter, which is learned and never
+                cast (house reading
+                ``generic_counter_is_learned_never_cast``; the menu offers
+                none), a push or a borrowing the profile's rules do not
                 allow, a casting past the caster's Channel for the spell or a
                 push past the cap where neither is lifted for the caster, or
                 a borrowing past the injected debt cap.
         """
         spell = get_spell(combatant.chosen_spell)
+        if spell.generic_counter:
+            raise ValueError(
+                f"{combatant.name} casts {spell.name}, a generic counter, which "
+                "is learned and never cast"
+            )
         magic = self.profile.magic
         borrowing = None if magic is None else magic.borrowing
         if combatant.chosen_borrow and borrowing is None:
