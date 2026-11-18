@@ -31,13 +31,12 @@ from .test_borrowing import (
     borrower,
     borrowing_magic_rules,
 )
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, rolls_of
 from .test_magic import (
     PurposeRoller,
     cast,
     control_payload,
     example_magic_rules,
-    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,

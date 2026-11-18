@@ -17,8 +17,7 @@ TARMAR`) runs the engine with none of them: no tiers, no Push, no Channel,
 and a casting roll judged against the caster's attribute alone, a failure
 keeping its mana and starting no Runaway (tarmar-engine #46).
 
-Seven mechanics are modelled so far, and the rules of an eighth are held
-here ahead of the turn code that will run them:
+Eight mechanics are modelled:
 
 * **Casting success tiers.** After a successful casting roll, the roll's
   natural total is looked up in :attr:`MagicRules.casting_success_tiers`. A
@@ -66,14 +65,13 @@ here ahead of the turn code that will run them:
   injected attribute, each gaining a bonus per step of mana invested; a
   defender who wins cancels the spell, its mana spent, and the caster may
   press it again on a later turn, paying again for another opposed roll.
-* **True Magic** (True casts run; a working is rules only, so far). A caster
-  with a level in the injected
-  True skill may True cast a spell, deriving Channel from that skill
-  (:meth:`MagicRules.cast_kind`), or craft a working over several turns
-  (:class:`TrueMagicRules`). A working is a spell the rules build from an
-  injected effect and a tier (:meth:`TrueMagicRules.working`), not a catalog
-  entry. Its mana is gathered in shares, one per craft turn; damage that
-  lands on its caster forces an interruption roll
+* **True Magic.** True casts, crafts and workings all run. A caster with a
+  level in the injected True skill may True cast a spell, deriving Channel
+  from that skill (:meth:`MagicRules.cast_kind`), or craft a working over
+  several turns (:class:`TrueMagicRules`). A working is a spell the rules
+  build from an injected effect and a tier (:meth:`TrueMagicRules.working`),
+  not a catalog entry. Its mana is gathered in shares, one per craft turn;
+  damage that lands on its caster forces an interruption roll
   (:class:`InterruptionRules`); and a working or a pushed True cast drains
   its caster by an injected amount. Each side of a counter's opposed roll
   gains an injected bonus per level of its familiarity with the spell
@@ -105,7 +103,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, TypeVar
 
 from .dice import MAX_DICE_COUNT, parse_dice_expression
-from .spells import Spell, element_siblings, get_spell
+from .spells import Spell, element_siblings, generic_counter_level, get_spell
 
 # The combatant's pools are declared in .state; magic re-exports them so
 # ``tarmar_engine.magic`` keeps naming them.
@@ -230,6 +228,23 @@ class CastingEnding(StrEnum):
     FAILED = "failed"
     #: A Control band whose spell does not take effect.
     STOPPED = "stopped"
+
+
+class FamiliaritySource(StrEnum):
+    """What a defender's familiarity with a spell cast rests on
+    (:meth:`CounterspellRules.defender_familiarity`).
+
+    Listed in the order that settles a tie: of two equal highest, the one
+    listed first is the source named.
+    """
+
+    #: The defender's level in the exact spell cast.
+    SPELL = "spell"
+    #: The defender's level in the True skill.
+    TRUE = "true"
+    #: The highest generic counter the defender knows, against a spell of
+    #: that level or lower.
+    GENERIC = "generic"
 
 
 def spell_effect_kind(spell: Spell) -> SpellEffectKind | None:
@@ -665,6 +680,14 @@ class PushRules:
 UNRECORDED_SKILL_LEVEL = 0
 
 
+def spell_skill_level(caster: CombatantState, spell: Spell) -> int:
+    """The level the caster's snapshot records in the exact spell
+    (``CombatantState.spell_skill_levels``);
+    :data:`UNRECORDED_SKILL_LEVEL` for a spell it records none for, which a
+    working always is."""
+    return caster.spell_skill_levels.get(spell.key, UNRECORDED_SKILL_LEVEL)
+
+
 class ChannelUnclassifiedSpell(ValueError):
     """A spell the injected Channel rules give no kind of magic.
 
@@ -721,7 +744,7 @@ class ChannelDerivation:
     def recorded_level(self, caster: CombatantState, spell: Spell) -> int:
         """The level this derivation reads off the caster's snapshot."""
         if self.source_skill is None:
-            return caster.spell_skill_levels.get(spell.key, UNRECORDED_SKILL_LEVEL)
+            return spell_skill_level(caster, spell)
         return self.skill_level(caster)
 
     def channel_at(self, level: int) -> int:
@@ -1044,8 +1067,9 @@ class CounterspellRules:
             defender casts no spell of its own, so no spell's kind of magic
             names a Channel to apply).
         familiarity_per_level: Added to each side's total per level of its
-            familiarity with the spell cast; not negative. 0: familiarity
-            counts for nothing.
+            familiarity with the spell cast (:meth:`caster_familiarity`,
+            :meth:`defender_familiarity`); not negative. 0: familiarity
+            counts for nothing, and nothing reads it.
     """
 
     opposed_dice: str
@@ -1117,6 +1141,88 @@ class CounterspellRules:
         if caster_total == defender_total:
             return self.ties_go_to_caster
         return caster_total > defender_total
+
+    @property
+    def counts_familiarity(self) -> bool:
+        """Does familiarity add anything to the opposed roll? Only then is
+        either side's familiarity read, or named in the roll's result."""
+        return self.familiarity_per_level > 0
+
+    def familiarity_bonus(self, level: int) -> int:
+        """The opposed roll's bonus for this level of familiarity."""
+        return self.familiarity_per_level * level
+
+    def caster_familiarity(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        true_level: int,
+        *,
+        true_cast: bool,
+    ) -> int:
+        """The caster's level of familiarity with the spell it casts.
+
+        Its recorded level in the exact spell (:func:`spell_skill_level`).
+        Two castings have no such level, and take the caster's level in the
+        True skill in its place (house reading ``true_cast_familiarity``): a
+        working, and a True cast of a spell the caster holds no level in, as
+        the same rung of an element it never studied is. A True cast of a
+        spell the caster does hold a level in takes that level, whichever of
+        the two is the higher.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast, a working included.
+            true_level: The caster's level in the True skill
+                (:meth:`MagicRules.true_level`).
+            true_cast: Is this a True cast?
+        """
+        level = spell_skill_level(caster, spell)
+        holds_no_level = level <= UNRECORDED_SKILL_LEVEL
+        if is_working_key(spell.key) or (true_cast and holds_no_level):
+            return true_level
+        return level
+
+    def defender_familiarity(
+        self, defender: CombatantState, spell: Spell, true_level: int
+    ) -> tuple[int, FamiliaritySource | None]:
+        """The defender's level of familiarity with the spell it counters,
+        and what that level rests on.
+
+        The highest of three levels, never their sum: its recorded level in
+        the exact spell (:func:`spell_skill_level`); its level in the True
+        skill; and the level of the highest generic counter it knows
+        (:func:`~tarmar_engine.spells.generic_counter_level`), which counts
+        only against a spell of that level or lower, a working's level being
+        its tier.
+
+        Args:
+            defender: The defender.
+            spell: The spell cast, a working included.
+            true_level: The defender's level in the True skill
+                (:meth:`MagicRules.true_level`).
+
+        Returns:
+            The level and its source. Of two equal highest the source is the
+            one :class:`FamiliaritySource` lists first, and it is ``None``
+            when the highest level is 0.
+
+        Raises:
+            KeyError: for a spell the defender knows that the catalog does
+                not hold.
+        """
+        generic_level = generic_counter_level(defender.spells)
+        levels = {
+            FamiliaritySource.SPELL: spell_skill_level(defender, spell),
+            FamiliaritySource.TRUE: true_level,
+            FamiliaritySource.GENERIC: (
+                generic_level if spell.level <= generic_level else 0
+            ),
+        }
+        # max() keeps the first of equal highest: the sources' listed order.
+        source = max(FamiliaritySource, key=levels.__getitem__)
+        level = levels[source]
+        return level, (source if level > 0 else None)
 
 
 @dataclass(frozen=True)

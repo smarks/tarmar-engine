@@ -25,7 +25,7 @@ from tarmar_engine.profile import TarmarProfile
 from tarmar_engine.spells import get_spell
 from tarmar_engine.state import BattleState, WeaponState
 
-from .test_engine import events_of_type
+from .test_engine import events_of_type, roll_purposes
 from .test_magic import (
     PurposeRoller,
     cast,
@@ -267,9 +267,7 @@ class ChannelMenuTest(TestCase):
                 partial(policy.choose_option, magic=rules),
                 profile=TarmarProfile(magic=rules),
             )
-            return [
-                event["payload"]["purpose"] for event in events_of_type(events, "roll")
-            ]
+            return roll_purposes(events)
 
         self.assertIn("casting", turn_purposes(example_magic_rules()))
         self.assertNotIn("casting", turn_purposes(channel_magic_rules()))

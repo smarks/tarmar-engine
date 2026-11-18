@@ -47,7 +47,7 @@ from tarmar_engine.state import CombatantState, CraftState
 
 from .test_borrowing import DEBT_BANDS, FLICKER, SURGE, example_borrowing_rules
 from .test_channel import LOOM, channel_caster, example_channel_rules
-from .test_counterspell import example_counterspell_rules
+from .test_counterspell import FAMILIARITY_RULES, example_counterspell_rules
 from .test_magic import SPUTTER, TORRENT, WOBBLE, example_push_rules
 
 KNOT_KIND = "knot"
@@ -373,6 +373,157 @@ class CounterspellFamiliarityFieldTest(TestCase):
         # Nothing and more than nothing are both allowed.
         example_counterspell_rules(familiarity_per_level=0)
         example_counterspell_rules(familiarity_per_level=3)
+
+    def test_the_bonus_is_the_injected_amount_for_each_level(self):
+        self.assertEqual(
+            [FAMILIARITY_RULES.familiarity_bonus(level) for level in (0, 1, 4)],
+            [0, 3, 12],
+        )
+        self.assertTrue(FAMILIARITY_RULES.counts_familiarity)
+        self.assertFalse(example_counterspell_rules().counts_familiarity)
+
+
+def versed(levels: dict[str, int], *known_counters: str) -> CombatantState:
+    """The test wizard with these levels recorded in spells, knowing these
+    generic counters beside its own spells."""
+    figure = knot_caster(None, spell_skill_levels=dict(levels))
+    figure.spells = [*figure.spells, *known_counters]
+    return figure
+
+
+class CasterFamiliarityTest(TestCase):
+    """The caster's familiarity: its level in the exact spell, and for a
+    working or a True cast it holds no level in, the True level it is handed."""
+
+    def familiarity(
+        self, levels: dict[str, int], spell: str, true_level: int, *, true_cast: bool
+    ) -> int:
+        return FAMILIARITY_RULES.caster_familiarity(
+            versed(levels), get_spell(spell), true_level, true_cast=true_cast
+        )
+
+    def test_a_recipe_cast_adds_its_level_in_the_exact_spell(self):
+        levels = {"fire_missile": 4, "fire_ball": 6}
+        self.assertEqual(
+            self.familiarity(levels, "fire_missile", 5, true_cast=False), 4
+        )
+        # No other spell's level stands in, and neither does the True level.
+        self.assertEqual(
+            self.familiarity(levels, "water_missile", 5, true_cast=False), 0
+        )
+
+    def test_a_true_cast_of_a_spell_it_holds_a_level_in_adds_that_level(self):
+        # Whichever is the higher: it is not the better of the two.
+        for true_level in (2, 5):
+            with self.subTest(true_level=true_level):
+                self.assertEqual(
+                    self.familiarity(
+                        {"fire_missile": 4}, "fire_missile", true_level, true_cast=True
+                    ),
+                    4,
+                )
+
+    def test_a_true_cast_of_a_spell_it_holds_no_level_in_adds_the_true_level(self):
+        # None recorded, as for an element never studied, and a recorded 0.
+        for levels in ({"fire_missile": 4}, {"water_missile": 0}):
+            with self.subTest(levels=levels):
+                self.assertEqual(
+                    self.familiarity(levels, "water_missile", 5, true_cast=True), 5
+                )
+
+    def test_a_working_adds_the_true_level(self):
+        working = example_true_magic_rules().working("scorch", 3)
+        caster = versed({"fire_missile": 4})
+        # A working is told by its key, whatever its caller says of the cast.
+        for true_cast in (True, False):
+            with self.subTest(true_cast=true_cast):
+                self.assertEqual(
+                    FAMILIARITY_RULES.caster_familiarity(
+                        caster, working, 5, true_cast=true_cast
+                    ),
+                    5,
+                )
+
+
+class DefenderFamiliarityTest(TestCase):
+    """The defender's familiarity: the highest of its level in the exact
+    spell, its True level and the generic counter it knows, with the source
+    of that level. Fire Ball is a level-2 spell and Fire Bolt a level-3 one."""
+
+    def familiarity(
+        self,
+        spell_level: int,
+        true_level: int,
+        *known_counters: str,
+        spell: str = "fire_ball",
+    ) -> tuple[int, str | None]:
+        defender = versed({spell: spell_level}, *known_counters)
+        return FAMILIARITY_RULES.defender_familiarity(
+            defender, get_spell(spell), true_level
+        )
+
+    def test_it_is_the_highest_of_the_three_and_not_their_sum(self):
+        self.assertEqual(self.familiarity(5, 3, "counter_4"), (5, "spell"))
+        self.assertEqual(self.familiarity(1, 5, "counter_3"), (5, "true"))
+        self.assertEqual(self.familiarity(1, 2, "counter_4"), (4, "generic"))
+
+    def test_only_the_exact_spell_counts_as_the_spell(self):
+        defender = versed({"fire_missile": 6})
+        self.assertEqual(
+            FAMILIARITY_RULES.defender_familiarity(defender, get_spell("fire_ball"), 0),
+            (0, None),
+        )
+
+    def test_a_generic_counter_counts_at_or_below_its_level_only(self):
+        # Against the level-3 spell: Counter 2 is too low, Counter 3 reaches.
+        self.assertEqual(
+            self.familiarity(0, 0, "counter_2", spell="fire_bolt"), (0, None)
+        )
+        self.assertEqual(
+            self.familiarity(0, 0, "counter_3", spell="fire_bolt"), (3, "generic")
+        )
+        # A counter above the spell's level counts at its own level.
+        self.assertEqual(
+            self.familiarity(0, 0, "counter_5", spell="fire_bolt"), (5, "generic")
+        )
+
+    def test_the_generic_level_is_the_highest_counter_known(self):
+        self.assertEqual(
+            self.familiarity(0, 0, "counter_1", "counter_4"), (4, "generic")
+        )
+
+    def test_a_tie_names_the_first_of_spell_true_and_generic(self):
+        # Each pair of sources equal highest, then all three.
+        self.assertEqual(self.familiarity(3, 3, "counter_2"), (3, "spell"))
+        self.assertEqual(self.familiarity(3, 1, "counter_3"), (3, "spell"))
+        self.assertEqual(self.familiarity(1, 3, "counter_3"), (3, "true"))
+        self.assertEqual(self.familiarity(3, 3, "counter_3"), (3, "spell"))
+
+    def test_no_familiarity_names_no_source(self):
+        self.assertEqual(self.familiarity(0, 0), (0, None))
+
+    def test_a_generic_counter_reads_a_workings_tier(self):
+        rules = example_true_magic_rules()
+        defender = versed({}, "counter_3")
+        self.assertEqual(
+            FAMILIARITY_RULES.defender_familiarity(
+                defender, rules.working("scorch", 3), 0
+            ),
+            (3, "generic"),
+        )
+        self.assertEqual(
+            FAMILIARITY_RULES.defender_familiarity(
+                defender, rules.working("scorch", 4), 0
+            ),
+            (0, None),
+        )
+        # No level is recorded in a working: the True level is what is left.
+        self.assertEqual(
+            FAMILIARITY_RULES.defender_familiarity(
+                defender, rules.working("scorch", 4), 2
+            ),
+            (2, "true"),
+        )
 
 
 class WorkingKeyTest(TestCase):

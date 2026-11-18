@@ -76,6 +76,7 @@ from .magic import (
     CastingFailureRules,
     CastingSuccessTier,
     CounterspellRules,
+    FamiliaritySource,
     MagicRules,
     PushRules,
     RunawayRules,
@@ -2448,7 +2449,9 @@ class TurnRunner:
         shares.
 
         Raises:
-            KeyError: for a spell the catalog does not hold.
+            KeyError: for a spell the catalog does not hold, the cast's or,
+                with a familiarity bonus injected, one a countering defender
+                knows (:meth:`_oppose_cast`).
             ValueError: for a working, which is crafted and never cast, a
                 generic counter, which is learned and never
                 cast (house reading
@@ -2820,7 +2823,9 @@ class TurnRunner:
         Raises:
             ValueError: for a working with no True Magic rules injected.
             KeyError: for a craft whose key is not a working the injected
-                rules build.
+                rules build; or, with a familiarity bonus injected, for a
+                spell a countering defender knows that the catalog does not
+                hold (:meth:`_oppose_cast`).
         """
         # A True cast says so in each of its own events.
         true_cast_keys: dict[str, bool] = {"true_cast": True} if true_cast else {}
@@ -3487,7 +3492,9 @@ class TurnRunner:
             ValueError: for a craft standing with no True Magic rules
                 injected.
             KeyError: for a craft whose key is not a working the injected
-                rules build.
+                rules build; or, with a familiarity bonus injected, for a
+                spell a countering defender knows that the catalog does not
+                hold (:meth:`_oppose_cast`).
         """
         for combatant in self._in_action_order():
             craft = combatant.crafting
@@ -3521,7 +3528,9 @@ class TurnRunner:
             ValueError: with no True Magic rules injected, or for a caster
                 with no craft standing.
             KeyError: for a craft whose key is not a working the injected
-                rules build.
+                rules build; or, with a familiarity bonus injected, for a
+                spell a countering defender knows that the catalog does not
+                hold (:meth:`_oppose_cast`).
         """
         magic = self.profile.magic
         true_magic = self._true_magic_rules(caster)
@@ -4618,19 +4627,35 @@ class TurnRunner:
         Every declared counter is spent either way. Through, the contest
         ends; countered, it stands on the caster for a later turn.
 
+        With a familiarity bonus injected
+        (:attr:`~.magic.CounterspellRules.familiarity_per_level`), each side
+        adds it once per level of its familiarity with the spell cast: the
+        caster by :meth:`~.magic.CounterspellRules.caster_familiarity`, each
+        defender by :meth:`~.magic.CounterspellRules.defender_familiarity`.
+        The result then names the caster's level (``caster_familiarity``)
+        and, for each defender, its level and what that rests on
+        (``familiarity`` and ``familiarity_source``). With none injected no
+        familiarity is read, and the rolls and the result are as they were
+        before there was any.
+
         Args:
             caster: The caster.
             spell: The spell cast.
             cost: The casting's whole mana, pushed mana included.
             target_id: The figure the casting names, which a contest keeps.
-            true_cast: Is this a True cast? Nothing here reads it yet.
+            true_cast: Is this a True cast? The caster's familiarity turns
+                on it (house reading ``true_cast_familiarity``).
             stands: Does a countered casting leave its contest standing on
                 the caster, to be pressed again? ``False`` returns the
                 contest without keeping it.
+
+        Raises:
+            KeyError: with a familiarity bonus injected, for a spell a
+                defender knows that the catalog does not hold.
         """
         magic = self.profile.magic
         rules = None if magic is None else magic.counterspell
-        if rules is None:
+        if magic is None or rules is None:
             return None
         for defender in self.state.active_combatants():
             choice = defender.chosen_counter
@@ -4654,11 +4679,31 @@ class TurnRunner:
             return None
         attribute = rules.opposed_attribute
         caster_bonus = rules.bonus_for(cost)
+        # Familiarity is read only where it counts for something, so rules
+        # that inject none roll and report exactly as they always have.
+        counts_familiarity = rules.counts_familiarity
+        caster_familiarity = (
+            rules.caster_familiarity(
+                caster, spell, magic.true_level(caster), true_cast=true_cast
+            )
+            if counts_familiarity
+            else 0
+        )
+        unread: tuple[int, FamiliaritySource | None] = (0, None)
+        defender_familiarity = {
+            defender.combatant_id: (
+                rules.defender_familiarity(defender, spell, magic.true_level(defender))
+                if counts_familiarity
+                else unread
+            )
+            for defender, _ in opposing
+        }
         caster_record = self.roll_unlogged(
             rules.opposed_dice,
             purpose="counter",
             modifier=attribute_score(caster, attribute)
             + caster_bonus
+            + rules.familiarity_bonus(caster_familiarity)
             - self._action_roll_penalty(caster),
         )
         defender_records = [
@@ -4670,6 +4715,9 @@ class TurnRunner:
                     purpose="counter",
                     modifier=attribute_score(defender, attribute)
                     + rules.bonus_for(counter.mana_committed)
+                    + rules.familiarity_bonus(
+                        defender_familiarity[defender.combatant_id][0]
+                    )
                     - self.profile.reactions.injury_penalty(defender),
                 ),
             )
@@ -4683,7 +4731,7 @@ class TurnRunner:
             versus=attribute,
             outcome="gets through" if through else "countered",
         )
-        defender_totals: list[dict[str, int]] = []
+        defender_totals: list[dict[str, int | str | None]] = []
         for defender, counter, record in defender_records:
             sequence = self.emit_roll(
                 record,
@@ -4691,17 +4739,23 @@ class TurnRunner:
                 versus=attribute,
                 outcome="overcome" if through else "counters",
             )
-            defender_totals.append(
-                {
-                    "defender": defender.combatant_id,
-                    "total": record.total,
-                    "mana": counter.mana_committed,
-                    "bonus": rules.bonus_for(counter.mana_committed),
-                    "roll": sequence,
-                }
-            )
+            entry: dict[str, int | str | None] = {
+                "defender": defender.combatant_id,
+                "total": record.total,
+                "mana": counter.mana_committed,
+                "bonus": rules.bonus_for(counter.mana_committed),
+                "roll": sequence,
+            }
+            if counts_familiarity:
+                level, source = defender_familiarity[defender.combatant_id]
+                entry["familiarity"] = level
+                entry["familiarity_source"] = None if source is None else source.value
+            defender_totals.append(entry)
             defender.counter = None
         defender_ids = [defender.combatant_id for defender, _ in opposing]
+        familiarity_keys: dict[str, int] = (
+            {"caster_familiarity": caster_familiarity} if counts_familiarity else {}
+        )
         self.emit(
             "status",
             f"{caster.name}'s {spell.name} "
@@ -4714,6 +4768,7 @@ class TurnRunner:
                 "spell": spell.key,
                 "caster_total": caster_record.total,
                 "caster_bonus": caster_bonus,
+                **familiarity_keys,
                 "caster_roll": caster_sequence,
                 "defender_totals": defender_totals,
                 "countered": not through,

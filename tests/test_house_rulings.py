@@ -153,7 +153,8 @@ class MagicRulingsTest(TestCase):
             cast(wizard_state(), [[3, 3, 3]], spell="shield", push=1)
 
     def test_push_control_after_casting(self):
-        from .test_magic import cast, roll_purposes, wizard_state
+        from .test_engine import roll_purposes
+        from .test_magic import cast, wizard_state
 
         events = cast(wizard_state(), [[3, 3, 3], [3, 3], [2, 2, 2], [5]], push=1)
         self.assertEqual(
@@ -268,6 +269,7 @@ class ChannelRulingsTest(TestCase):
         from tarmar_engine.spells import get_spell
 
         from .test_channel import channel_caster
+        from .test_counterspell import FAMILIARITY_RULES
 
         self.assertEqual(ruling("channel_unrecorded_level").value, 0)
         self.assertEqual(UNRECORDED_SKILL_LEVEL, 0)
@@ -277,6 +279,14 @@ class ChannelRulingsTest(TestCase):
         spell = get_spell("fire_missile")
         self.assertEqual(per_spell.recorded_level(caster, spell), 0)
         self.assertEqual(general.recorded_level(caster, spell), 0)
+        # A counter's familiarity reads a spell's level the same way, for
+        # either side.
+        self.assertEqual(
+            FAMILIARITY_RULES.caster_familiarity(caster, spell, 0, true_cast=False), 0
+        )
+        self.assertEqual(
+            FAMILIARITY_RULES.defender_familiarity(caster, spell, 0), (0, None)
+        )
 
     def test_channel_kind_belongs_to_the_spell(self):
         from tarmar_engine.spells import get_spell
@@ -338,8 +348,8 @@ class BorrowingRulingsTest(TestCase):
             debt_payload,
             whole_debt_refund_profile,
         )
-        from .test_engine import events_of_type
-        from .test_magic import control_payload, roll_purposes
+        from .test_engine import events_of_type, roll_purposes
+        from .test_magic import control_payload
 
         events = borrow_cast(borrower(), [*BOLT_FACES, [1, 1]])
         self.assertEqual(
@@ -718,18 +728,36 @@ class CounterspellRulingsTest(TestCase):
     def test_ai_neither_counters_nor_escalates(self):
         from tarmar_engine.state import ContestState
 
-        from .test_counterspell import counter_state, decide
+        from .test_counterspell import (
+            FAMILIARITY_PROFILE,
+            counter_state,
+            counters,
+            decide,
+        )
 
         self.assertEqual(
             ruling("ai_neither_counters_nor_escalates").value, "player only"
         )
-        defender = decide(counter_state(), 2)
-        self.assertIsNone(defender.chosen.counter_mana)
-        contested = counter_state()
-        contested.by_id(1).contest = ContestState("fire_missile", 2, [2], 1)
-        caster = decide(contested, 1)
-        self.assertFalse(caster.chosen.escalate)
-        self.assertTrue(any(candidate.escalate for candidate in caster.candidates))
+        # It stands with familiarity injected, however far it favours the
+        # side choosing: a defender who knows a generic counter above the
+        # spell, and a caster with a high level in the spell it presses.
+        for familiarity, magic in ((False, None), (True, FAMILIARITY_PROFILE.magic)):
+            with self.subTest(familiarity=familiarity):
+                defended = counter_state(
+                    spells=["shield", "counter_5"],
+                    spell_skill_levels={"fire_missile": 9},
+                )
+                defender = decide(defended, 2, magic)
+                self.assertTrue(counters(defender))
+                self.assertIsNone(defender.chosen.counter_mana)
+                contested = counter_state()
+                contested.by_id(1).spell_skill_levels = {"fire_missile": 9}
+                contested.by_id(1).contest = ContestState("fire_missile", 2, [2], 1)
+                caster = decide(contested, 1, magic)
+                self.assertFalse(caster.chosen.escalate)
+                self.assertTrue(
+                    any(candidate.escalate for candidate in caster.candidates)
+                )
 
     def test_committed_mana_is_spent(self):
         from .test_counterspell import choose_counter, counter_state, runner
@@ -749,7 +777,7 @@ class CounterspellRulingsTest(TestCase):
             counter_state,
             countered_cast,
         )
-        from .test_magic import roll_purposes
+        from .test_engine import roll_purposes
 
         self.assertEqual(
             ruling("countered_cast_makes_no_casting_roll").value,
@@ -932,6 +960,31 @@ class GenericCounterRulingsTest(TestCase):
         # The ladder is the generic counters', not a school's.
         elsewhere = replace(rungs[2], school="Passage")
         self.assertIs(spells.lower_tier(elsewhere), rungs[1])
+
+    def test_generic_counter_reads_a_workings_tier(self):
+        from .test_counterspell import FAMILIARITY_RULES
+        from .test_craft_completion import working_opposed
+        from .test_true_magic import example_true_magic_rules, versed
+
+        self.assertEqual(ruling("generic_counter_reads_a_workings_tier").value, "tier")
+        rules = example_true_magic_rules()
+        defender = versed({}, "counter_3")
+        for tier, familiarity in (
+            (2, (3, "generic")),
+            (3, (3, "generic")),
+            (4, (0, None)),
+        ):
+            with self.subTest(tier=tier):
+                working = rules.working("scorch", tier)
+                self.assertEqual(working.level, tier)
+                self.assertEqual(
+                    FAMILIARITY_RULES.defender_familiarity(defender, working, 0),
+                    familiarity,
+                )
+        # The mana pushed into a working is no part of its tier: Counter 2
+        # reaches the steady Scorch, tier 2 and 4 mana, when it goes off.
+        result, _modifiers = working_opposed(spells=["shield", "counter_2"])
+        self.assertEqual(result["defender_totals"][0]["familiarity"], 2)
 
 
 class TrueMagicRulingsTest(TestCase):
@@ -1560,7 +1613,8 @@ class TrueMagicRulingsTest(TestCase):
         from .test_craft import craft_actions, losses, steady_craft
         from .test_craft_broken import ATTACK, KEEPS, SNAGS, STRIKES, beside
         from .test_craft_completion import COUNTER, completions, defended, turn
-        from .test_magic import roll_purposes, status_payloads
+        from .test_engine import roll_purposes
+        from .test_magic import status_payloads
         from .test_true_cast import CAST_SUCCEEDS, CONTROL_STOPS
 
         self.assertEqual(
@@ -1616,7 +1670,7 @@ class TrueMagicRulingsTest(TestCase):
             completions,
             whole_borrowed,
         )
-        from .test_magic import roll_purposes
+        from .test_engine import roll_purposes
         from .test_true_cast import CAST_FAILS_MANA_KEPT, CAST_FAILS_MANA_LOST, drains
 
         self.assertEqual(
@@ -1707,7 +1761,8 @@ class TrueMagicRulingsTest(TestCase):
 
         from .test_cast_pieces import runner_on
         from .test_craft_completion import COMPLETION_PROFILE, complete, healing
-        from .test_magic import roll_purposes, status_payloads
+        from .test_engine import roll_purposes
+        from .test_magic import status_payloads
         from .test_true_cast import CAST_SUCCEEDS
 
         self.assertEqual(
@@ -1753,7 +1808,8 @@ class TrueMagicRulingsTest(TestCase):
     def test_narrated_working_rolls_its_tier(self):
         from .test_craft import choose_craft, craft, crafter, working_key
         from .test_craft_completion import DRAIN_PER_MANA, complete, omen
-        from .test_magic import roll_purposes, status_payloads
+        from .test_engine import roll_purposes
+        from .test_magic import status_payloads
         from .test_true_cast import CAST_SUCCEEDS, drains
 
         self.assertEqual(
@@ -1812,7 +1868,7 @@ class TrueMagicRulingsTest(TestCase):
         from .test_craft import STEADY, choose_craft, craft, crafter, steady_craft
         from .test_craft_broken import KEEPS, concentration_rolls, hit
         from .test_craft_completion import SCORCH_DICE, complete, whole_steady
-        from .test_magic import roll_purposes
+        from .test_engine import roll_purposes
         from .test_true_cast import (
             AIM_HITS,
             CAST_FAILS_MANA_LOST,
@@ -1864,7 +1920,7 @@ class TrueMagicRulingsTest(TestCase):
             complete,
             whole_borrowed,
         )
-        from .test_magic import roll_purposes
+        from .test_engine import roll_purposes
         from .test_true_cast import (
             AIM_HITS,
             CAST_FAILS_MANA_KEPT,
@@ -1912,6 +1968,94 @@ class TrueMagicRulingsTest(TestCase):
                 )
                 self.assertEqual(roll_purposes(events), rolls)
                 self.assertEqual(state.by_id(1).debt, 1)
+
+    def test_true_cast_familiarity(self):
+        from .test_counterspell import FAMILIARITY_RULES
+        from .test_craft_completion import working_opposed
+        from .test_true_cast import KNOTWORK_LEVEL, true_cast_opposed
+        from .test_true_magic import example_true_magic_rules, versed
+
+        self.assertEqual(
+            ruling("true_cast_familiarity").value,
+            {
+                "working": "true level",
+                "true cast, no level in the spell": "true level",
+                "true cast, a level in the spell": "spell level",
+            },
+        )
+        caster = versed({"fire_missile": 4})
+        fire_missile = spells.get_spell("fire_missile")
+        water_missile = spells.get_spell("water_missile")
+        working = example_true_magic_rules().working("scorch", 3)
+
+        def familiarity(
+            spell: spells.Spell, true_level: int, *, true_cast: bool
+        ) -> int:
+            return FAMILIARITY_RULES.caster_familiarity(
+                caster, spell, true_level, true_cast=true_cast
+            )
+
+        self.assertEqual(familiarity(working, 6, true_cast=True), 6)
+        self.assertEqual(familiarity(water_missile, 6, true_cast=True), 6)
+        # A level held stands, above the True level or below it: the
+        # anomaly the reading records.
+        self.assertEqual(familiarity(fire_missile, 6, true_cast=True), 4)
+        self.assertEqual(familiarity(fire_missile, 2, true_cast=True), 4)
+        # A cast that is no True cast never adds the True level.
+        self.assertEqual(familiarity(water_missile, 6, true_cast=False), 0)
+        # The opposed roll is where it is read: a True cast in an element
+        # never studied, and a working going off.
+        cast_result, _modifiers = true_cast_opposed(
+            [[1, 1], [8, 8]], {"fire_missile": 4}, spell="water_missile"
+        )
+        self.assertEqual(cast_result["caster_familiarity"], KNOTWORK_LEVEL)
+        working_result, _modifiers = working_opposed()
+        self.assertEqual(working_result["caster_familiarity"], KNOTWORK_LEVEL)
+
+    def test_working_is_countered_when_it_goes_off(self):
+        from .test_counterspell import CASTER_LOW, DEFENDER_HIGH
+        from .test_craft import losses, steady_craft
+        from .test_craft_completion import (
+            COUNTER,
+            STEADY_MANA,
+            completions,
+            defended,
+            turn,
+        )
+        from .test_engine import roll_purposes
+        from .test_magic import status_payloads
+
+        self.assertEqual(
+            ruling("working_is_countered_when_it_goes_off").value, "when it goes off"
+        )
+        # Declared on an earlier craft turn, a counter meets no cast: no
+        # opposed roll is made, the counter lapses spent, the craft goes on.
+        state = defended(steady_craft(2))
+        events = turn(state, [], enemy_choice=COUNTER)
+        self.assertNotIn("counter", roll_purposes(events))
+        (lapsed,) = status_payloads(events, "counter_lapsed")
+        self.assertEqual(lapsed["mana"], 3)
+        self.assertEqual(state.by_id(2).mana, 6 - 3)
+        self.assertIsNotNone(state.by_id(1).crafting)
+        self.assertEqual(losses(events), [])
+        # Declared on the last craft turn, it meets the working as it goes
+        # off, before its roll, against the working's whole mana.
+        state = defended(steady_craft(3))
+        events = turn(state, [CASTER_LOW, DEFENDER_HIGH], enemy_choice=COUNTER)
+        self.assertNotIn("casting", roll_purposes(events))
+        (result,) = status_payloads(events, "counter_result")
+        # The example rules buy 1 for each 2 mana: 2 for the working's 4.
+        self.assertEqual(result["caster_bonus"], 2)
+        # Countered, it is lost and leaves nothing to press again.
+        (lost,) = losses(events)
+        self.assertEqual(
+            (lost["ending"], lost["mana_spent"]), ("countered", STEADY_MANA)
+        )
+        caster = state.by_id(1)
+        self.assertIsNone(caster.contest)
+        self.assertIsNone(caster.crafting)
+        self.assertEqual(status_payloads(events, "spell_countered"), [])
+        self.assertEqual(completions(events), [])
 
     #: The list methods that change a list in place.
     LIST_MUTATORS = frozenset(

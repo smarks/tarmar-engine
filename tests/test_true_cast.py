@@ -16,6 +16,7 @@ choice itself (``chosen_true_cast``), or hands a whole turn a candidate marked
 """
 
 from dataclasses import replace
+from typing import Any
 from unittest import TestCase
 
 from tarmar_engine import engine, policy
@@ -30,19 +31,19 @@ from .test_channel import cast_payload
 from .test_counterspell import (
     CASTER_LOW,
     DEFENDER_HIGH,
+    FAMILIARITY_RULES,
     MISSILE_FACES,
-    choose_counter,
     counter_state,
+    countered_cast,
     example_counterspell_rules,
+    opposed_result,
 )
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, roll_purposes, rolls_of
 from .test_magic import (
     MAGIC_PROFILE,
     control_payload,
     example_casting_failure_rules,
     example_push_rules,
-    roll_purposes,
-    rolls_of,
     status_payloads,
     wizard_state,
 )
@@ -94,6 +95,10 @@ def true_cast_rules(**changes) -> MagicRules:
 
 
 TRUE_CAST_PROFILE = TarmarProfile(magic=true_cast_rules())
+#: The same rules where each level of familiarity adds 3 to a counter's side.
+TRUE_CAST_FAMILIARITY_PROFILE = TarmarProfile(
+    magic=true_cast_rules(counterspell=FAMILIARITY_RULES)
+)
 
 
 def true_mage(**caster_overrides) -> BattleState:
@@ -127,6 +132,33 @@ def cast(state: BattleState, faces, profile=TRUE_CAST_PROFILE) -> list[dict]:
     turn_runner, events = runner_on(state, faces, profile)
     turn_runner.cast_spell(state.by_id(1))
     return events
+
+
+def countered_true_mage(**defender_overrides: Any) -> BattleState:
+    """The counter state, whose figure 2 is a mage who may counter (WIS 11,
+    6 mana), with its caster at "knotwork" 2."""
+    state = counter_state(**defender_overrides)
+    state.by_id(1).skill_levels = {KNOT_SKILL: KNOTWORK_LEVEL}
+    return state
+
+
+def true_cast_opposed(
+    faces,
+    levels: dict[str, int],
+    *,
+    true_cast: bool = True,
+    spell: str = "fire_missile",
+    defender_knotwork: int = 0,
+) -> tuple[dict, list[int]]:
+    """The True mage, with these levels recorded in its spells, casts
+    against a declared counter of 3 mana where familiarity counts; the
+    opposed roll's result and each side's modifier, the caster's first."""
+    state = countered_true_mage(skill_levels={KNOT_SKILL: defender_knotwork})
+    state.by_id(1).spell_skill_levels = dict(levels)
+    choose(state, spell, true_cast=true_cast)
+    return opposed_result(
+        countered_cast(state, faces, profile=TRUE_CAST_FAMILIARITY_PROFILE)
+    )
 
 
 def drains(events) -> list[dict]:
@@ -420,15 +452,13 @@ class TrueCastDrainEndingTest(TestCase):
         self.assertEqual(caster.body, 27)
 
     def countered(self, *, push: int, profile=TRUE_CAST_PROFILE):
-        state = counter_state()
+        state = countered_true_mage()
         caster = state.by_id(1)
-        caster.skill_levels = {KNOT_SKILL: KNOTWORK_LEVEL}
         caster.fatal_chain = [99]
-        choose(state, "fire_missile", push=push)
-        choose_counter(state, 3)
-        turn_runner, events = runner_on(state, [CASTER_LOW, DEFENDER_HIGH], profile)
-        turn_runner.declare_counter(state.by_id(2))
-        turn_runner.cast_spell(caster)
+        choose(state, "fire_missile")
+        events = countered_cast(
+            state, [CASTER_LOW, DEFENDER_HIGH], profile=profile, push=push
+        )
         return caster, events
 
     def test_a_casting_that_was_countered(self):
@@ -495,42 +525,76 @@ class TrueCastOwnRollTest(TestCase):
         self.assertEqual(rolls[0], rolls[1])
 
 
-class FamiliarityNotYetReadTest(TestCase):
-    """A placeholder, which the familiarity slice of tarmar-engine #77
-    rewrites. The opposed roll is told a cast is a True cast and does nothing
-    with it yet: until familiarity is built, a True cast and a recipe cast
-    meet a counter alike, whatever bonus is injected."""
+class TrueCastFamiliarityTest(TestCase):
+    """A True cast meets a counter with its caster's familiarity: its level
+    in the spell where it holds one, as a recipe cast has it, and its
+    "knotwork" level (2) where it holds none. Each level adds 3 here, to the
+    caster's WIS of 12 and to the defender's 11 + 1 for its 3 mana."""
 
-    PROFILE = TarmarProfile(
-        magic=true_cast_rules(
-            counterspell=example_counterspell_rules(familiarity_per_level=3)
-        )
-    )
-
-    def counter_result(self, faces, *, true_cast: bool) -> dict:
-        state = counter_state()
-        caster = state.by_id(1)
-        caster.skill_levels = {KNOT_SKILL: KNOTWORK_LEVEL}
-        caster.spell_skill_levels = {"fire_missile": 4}
-        choose(state, "fire_missile", true_cast=true_cast)
-        choose_counter(state, 3)
-        turn_runner, events = runner_on(state, faces, self.PROFILE)
-        turn_runner.declare_counter(state.by_id(2))
-        turn_runner.cast_spell(caster)
-        return status_payloads(events, "counter_result")[0]
-
-    def test_a_true_cast_and_a_recipe_cast_meet_a_counter_alike(self):
+    def test_a_true_cast_and_a_recipe_cast_of_a_studied_spell_meet_a_counter_alike(
+        self,
+    ):
         for name, faces in (
             ("through", [[8, 8], [1, 1], *MISSILE_FACES]),
             ("countered", [CASTER_LOW, DEFENDER_HIGH]),
         ):
             with self.subTest(outcome=name):
-                true_result = self.counter_result(faces, true_cast=True)
-                recipe_result = self.counter_result(faces, true_cast=False)
-                self.assertEqual(true_result, recipe_result)
-                self.assertNotIn("caster_familiarity", true_result)
-                for entry in true_result["defender_totals"]:
-                    self.assertNotIn("familiarity", entry)
+                levels = {"fire_missile": 4}
+                true_cast = true_cast_opposed(faces, levels, true_cast=True)
+                recipe_cast = true_cast_opposed(faces, levels, true_cast=False)
+                self.assertEqual(true_cast, recipe_cast)
+                result, modifiers = true_cast
+                # The level in the spell, 4, and not the "knotwork" of 2.
+                self.assertEqual(result["caster_familiarity"], 4)
+                self.assertEqual(modifiers, [12 + 12, 11 + 1])
+                self.assertIs(result["countered"], name == "countered")
+
+    def test_a_level_in_the_spell_stands_even_below_the_true_level(self):
+        result, modifiers = true_cast_opposed(
+            [CASTER_LOW, DEFENDER_HIGH], {"fire_missile": 1}
+        )
+        self.assertEqual(result["caster_familiarity"], 1)
+        self.assertEqual(modifiers[0], 12 + 3)
+
+    def test_a_true_cast_it_holds_no_level_in_adds_the_true_level(self):
+        # An element never studied, and spells known with no level recorded.
+        for spell, levels in (
+            ("water_missile", {"fire_missile": 4}),
+            ("fire_missile", {}),
+            ("heal", {}),
+        ):
+            with self.subTest(spell=spell):
+                result, modifiers = true_cast_opposed(
+                    [CASTER_LOW, DEFENDER_HIGH], levels, spell=spell
+                )
+                self.assertEqual(result["spell"], spell)
+                self.assertEqual(result["caster_familiarity"], KNOTWORK_LEVEL)
+                self.assertEqual(modifiers[0], 12 + 3 * KNOTWORK_LEVEL)
+
+    def test_a_recipe_cast_it_holds_no_level_in_adds_nothing(self):
+        # Only a True cast puts the "knotwork" level in a missing level's
+        # place: the True mage's recipe cast of Heal, whose Channel the
+        # example rules derive from no level in the spell, adds none.
+        result, modifiers = true_cast_opposed(
+            [CASTER_LOW, DEFENDER_HIGH], {}, true_cast=False, spell="heal"
+        )
+        self.assertEqual(result["spell"], "heal")
+        self.assertEqual(result["caster_familiarity"], 0)
+        self.assertEqual(modifiers[0], 12)
+
+    def test_a_defender_adds_its_true_level_against_any_spell(self):
+        # "Knotwork" 3 and no level in the spell, against a recipe cast.
+        result, modifiers = true_cast_opposed(
+            [CASTER_LOW, DEFENDER_HIGH],
+            {"fire_missile": 4},
+            true_cast=False,
+            defender_knotwork=3,
+        )
+        (entry,) = result["defender_totals"]
+        self.assertEqual(
+            (entry["familiarity"], entry["familiarity_source"]), (3, "true")
+        )
+        self.assertEqual(modifiers[1], 11 + 1 + 9)
 
 
 class TrueCastChoiceTest(TestCase):

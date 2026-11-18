@@ -34,11 +34,10 @@ from .test_counterspell import (
     counter_state,
 )
 from .test_counterspell import runner as counter_runner
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, roll_purposes, rolls_of
 from .test_magic import (
     MAGIC_PROFILE,
     example_push_rules,
-    roll_purposes,
     wizard_state,
 )
 from .test_runaway import (
@@ -451,9 +450,8 @@ class OffBalanceCastAgainstACounterTest(TestCase):
         rolls = {
             purpose: [
                 event["payload"]
-                for event in events_of_type(events, "roll")
+                for event in rolls_of(events, purpose)
                 if event["actor"] == caster.name
-                and event["payload"]["purpose"] == purpose
             ]
             for purpose in ("counter", "casting")
         }

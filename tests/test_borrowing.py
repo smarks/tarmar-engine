@@ -32,7 +32,7 @@ from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.state import BattleState
 
 from .test_channel import channel_caster, example_channel_rules
-from .test_engine import ScriptedRoller, events_of_type
+from .test_engine import ScriptedRoller, events_of_type, roll_purposes, rolls_of
 from .test_magic import (
     MAGIC_PROFILE,
     SPUTTER,
@@ -42,8 +42,6 @@ from .test_magic import (
     cast,
     example_magic_rules,
     example_push_rules,
-    roll_purposes,
-    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,

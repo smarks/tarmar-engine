@@ -38,12 +38,11 @@ from tarmar_engine.state import (
 from .event_stream_scenarios import BATTLES, RecordedBattle, recording
 from .test_borrowing import BACKLASH, SURGE, example_borrowing_rules
 from .test_cast_pieces import adjacent_pair, hand_to_hand, held, runner_on
-from .test_engine import events_of_type
+from .test_engine import events_of_type, roll_purposes
 from .test_event_stream_regression import RECORDED, first_divergence
 from .test_magic import (
     MAGIC_PROFILE,
     example_push_rules,
-    roll_purposes,
     status_payloads,
     wizard_state,
 )

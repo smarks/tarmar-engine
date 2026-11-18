@@ -287,8 +287,11 @@ class CombatantState:
     spell_mastery: dict[str, int] = field(default_factory=dict)
     #: Recorded per-spell skill levels, by spell key, as the game
     #: keeps them (tarmar-studio derives them from ``Character.spells``). Read by
-    #: injected Channel rules (``tarmar_engine.magic.ChannelRules``); a spell
-    #: missing from the map is at level 0. Nothing else reads it.
+    #: injected Channel rules (``tarmar_engine.magic.ChannelRules``) and, with
+    #: a familiarity bonus injected, by a counter's opposed roll
+    #: (``tarmar_engine.magic.CounterspellRules``); a spell missing from the
+    #: map is at level 0. The menu reads only whether any is recorded, which
+    #: makes a figure a mage (``tarmar_engine.policy._is_mage``).
     spell_skill_levels: dict[str, int] = field(default_factory=dict)
     #: The caster's level in general skills a kind of magic's Channel may
     #: derive from instead of the spell's own level, by the injected skill

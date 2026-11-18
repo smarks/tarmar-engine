@@ -101,6 +101,19 @@ def events_of_type(events, event_type):
     return [event for event in events if event["event_type"] == event_type]
 
 
+def roll_purposes(events) -> list[str]:
+    return [event["payload"]["purpose"] for event in events_of_type(events, "roll")]
+
+
+def rolls_of(events, purpose: str) -> list[dict]:
+    """Each roll event of one purpose in an event stream, in order."""
+    return [
+        event
+        for event in events_of_type(events, "roll")
+        if event["payload"]["purpose"] == purpose
+    ]
+
+
 class PhaseStructureTest(TestCase):
     def test_every_turn_emits_all_six_phases_in_order(self):
         events = run_one_turn(duel_state(), SeededStubRoller(1))
@@ -141,9 +154,7 @@ class InitiativeTest(TestCase):
         state.turn += 1
         order = runner.phase_initiative()
         self.assertEqual([combatant.combatant_id for combatant in order], [2, 1])
-        initiative_rolls = [
-            event for event in events if event["payload"].get("purpose") == "initiative"
-        ]
+        initiative_rolls = rolls_of(events, "initiative")
         self.assertEqual(len(initiative_rolls), 2)
         info = events_of_type(events, "info")[0]
         self.assertIn("Movement order", info["message"])
@@ -310,8 +321,7 @@ class AttackResolutionTest(TestCase):
     def test_natural_twenty_rolls_damage_twice(self):
         # Nat 20, confirm misses (3): critical, two damage rolls.
         state, events = self._attack([[20], [3], [4, 4], [2, 3]])
-        rolls = events_of_type(events, "roll")
-        purposes = [event["payload"]["purpose"] for event in rolls]
+        purposes = roll_purposes(events)
         self.assertEqual(purposes, ["attack", "confirm", "damage", "damage"])
         defender = state.by_id(2)
         self.assertEqual(defender.fatigue, defender.max_fatigue - 13)
@@ -572,9 +582,7 @@ class GrappleAttemptTest(TestCase):
         attacker, defender = state.by_id(1), state.by_id(2)
         self.assertEqual(attacker.grappling, 2)
         self.assertTrue(defender.off_balance)
-        purposes = [
-            event["payload"]["purpose"] for event in events_of_type(events, "roll")
-        ]
+        purposes = roll_purposes(events)
         self.assertEqual(purposes, ["grapple attempt"])  # no confirm, no damage
         self.assertIn("briefly stunned", events_of_type(events, "action")[0]["message"])
 
@@ -1111,9 +1119,7 @@ class CastingTest(TestCase):
             state, ScriptedRoller([[3, 3, 3], [2, 2, 2], [5]]), events.append
         )
         runner.cast_spell(caster)
-        purposes = [
-            event["payload"]["purpose"] for event in events_of_type(events, "roll")
-        ]
+        purposes = roll_purposes(events)
         self.assertEqual(purposes, ["casting", "spell aim", "spell damage"])
         self.assertEqual(caster.mana, 9)  # level 1 paid
         defender = state.by_id(2)
@@ -1222,9 +1228,7 @@ class CastingTest(TestCase):
         runner = engine.TurnRunner(state, ScriptedRoller([[5, 4, 4]]), events.append)
         runner.cast_spell(caster)
         self.assertIn("failure", events_of_type(events, "action")[0]["message"])
-        purposes = [
-            event["payload"]["purpose"] for event in events_of_type(events, "roll")
-        ]
+        purposes = roll_purposes(events)
         self.assertEqual(purposes, ["casting"])  # no aim/damage roll on a failed cast
 
     def test_without_failure_rules_the_attribute_alone_judges_a_high_total(self):
@@ -1685,17 +1689,9 @@ class DiceAlwaysOnTheRecordTest(TestCase):
     out of the damage.
     """
 
-    def rolls(self, events, purpose):
-        return [
-            event
-            for event in events
-            if event["event_type"] == "roll"
-            and event["payload"]["purpose"] == purpose
-        ]
-
     def test_attack_roll_states_its_verdict_and_which_way_it_is_read(self):
         events = run_one_turn(duel_state(), SeededStubRoller(3))
-        attack = self.rolls(events, "attack")[0]
+        attack = rolls_of(events, "attack")[0]
         self.assertIn("(need ", attack["message"])
         self.assertIn("+)", attack["message"])  # d20 is a roll-over test
         self.assertIn(attack["payload"]["outcome"], attack["message"])
@@ -1760,13 +1756,13 @@ class DiceAlwaysOnTheRecordTest(TestCase):
         # Natural 20 for the first attacker, natural 1 for the second.
         state = duel_state()
         events = run_one_turn(state, ScriptedRoller([(4,), (3,), (20,), (20,)]))
-        confirm = self.rolls(events, "confirm")
+        confirm = rolls_of(events, "confirm")
         self.assertTrue(confirm)
         self.assertIn("critical", confirm[0]["message"])
 
         state = duel_state()
         events = run_one_turn(state, ScriptedRoller([(4,), (3,), (1,), (3,)]))
-        fumble = self.rolls(events, "fumble")
+        fumble = rolls_of(events, "fumble")
         self.assertTrue(fumble)
         self.assertIn(fumble[0]["payload"]["outcome"], fumble[0]["message"])
 

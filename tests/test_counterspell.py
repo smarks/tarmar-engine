@@ -15,18 +15,33 @@ from dataclasses import replace
 from unittest import TestCase
 
 from tarmar_engine import actions, engine, policy
-from tarmar_engine.magic import CounterspellRules, MagicRules
+from tarmar_engine.magic import (
+    WORKING_KEY_PREFIX,
+    WORKING_KEY_SEPARATOR,
+    CounterspellRules,
+    MagicRules,
+)
 from tarmar_engine.profile import TARMAR, TarmarProfile
-from tarmar_engine.state import BattleState, ContestState, CounterState, WeaponState
+from tarmar_engine.state import (
+    BattleState,
+    ContestState,
+    CounterState,
+    CraftState,
+    WeaponState,
+)
 
 from .replay_scenarios import SCENARIOS
 from .test_borrowing import borrowing_magic_rules
-from .test_engine import ScriptedRoller, SeededStubRoller, events_of_type
+from .test_engine import (
+    ScriptedRoller,
+    SeededStubRoller,
+    events_of_type,
+    roll_purposes,
+    rolls_of,
+)
 from .test_magic import (
     PurposeRoller,
     example_magic_rules,
-    roll_purposes,
-    rolls_of,
     status_payloads,
     with_casting_failure,
     wizard_state,
@@ -56,6 +71,11 @@ def counterspell_magic_rules(**changes) -> MagicRules:
 
 
 COUNTER_PROFILE = TarmarProfile(magic=counterspell_magic_rules())
+#: Counterspell where each level of familiarity adds 3 to a side's total.
+FAMILIARITY_RULES = example_counterspell_rules(familiarity_per_level=3)
+FAMILIARITY_PROFILE = TarmarProfile(
+    magic=replace(example_magic_rules(), counterspell=FAMILIARITY_RULES)
+)
 TIES_TO_CASTER_PROFILE = TarmarProfile(
     magic=counterspell_magic_rules(ties_go_to_caster=True)
 )
@@ -119,6 +139,15 @@ def counter_rolls(events) -> list[dict]:
 
 def result_payload(events) -> dict:
     return status_payloads(events, "counter_result")[0]
+
+
+def opposed_result(events) -> tuple[dict, list[int]]:
+    """The result of the one opposed roll in an event stream, and each
+    side's modifier on it: the caster's first, then each defender's in the
+    order they rolled."""
+    (result,) = status_payloads(events, "counter_result")
+    modifiers = [roll["payload"]["modifier"] for roll in counter_rolls(events)]
+    return result, modifiers
 
 
 def decide(state, actor_id, magic=None) -> policy.Decision:
@@ -210,6 +239,37 @@ class CounterMenuTest(TestCase):
         blind = counters(decide(undecided, 2))
         self.assertEqual([c.counter_mana for c in blind], [1, 2, 3, 4])
         self.assertIn("(not yet known)", blind[0].rationale)
+
+    def test_a_counter_against_a_crafting_caster_is_countered_blind(self):
+        # The menu says nothing of a craft in progress: before the caster
+        # has chosen, and once it has chosen to go on crafting, the note is
+        # the one a caster with no cast chosen gets, and names no working.
+        working = WORKING_KEY_SEPARATOR.join((WORKING_KEY_PREFIX, "scorch", "2"))
+        for chosen_letter in ("", actions.CRAFT_OPTION):
+            with self.subTest(chosen_letter=chosen_letter):
+                crafting = counter_state()
+                caster = crafting.by_id(1)
+                caster.crafting = CraftState(
+                    spell_key=working,
+                    push_mana=0,
+                    borrow=False,
+                    turns_done=1,
+                    borrowed=0,
+                    target_id=2,
+                )
+                caster.chosen_letter = chosen_letter
+                caster.chosen_spell = working
+                blind = counters(decide(crafting, 2))
+                self.assertEqual([c.counter_mana for c in blind], [1, 2, 3, 4])
+                for offered in blind:
+                    self.assertTrue(
+                        offered.rationale.startswith(
+                            "Oppose whatever Fighter 1 casts this turn "
+                            "(not yet known): "
+                        )
+                    )
+                    self.assertNotIn("scorch", offered.rationale.lower())
+                    self.assertNotIn(WORKING_KEY_PREFIX, offered.rationale.lower())
 
     def test_no_counter_for_a_non_mage_or_an_empty_purse(self):
         self.assertEqual(counters(decide(counter_state(spells=[]), 2)), [])
@@ -420,6 +480,158 @@ class OpposedRollTest(TestCase):
         self.assertEqual(
             roll_purposes(events), ["casting", "spell aim", "spell damage"]
         )
+
+
+class FamiliarityTest(TestCase):
+    """With a familiarity bonus injected, each side of the opposed roll adds
+    it for each level of its familiarity with the spell cast, and the result
+    names both levels. No True Magic rules are injected here, so no figure
+    holds a True level: ``test_true_cast`` and ``test_craft_completion`` have
+    the True casts and the workings."""
+
+    def versed_state(self, caster_level: int, defender_level: int) -> BattleState:
+        """The counter state with each side's level in Fire Missile."""
+        state = counter_state(spell_skill_levels={"fire_missile": defender_level})
+        state.by_id(1).spell_skill_levels = {"fire_missile": caster_level}
+        return state
+
+    def test_each_side_adds_the_bonus_for_its_level_in_the_spell(self):
+        state = self.versed_state(caster_level=2, defender_level=5)
+        events = countered_cast(
+            state, [CASTER_LOW, DEFENDER_HIGH], profile=FAMILIARITY_PROFILE
+        )
+        result, modifiers = opposed_result(events)
+        # WIS 12 and 3 x 2; WIS 11, 1 for the 3 mana and 3 x 5.
+        self.assertEqual(modifiers, [12 + 6, 11 + 1 + 15])
+        self.assertEqual((result["caster_total"], result["caster_bonus"]), (2 + 18, 0))
+        self.assertEqual(result["caster_familiarity"], 2)
+        self.assertEqual(
+            result["defender_totals"],
+            [
+                {
+                    "defender": 2,
+                    "total": 16 + 27,
+                    "mana": 3,
+                    "bonus": 1,
+                    "roll": 3,
+                    "familiarity": 5,
+                    "familiarity_source": "spell",
+                }
+            ],
+        )
+        # The source is written as a plain string, as every payload value is.
+        self.assertIs(type(result["defender_totals"][0]["familiarity_source"]), str)
+
+    def test_familiarity_can_turn_the_contest_either_way(self):
+        # 8 + WIS 12 against 9 + WIS 11 + 1 for the mana: 20 against 21.
+        faces = [[4, 4], [5, 4], *MISSILE_FACES]
+        for caster_level, defender_level, countered in (
+            (0, 0, True),
+            (1, 0, False),
+            (1, 1, True),
+        ):
+            with self.subTest(caster=caster_level, defender=defender_level):
+                state = self.versed_state(caster_level, defender_level)
+                events = countered_cast(state, faces, profile=FAMILIARITY_PROFILE)
+                result = result_payload(events)
+                self.assertEqual(result["caster_total"], 20 + 3 * caster_level)
+                self.assertEqual(
+                    result["defender_totals"][0]["total"], 21 + 3 * defender_level
+                )
+                self.assertIs(result["countered"], countered)
+
+    def test_a_generic_counter_helps_against_a_spell_at_or_below_its_level(self):
+        # Counter 1 reaches Fire Missile (level 1) and not Fire Ball (level 2).
+        for spell, familiarity, source in (
+            ("fire_missile", 1, "generic"),
+            ("fire_ball", 0, None),
+        ):
+            with self.subTest(spell=spell):
+                state = counter_state(spells=["shield", "counter_1"])
+                caster = state.by_id(1)
+                caster.spells = [*caster.spells, "fire_ball"]
+                caster.chosen_spell = spell
+                events = countered_cast(
+                    state, [CASTER_LOW, DEFENDER_HIGH], profile=FAMILIARITY_PROFILE
+                )
+                result, modifiers = opposed_result(events)
+                self.assertEqual(modifiers[1], 11 + 1 + 3 * familiarity)
+                (entry,) = result["defender_totals"]
+                self.assertEqual(
+                    (entry["familiarity"], entry["familiarity_source"]),
+                    (familiarity, source),
+                )
+                self.assertEqual(result["caster_familiarity"], 0)
+
+    def test_each_of_two_defenders_brings_its_own(self):
+        state = counter_state(spell_skill_levels={"fire_missile": 2})
+        state.combatants.append(
+            make_combatant(
+                3, q=0, r=3, spells=["shield", "counter_4"], mana=6, max_mana=6
+            )
+        )
+        choose_counter(state, 2, defender_id=2)
+        choose_counter(state, 2, defender_id=3)
+        turn_runner, events = runner(
+            state, [[4, 4], [1, 1], [1, 1]], FAMILIARITY_PROFILE
+        )
+        turn_runner.cast_spell(state.by_id(1))
+        result, modifiers = opposed_result(events)
+        self.assertEqual(
+            [
+                (entry["defender"], entry["familiarity"], entry["familiarity_source"])
+                for entry in result["defender_totals"]
+            ],
+            [(2, 2, "spell"), (3, 4, "generic")],
+        )
+        # WIS 11 and 10, each with 1 for its 2 mana, and 3 a level.
+        self.assertEqual(modifiers[1:], [11 + 1 + 6, 10 + 1 + 12])
+
+    def versed_in_everything(self) -> BattleState:
+        """Both sides with a level in the spell, and the defender knowing a
+        generic counter."""
+        state = self.versed_state(caster_level=4, defender_level=2)
+        state.by_id(2).spells = ["shield", "counter_3"]
+        return state
+
+    def test_with_no_bonus_injected_the_roll_and_its_result_are_as_ever(self):
+        faces = [[4, 4], [5, 4], *MISSILE_FACES]
+        versed = countered_cast(self.versed_in_everything(), faces)
+        unversed = countered_cast(counter_state(), faces)
+        self.assertEqual(versed, unversed)
+        result = result_payload(versed)
+        self.assertEqual(
+            list(result),
+            [
+                "counter_result",
+                "spell",
+                "caster_total",
+                "caster_bonus",
+                "caster_roll",
+                "defender_totals",
+                "countered",
+            ],
+        )
+        self.assertEqual(
+            [list(entry) for entry in result["defender_totals"]],
+            [["defender", "total", "mana", "bonus", "roll"]],
+        )
+        self.assertEqual(
+            (result["caster_total"], result["defender_totals"][0]["total"]),
+            (20, 21),
+        )
+
+    def test_with_no_bonus_injected_no_familiarity_is_read(self):
+        # A spell the catalog does not hold cannot be read for a generic
+        # counter: it stops the roll only where familiarity counts.
+        def countered_by_a_stranger(profile: TarmarProfile) -> list[dict]:
+            state = counter_state(spells=["shield", "a spell of the table's own"])
+            return countered_cast(state, [CASTER_LOW, DEFENDER_HIGH], profile=profile)
+
+        events = countered_by_a_stranger(COUNTER_PROFILE)
+        self.assertTrue(result_payload(events)["countered"])
+        with self.assertRaises(KeyError):
+            countered_by_a_stranger(FAMILIARITY_PROFILE)
 
 
 class ActionsPhaseTest(TestCase):

@@ -456,11 +456,18 @@ HOUSE_RULINGS += (
         "channel_unrecorded_level",
         "A spell or general skill the caster's snapshot records no level for "
         "is read at level 0 when Channel derives from it, as a weapon "
-        "missing from the weapon-skill map is.",
+        "missing from the weapon-skill map is. A counter's opposed roll "
+        "reads a spell's level the same way for either side's familiarity: "
+        "no level recorded is level 0.",
         0,
-        "tarmar_engine/magic.py UNRECORDED_SKILL_LEVEL",
+        "tarmar_engine/magic.py UNRECORDED_SKILL_LEVEL, "
+        "ChannelDerivation.skill_level (ChannelDerivation.recorded_level, "
+        "MagicRules.true_level), spell_skill_level "
+        "(ChannelDerivation.recorded_level, "
+        "CounterspellRules.caster_familiarity, "
+        "CounterspellRules.defender_familiarity)",
         RULING,
-        "#825 (tarmar-engine #29)",
+        "#825 (tarmar-engine #29); #208 (tarmar-engine #77)",
     ),
     HouseRuling(
         "channel_kind_belongs_to_the_spell",
@@ -699,11 +706,14 @@ HOUSE_RULINGS += (
         "never counters and never presses a countered spell again: both are "
         "on the menu at a score of 0, for a player, and an AI caster whose "
         "spell stands countered takes its next best option, which ends the "
-        "contest.",
+        "contest. It stands with a familiarity bonus injected: familiarity "
+        "changes each side's odds on the opposed roll, not who chooses to "
+        "make one.",
         "player only",
-        "tarmar_engine/policy.py choose_option, _mark_escalations, _counter_candidates",
+        "tarmar_engine/policy.py choose_option, _mark_escalations "
+        "(choose_option), _counter_candidates (choose_option)",
         RULING,
-        "#825 (tarmar-engine #31)",
+        "#825 (tarmar-engine #31); #208 (tarmar-engine #77)",
     ),
     HouseRuling(
         "committed_mana_is_spent",
@@ -747,7 +757,7 @@ HOUSE_RULINGS += (
         "The caster's side, made inside the cast, takes both, as the casting "
         "roll does.",
         "injury band only",
-        "tarmar_engine/engine.py _oppose_cast",
+        "tarmar_engine/engine.py _oppose_cast (_roll_and_resolve)",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -827,7 +837,8 @@ HOUSE_RULINGS += (
         "is read off the list of spells known and nothing else."
         + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
         "highest rung known",
-        "tarmar_engine/spells.py generic_counter_level",
+        "tarmar_engine/spells.py generic_counter_level (magic.py "
+        "CounterspellRules.defender_familiarity)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -1169,6 +1180,74 @@ HOUSE_RULINGS += (
         "_interruption_roll, _fall_unconscious, _establish_grapple, "
         "_roll_and_resolve), _roll_and_resolve (cast_spell, _complete_working), "
         "_debt_roll (_roll_and_resolve, _lose_working)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "true_cast_familiarity",
+        "On a counter's opposed roll the caster adds the injected bonus for "
+        "each level it holds in the exact spell it casts. Two castings have "
+        "no such level: a working, and a True cast of a spell the caster "
+        "holds no level in, as the same rung of an element it never studied "
+        "is. For those two the caster adds its level in the True skill. A "
+        "True cast of a spell the caster does hold a level in adds that "
+        "level, whichever of the two is the higher, so a caster whose True "
+        "level is above its level in a spell is harder to counter in an "
+        "element it never studied than in its own. To hold a level is to "
+        "have one above 0 recorded, a spell with none recorded reading at 0 "
+        "(channel_unrecorded_level); a cast that is no True cast adds its "
+        "recorded level, 0 included. The alternative reading, which removes "
+        "the anomaly, has a True cast in an unstudied element add the "
+        "caster's level in the same rung of an element it does know.",
+        {
+            "working": "true level",
+            "true cast, no level in the spell": "true level",
+            "true cast, a level in the spell": "spell level",
+        },
+        "tarmar_engine/magic.py CounterspellRules.caster_familiarity "
+        "(engine.py _oppose_cast), spell_skill_level "
+        "(ChannelDerivation.recorded_level, "
+        "CounterspellRules.caster_familiarity, "
+        "CounterspellRules.defender_familiarity); tarmar_engine/engine.py "
+        "_oppose_cast (_roll_and_resolve)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "working_is_countered_when_it_goes_off",
+        "A working takes several turns to craft, and a counter meets a cast. "
+        "A defender counters a working only as it goes off, at the end of "
+        "the Actions phase of its last craft turn and before its roll, and "
+        "the caster's side of the opposed roll counts the working's whole "
+        "mana, pushed mana included. A counter declared on an earlier craft "
+        "turn meets no cast and lapses, its mana spent "
+        "(committed_mana_is_spent). A countered working is lost and leaves "
+        "no contest: it cannot be pressed again, and crafting it anew takes "
+        "its turns.",
+        "when it goes off",
+        "tarmar_engine/engine.py _complete_working (_complete_workings), "
+        "_roll_and_resolve (cast_spell, _complete_working), _oppose_cast "
+        "(_roll_and_resolve), _lose_working (_settle_craft_choice, "
+        "craft_working, _interruption_roll, _fall_unconscious, "
+        "_establish_grapple, _roll_and_resolve), _lapse_counters "
+        "(phase_actions)",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "generic_counter_reads_a_workings_tier",
+        "A generic counter helps its holder against a spell of its level or "
+        "lower, and a working is a spell whose level is its tier "
+        "(working_mana_is_its_tier). So the highest generic counter a "
+        "defender knows counts toward its familiarity with a working of "
+        "that tier or lower, whatever mana is pushed into it, as it counts "
+        "against a catalog spell of that level. The alternative reading is "
+        "that a generic counter knows nothing of a working."
+        + _WHILE_COUNTERS_ARE_FIVE_SPELLS,
+        "tier",
+        "tarmar_engine/magic.py CounterspellRules.defender_familiarity "
+        "(engine.py _oppose_cast), TrueMagicRules.working "
+        "(TrueMagicRules.__post_init__, TrueMagicRules.working_from_key)",
         RULING,
         "#208 (tarmar-engine #77)",
     ),

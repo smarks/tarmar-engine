@@ -51,8 +51,8 @@ from .test_craft import (
     steady_craft,
     working_key,
 )
-from .test_engine import _box_in, events_of_type
-from .test_magic import roll_purposes, rolls_of, status_payloads
+from .test_engine import _box_in, events_of_type, roll_purposes, rolls_of
+from .test_magic import status_payloads
 from .test_runaway import example_runaway_rules
 from .test_state import make_combatant
 from .test_true_cast import drains

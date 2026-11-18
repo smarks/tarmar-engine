@@ -18,6 +18,7 @@ lands on, and that each injected value is the one used.
 """
 
 from dataclasses import replace
+from typing import Any
 from unittest import TestCase
 
 from tarmar_engine import actions, engine, policy
@@ -43,8 +44,10 @@ from .test_cast_pieces import runner_on
 from .test_counterspell import (
     CASTER_LOW,
     DEFENDER_HIGH,
+    FAMILIARITY_RULES,
     choose_counter,
     example_counterspell_rules,
+    opposed_result,
 )
 from .test_craft import (
     DEBT_HOLDS,
@@ -75,12 +78,10 @@ from .test_craft_broken import (
     choosing_for,
     interruptions,
 )
-from .test_engine import events_of_type
+from .test_engine import events_of_type, roll_purposes, rolls_of
 from .test_magic import (
     example_casting_failure_rules,
     example_magic_rules,
-    roll_purposes,
-    rolls_of,
     status_payloads,
 )
 from .test_runaway import example_runaway_rules
@@ -1079,26 +1080,40 @@ class PushAndBorrowTest(TestCase):
         self.assertNotIn("debt", roll_purposes(events))
 
 
-def defended(state: BattleState, defender_id: int = 2) -> BattleState:
+def defended(
+    state: BattleState, defender_id: int = 2, **defender_overrides: Any
+) -> BattleState:
     """The state with a figure, figure 2 unless another is named, a mage
-    who may counter (WIS 11, 6 mana)."""
+    who may counter (WIS 11, 6 mana, Shield known), with the overrides
+    given."""
     defender = state.by_id(defender_id)
-    defender.spells = ["shield"]
-    defender.wisdom = 11
-    defender.mana = 6
-    defender.max_mana = 6
+    fields: dict[str, Any] = {
+        "spells": ["shield"],
+        "wisdom": 11,
+        "mana": 6,
+        "max_mana": 6,
+    }
+    fields.update(defender_overrides)
+    for name, value in fields.items():
+        setattr(defender, name, value)
     return state
 
 
 def countered(
-    state: BattleState, faces, defenders: tuple[int, ...] = (2,)
+    state: BattleState,
+    faces,
+    defenders: tuple[int, ...] = (2,),
+    *,
+    profile: TarmarProfile = COMPLETION_PROFILE,
+    **defender_overrides: Any,
 ) -> tuple[list[dict], engine.TurnRunner]:
     """Each defender, figure 2 unless others are named, declares a counter
     of 3 mana in the order given, and the working goes off against them;
     the events from the opposed roll on, and the runner."""
-    turn_runner, events = runner_on(state, faces, COMPLETION_PROFILE)
+    turn_runner, events = runner_on(state, faces, profile)
     for defender_id in defenders:
-        choose_counter(defended(state, defender_id), 3, defender_id=defender_id)
+        defended(state, defender_id, **defender_overrides)
+        choose_counter(state, 3, defender_id=defender_id)
         turn_runner.declare_counter(state.by_id(defender_id))
     events.clear()
     turn_runner._complete_workings()
@@ -1190,6 +1205,83 @@ class CounteredTest(TestCase):
         self.assertEqual(len(completions(events)), 1)
         self.assertEqual(state.by_id(2).body, 27 - 15)
         self.assertEqual(turn_runner._crafts_ended, set())
+
+
+#: The completion rules where each level of familiarity adds 3 to a
+#: counter's side.
+COMPLETION_FAMILIARITY_PROFILE = TarmarProfile(
+    magic=replace(completion_rules(), counterspell=FAMILIARITY_RULES)
+)
+
+
+def working_opposed(
+    state: BattleState | None = None, **defender_overrides: Any
+) -> tuple[dict, list[int]]:
+    """The steady Scorch, the crafter's unless a state is given, goes off
+    against a counter of 3 mana where familiarity counts; the opposed roll's
+    result and each side's modifier, the caster's first."""
+    events, _turn_runner = countered(
+        whole_steady() if state is None else state,
+        [CASTER_LOW, DEFENDER_HIGH],
+        profile=COMPLETION_FAMILIARITY_PROFILE,
+        **defender_overrides,
+    )
+    return opposed_result(events)
+
+
+class CounteredWorkingFamiliarityTest(TestCase):
+    """A working meets a counter with familiarity as a cast does: its caster
+    adds its "knotwork" level, having no level in a working, and a defender
+    reads a generic counter against the working's tier. Each level adds 3
+    here. The steady Scorch is tier 2 and 4 mana, which buys its caster 2."""
+
+    def test_the_caster_adds_its_true_level(self):
+        # "Knotwork" 3: not the tier, the mana, or a level in another spell.
+        state = whole_steady(
+            skill_levels={KNOT_SKILL: 3}, spell_skill_levels={"fire_missile": 5}
+        )
+        result, modifiers = working_opposed(state)
+        self.assertEqual(result["spell"], STEADY_KEY)
+        self.assertEqual(result["caster_familiarity"], 3)
+        # WIS 12, 2 for the 4 mana and 3 x 3.
+        self.assertEqual(modifiers[0], 12 + 2 + 9)
+        self.assertTrue(result["countered"])
+
+    def test_a_generic_counter_reads_the_tier_and_not_the_mana(self):
+        # Counter 2 reaches the tier-2 working, pushed to 4 mana as it is;
+        # Counter 1 does not.
+        for known, familiarity, source in (
+            ("counter_2", 2, "generic"),
+            ("counter_1", 0, None),
+        ):
+            with self.subTest(known=known):
+                result, modifiers = working_opposed(spells=["shield", known])
+                (entry,) = result["defender_totals"]
+                self.assertEqual(
+                    (entry["familiarity"], entry["familiarity_source"]),
+                    (familiarity, source),
+                )
+                self.assertEqual(modifiers[1], 11 + 1 + 3 * familiarity)
+
+    def test_a_defender_adds_its_true_level(self):
+        result, modifiers = working_opposed(skill_levels={KNOT_SKILL: 4})
+        (entry,) = result["defender_totals"]
+        self.assertEqual(
+            (entry["familiarity"], entry["familiarity_source"]), (4, "true")
+        )
+        self.assertEqual(modifiers[1], 11 + 1 + 12)
+
+    def test_with_no_bonus_injected_a_working_names_no_familiarity(self):
+        events, _turn_runner = countered(
+            whole_steady(), [CASTER_LOW, DEFENDER_HIGH], spells=["shield", "counter_2"]
+        )
+        result, modifiers = opposed_result(events)
+        self.assertNotIn("caster_familiarity", result)
+        self.assertEqual(
+            [list(entry) for entry in result["defender_totals"]],
+            [["defender", "total", "mana", "bonus", "roll"]],
+        )
+        self.assertEqual(modifiers, [12 + 2, 11 + 1])
 
 
 def turn(
