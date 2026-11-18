@@ -41,7 +41,11 @@ A Runaway feeds on its caster in phase 2, before the renewals, and is
 anchored as a phase-5 action. A counter is declared as a phase-5 action and
 meets its caster's spell when the spell is cast, before the casting roll,
 whatever the two figures' DEX order (house reading
-``counter_resolves_at_the_cast``).
+``counter_resolves_at_the_cast``). With injected True Magic rules
+(tarmar-engine #77) a caster with a level in the True skill may craft a
+working over several turns, a phase-5 action each
+(:meth:`TurnRunner.craft_working`); choosing any other action in phase 3
+abandons the craft.
 HTH (options o/t/u/v — ``tarmar_engine.actions`` module docstring) never
 literally shares a hex with the enemy the way "Entering Hand-to-Hand"
 describes; it treats an adjacent pair as HTH range instead, since merging
@@ -103,6 +107,17 @@ CASTING_DICE = "3d6"
 #: Why a figure pays a drain, as the event that takes it says
 #: (:meth:`TurnRunner._take_drain`).
 DRAIN_REASON = "on the drain of their casting"
+#: How a craft action's event names it (tarmar-engine #77): the action that
+#: begins a craft, and each that carries one on.
+CRAFT_BEGUN = "begun"
+CRAFT_CONTINUED = "continued"
+#: Why a craft ended before its working went off, by its ending, as the log
+#: says it. An ending with no entry is one nothing loses a craft by.
+CRAFT_LOSS_REASONS: dict[CastingEnding, str] = {
+    CastingEnding.ABANDONED: "abandoned for another action",
+    CastingEnding.BLOCKED: "they may not craft where they are",
+    CastingEnding.UNPAID: "their mana cannot pay its share",
+}
 
 # turn-sequence.md phase table: number -> name. Drift-guarded against the
 # markdown by battle/tests/test_rules_drift.py.
@@ -584,6 +599,12 @@ class TurnRunner:
             )
             if combatant.contest is not None and not self._escalates(combatant):
                 self._end_contest(combatant, "another_action")
+            if combatant.crafting is not None:
+                self._settle_craft_choice(combatant)
+                if not combatant.active:
+                    # What the abandoned working cost felled them: they
+                    # neither move nor act.
+                    continue
             # A hex the option may not take is refused here, in the log, and
             # the option makes its derived move instead (tarmar-engine #20).
             self._placed_destination(combatant)
@@ -611,6 +632,42 @@ class TurnRunner:
                 # movement in phase 4, the missile/cast options their
                 # walk-slow step, and the rest stand.
                 combatant.yielded = True
+
+    def _settle_craft_choice(self, combatant: CombatantState) -> None:
+        """Hold a crafting combatant's choice for the turn against the craft
+        that stands: the one place the two are compared.
+
+        The craft option chosen again is the craft's continuation. Any other
+        option abandons the working, here, where the choice is recorded
+        (house reading ``another_action_abandons_the_craft``): the working is
+        lost (:meth:`_lose_working`,
+        :attr:`~.magic.CastingEnding.ABANDONED`) before the combatant moves.
+
+        Raises:
+            ValueError: for the craft option naming another working, another
+                push or another borrowing than the craft began with (house
+                reading ``craft_fixes_push_and_borrow_at_the_start``). The
+                menu offers a crafting combatant its continuation alone, so
+                this is a caller's error.
+        """
+        craft = combatant.crafting
+        if craft is None:
+            raise ValueError(f"{combatant.name} has no craft standing to settle")
+        if actions.base_option(combatant.chosen_letter) != actions.CRAFT_OPTION:
+            self._lose_working(combatant, CastingEnding.ABANDONED)
+            return
+        chosen = (
+            combatant.chosen_spell,
+            combatant.chosen_push_mana,
+            combatant.chosen_borrow,
+        )
+        standing = (craft.spell_key, craft.push_mana, craft.borrow)
+        if chosen != standing:
+            raise ValueError(
+                f"{combatant.name} chooses to craft {chosen} with the craft "
+                f"{standing} standing (working, pushed mana, borrowing); a "
+                "craft is carried on as it began or abandoned"
+            )
 
     # Phase 4 -----------------------------------------------------------------
     def phase_final_movement(self, order) -> None:
@@ -1223,6 +1280,9 @@ class TurnRunner:
             return
         if letter == actions.COUNTER_OPTION:
             self.declare_counter(combatant)
+            return
+        if letter == actions.CRAFT_OPTION:
+            self.craft_working(combatant)
             return
         if letter in ("b", "j"):
             self.melee_attack(combatant)
@@ -2385,60 +2445,19 @@ class TurnRunner:
         true_cast = combatant.chosen_true_cast
         if true_cast:
             self._check_true_cast(combatant, spell)
-        borrowing = None if magic is None else magic.borrowing
-        if combatant.chosen_borrow and borrowing is None:
-            raise ValueError(
-                f"{combatant.name} borrows mana for {spell.name} "
-                f"but the {self.profile.name!r} profile has no Borrowing rules"
-            )
+        self._check_borrow(combatant, spell, combatant.chosen_borrow)
         push_mana = combatant.chosen_push_mana
-        if push_mana and (magic is None or magic.push is None):
-            raise ValueError(
-                f"{combatant.name} pushes {push_mana} mana into {spell.name} "
-                f"but the {self.profile.name!r} profile has no Push rules"
-            )
-        if push_mana and magic is not None and magic.push is not None:
-            if not magic.push.can_push(spell):
-                raise ValueError(
-                    f"{combatant.name} pushes {spell.name}, which the injected "
-                    f"rules give no push effect"
-                )
-            cap_lifted = bound_lifted(combatant, PUSH_CAP)
-            if not magic.push.within_cap(push_mana, cap_lifted=cap_lifted):
-                raise ValueError(
-                    f"{combatant.name} pushes {push_mana} mana into "
-                    f"{spell.name}; the cap is {magic.push.max_push_mana}"
-                )
+        self._check_push(combatant, spell, push_mana)
         cost = casting_mana(spell, push_mana)
         # The kind of magic the cast names for its Channel: none for a recipe
         # cast, which derives by the spell's own.
         kind = None if magic is None else magic.cast_kind(spell, true_cast=true_cast)
-        # The Channel used and its kind, with Channel rules injected.
-        channel_used: tuple[int, str] | None = None
-        if magic is not None and magic.channel is not None:
-            channel_used = (
-                magic.channel.channel_for(combatant, spell, kind),
-                magic.channel.kind_for(spell, kind),
-            )
-        channel = None if channel_used is None else channel_used[0]
+        channel_used = self._channel_used(combatant, spell, kind)
         # What the cast would borrow: the shortfall, when the caster chose to.
-        shortfall = (
-            max(0, cost - combatant.mana)
-            if borrowing is not None and combatant.chosen_borrow
-            else 0
+        shortfall = max(0, cost - combatant.mana) if combatant.chosen_borrow else 0
+        self._check_within_channel(
+            combatant, spell, push_mana, kind=kind, borrows=shortfall > 0, deed="casts"
         )
-        borrows = shortfall > 0
-        if magic is not None and not magic.cast_within_channel(
-            combatant, spell, push_mana, borrowing=borrows, kind=kind
-        ):
-            bound = magic.channel_bound(combatant, spell, borrowing=borrows, kind=kind)
-            borrowing_note = (
-                "" if bound == channel else f", which lets them borrow to {bound}"
-            )
-            raise ValueError(
-                f"{combatant.name} casts {spell.name} with {cost} mana; "
-                f"their Channel for it is {channel}{borrowing_note}"
-            )
         # The bounds a Game Master lifted that this cast goes past
         # (tarmar-studio #37), for the payload.
         lifted_past = (
@@ -2449,20 +2468,9 @@ class TurnRunner:
         if self._cast_blocked(combatant, spell):
             return
         if combatant.mana < cost and not shortfall:
-            pushed_note = f" pushed with {push_mana} more" if push_mana else ""
-            self.emit(
-                "info",
-                f"{combatant.name} lacks the mana for {spell.name}{pushed_note}",
-                actor=combatant.name,
-            )
+            self._log_lacks_mana(combatant, spell, push_mana)
             return
-        if shortfall and borrowing is not None:
-            cap = borrowing.max_debt
-            if cap is not None and combatant.debt + shortfall > cap:
-                raise ValueError(
-                    f"{combatant.name} borrows {shortfall} mana for {spell.name} "
-                    f"owing {combatant.debt}; the debt cap is {cap}"
-                )
+        self._check_debt_cap(combatant, spell, shortfall)
         self._roll_and_resolve(
             combatant,
             spell,
@@ -2487,18 +2495,178 @@ class TurnRunner:
                 one the caster knows nor the same rung of another element's
                 ladder (:meth:`.magic.MagicRules.true_castable`).
         """
-        magic = self.profile.magic
-        if magic is None or magic.true_level(caster) <= 0:
-            true_magic = self._true_magic_rules(caster)
-            raise ValueError(
-                f"{caster.name} True casts {spell.name} with no level in "
-                f"{true_magic.skill_label}"
-            )
+        magic = self._rules_of_true_mage(caster, f"True casts {spell.name}")
         if spell not in magic.true_castable(caster):
             raise ValueError(
                 f"{caster.name} True casts {spell.name}, which is neither a "
                 "spell they know nor the same rung of another element's ladder"
             )
+
+    def _rules_of_true_mage(self, caster: CombatantState, deed: str) -> MagicRules:
+        """The injected magic rules, for a caster doing what only a figure
+        with a level in the True skill may.
+
+        Args:
+            caster: The caster.
+            deed: What it does, as the refusal says it ("True casts Fire
+                Missile").
+
+        Raises:
+            ValueError: with no True Magic rules injected, or for a caster
+                with no level in the True skill.
+        """
+        magic = self.profile.magic
+        true_magic = self._true_magic_rules(caster)
+        if magic is None or magic.true_level(caster) <= 0:
+            raise ValueError(
+                f"{caster.name} {deed} with no level in {true_magic.skill_label}"
+            )
+        return magic
+
+    def _check_borrow(self, caster: CombatantState, spell: Spell, borrow: bool) -> None:
+        """Refuse a borrowing the profile has no rules for: the one check,
+        for a cast and for a craft.
+
+        Raises:
+            ValueError: for a casting that would borrow with no Borrowing
+                rules injected.
+        """
+        magic = self.profile.magic
+        if borrow and (magic is None or magic.borrowing is None):
+            raise ValueError(
+                f"{caster.name} borrows mana for {spell.name} "
+                f"but the {self.profile.name!r} profile has no Borrowing rules"
+            )
+
+    def _check_push(self, caster: CombatantState, spell: Spell, push_mana: int) -> None:
+        """Refuse a push the injected rules do not allow: the one check, for
+        a cast and for a craft.
+
+        Raises:
+            ValueError: for a push with no Push rules injected, of a spell
+                they give no push effect, or past Push's own cap where a
+                Game Master has not lifted it for the caster.
+        """
+        if not push_mana:
+            return
+        magic = self.profile.magic
+        if magic is None or magic.push is None:
+            raise ValueError(
+                f"{caster.name} pushes {push_mana} mana into {spell.name} "
+                f"but the {self.profile.name!r} profile has no Push rules"
+            )
+        if not magic.push.can_push(spell):
+            raise ValueError(
+                f"{caster.name} pushes {spell.name}, which the injected "
+                f"rules give no push effect"
+            )
+        cap_lifted = bound_lifted(caster, PUSH_CAP)
+        if not magic.push.within_cap(push_mana, cap_lifted=cap_lifted):
+            raise ValueError(
+                f"{caster.name} pushes {push_mana} mana into "
+                f"{spell.name}; the cap is {magic.push.max_push_mana}"
+            )
+
+    def _channel_used(
+        self, caster: CombatantState, spell: Spell, kind: str | None
+    ) -> tuple[int, str] | None:
+        """The caster's Channel for a casting and the kind of magic it is
+        derived by, as the casting's events name them; ``None`` with no
+        Channel rules injected.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            kind: The kind the casting names
+                (:meth:`.magic.MagicRules.cast_kind`), or ``None`` for the
+                spell's own.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.channel is None:
+            return None
+        return (
+            magic.channel.channel_for(caster, spell, kind),
+            magic.channel.kind_for(spell, kind),
+        )
+
+    def _check_within_channel(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        push_mana: int,
+        *,
+        kind: str | None,
+        borrows: bool,
+        deed: str,
+    ) -> None:
+        """Refuse a casting whose whole mana is past the caster's Channel
+        for it (:meth:`.magic.MagicRules.cast_within_channel`): the one
+        check, for a cast and for a craft.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            push_mana: The mana pushed past the spell's cost.
+            kind: The kind the casting names, or ``None`` for the spell's
+                own.
+            borrows: Does the casting borrow (its mana past the purse)?
+            deed: What the caster does, as the refusal says it ("casts").
+
+        Raises:
+            ValueError: for a casting past Channel where a Game Master has
+                not lifted it for the caster.
+        """
+        magic = self.profile.magic
+        if magic is None or magic.cast_within_channel(
+            caster, spell, push_mana, borrowing=borrows, kind=kind
+        ):
+            return
+        channel = magic.channel_for(caster, spell, kind)
+        bound = magic.channel_bound(caster, spell, borrowing=borrows, kind=kind)
+        borrowing_note = (
+            "" if bound == channel else f", which lets them borrow to {bound}"
+        )
+        raise ValueError(
+            f"{caster.name} {deed} {spell.name} with "
+            f"{casting_mana(spell, push_mana)} mana; "
+            f"their Channel for it is {channel}{borrowing_note}"
+        )
+
+    def _check_debt_cap(
+        self, caster: CombatantState, spell: Spell, shortfall: int
+    ) -> None:
+        """Refuse a borrowing that would take the caster's debt past the
+        injected cap: the one check, for a cast and for a craft.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            shortfall: What the casting would borrow.
+
+        Raises:
+            ValueError: for a debt past the cap.
+        """
+        magic = self.profile.magic
+        if not shortfall or magic is None or magic.borrowing is None:
+            return
+        cap = magic.borrowing.max_debt
+        if cap is not None and caster.debt + shortfall > cap:
+            raise ValueError(
+                f"{caster.name} borrows {shortfall} mana for {spell.name} "
+                f"owing {caster.debt}; the debt cap is {cap}"
+            )
+
+    def _log_lacks_mana(
+        self, caster: CombatantState, spell: Spell, push_mana: int
+    ) -> None:
+        """Log a casting its caster cannot pay for and did not choose to
+        borrow for: no error, and nothing is cast or begun."""
+        pushed_note = f" pushed with {push_mana} more" if push_mana else ""
+        self.emit(
+            "info",
+            f"{caster.name} lacks the mana for {spell.name}{pushed_note}",
+            actor=caster.name,
+        )
 
     def _cast_blocked(self, caster: CombatantState, spell: Spell) -> bool:
         """Is the caster where it may not cast this spell? The refusal is
@@ -2786,6 +2954,294 @@ class TurnRunner:
                 caster, true_magic.drain_pool, amount, DRAIN_REASON, chain=chain
             )
 
+    # ------------------------------------------------------------------- craft
+    def craft_working(self, combatant: CombatantState) -> None:
+        """Phase 5's CRAFT WORKING: one turn of gathering a working's mana.
+
+        A working is crafted over the turns the injected True Magic rules
+        give its tier (:meth:`.magic.TrueMagicRules.turns_for`), each craft
+        action gathering one share of its whole mana (house reading
+        ``craft_gathers_even_shares``). The action is one of three things.
+
+        * **Nothing**, for a combatant whose craft was lost earlier this turn
+          (``_crafts_ended``): the loss took their action, which is logged,
+          and no new craft begins.
+        * **The beginning of a craft**, for a combatant with none standing
+          (:meth:`_begin_craft`): the working, its pushed mana and whether
+          it may borrow are the combatant's choice for the turn, and are
+          fixed from here on (house reading
+          ``craft_fixes_push_and_borrow_at_the_start``).
+        * **The continuation** of the craft that stands, which Initial
+          Movement has already held the choice to
+          (:meth:`_settle_craft_choice`). A combatant where no cast may be
+          made (:meth:`_cast_blocked`) loses the working
+          (:attr:`~.magic.CastingEnding.BLOCKED`).
+
+        Then the share falls due: what the craft will have gathered after
+        this turn, less what it has gathered. The pool pays it. A pool that
+        falls short pays what it holds and the rest is borrowed, added to
+        the combatant's debt and to the craft's own count of it, when the
+        craft may borrow; when it may not, nothing is taken, the turn is not
+        counted and the working is lost
+        (:attr:`~.magic.CastingEnding.UNPAID`). A turn that is counted names
+        the craft's target anew (house reading
+        ``working_aimed_by_its_last_craft_action``) and logs the ``action``
+        event: :data:`CRAFT_BEGUN` or :data:`CRAFT_CONTINUED`, the working
+        and its tier, the turn out of the turns it takes, the share, the mana
+        gathered out of the whole, and a cast's own cost keys
+        (:meth:`_cast_cost_keys`), whose ``borrowed`` is what this share
+        borrowed. A turn whose share is 0 is logged as any other and says no
+        mana was due.
+
+        Nothing here makes the working go off, and nothing else does yet:
+        completing a working is a later slice of tarmar-engine #77
+        (:meth:`_roll_and_resolve` refuses one until then). The craft action
+        that brings ``turns_done`` to the turns the working takes leaves the
+        craft standing on its caster, its whole mana gathered and spent. A
+        further craft action on a craft so gathered is refused, having no
+        share left to gather (:meth:`.magic.TrueMagicRules.gathered_after`);
+        any other choice abandons it as it would any craft.
+
+        Raises:
+            ValueError: with no True Magic rules injected, for a craft the
+                combatant may not begin (:meth:`_begin_craft`), or for a
+                craft action on a craft whose every turn is taken.
+            KeyError: for a standing craft whose key is not a working the
+                injected rules build.
+        """
+        if combatant.combatant_id in self._crafts_ended:
+            self.emit(
+                "info",
+                f"{combatant.name} lost their craft this turn, which took their action",
+                actor=combatant.name,
+            )
+            return
+        true_magic = self._true_magic_rules(combatant)
+        standing = combatant.crafting
+        craft = self._begin_craft(combatant) if standing is None else standing
+        if craft is None:
+            return
+        working = true_magic.working_from_key(craft.spell_key)
+        if standing is not None and self._cast_blocked(combatant, working):
+            self._lose_working(combatant, CastingEnding.BLOCKED)
+            return
+        mana_total = casting_mana(working, craft.push_mana)
+        turns = true_magic.turns_for(working.level)
+        gathered = true_magic.gathered_after(mana_total, turns, craft.turns_done + 1)
+        share = gathered - true_magic.gathered(craft)
+        borrowed = max(0, share - combatant.mana)
+        if borrowed and not craft.borrow:
+            self._lose_working(combatant, CastingEnding.UNPAID)
+            return
+        # A share of nothing is no payment, and the log names none.
+        cost_note = (
+            self._pay_mana(combatant, share, borrowed)
+            if share
+            else f"no mana due, {combatant.mana} left"
+        )
+        craft.borrowed += borrowed
+        craft.turns_done += 1
+        craft.target_id = combatant.chosen_target
+        magic = self.profile.magic
+        kind = None if magic is None else magic.cast_kind(working)
+        channel_used = self._channel_used(combatant, working, kind)
+        lifted_past = (
+            ()
+            if magic is None
+            else magic.lifted_bounds_passed(
+                combatant, working, craft.push_mana, kind=kind
+            )
+        )
+        channel_note = "" if channel_used is None else f"; Channel {channel_used[0]}"
+        stage = CRAFT_BEGUN if standing is None else CRAFT_CONTINUED
+        deed = "begins crafting" if standing is None else "goes on crafting"
+        self.emit(
+            "action",
+            f"{combatant.name} {deed} {working.name}, turn {craft.turns_done} "
+            f"of {turns} ({cost_note}; {gathered} of {mana_total} gathered"
+            f"{channel_note})",
+            actor=combatant.name,
+            payload={
+                "craft": stage,
+                "spell": working.key,
+                "tier": working.level,
+                "turn": craft.turns_done,
+                "turns": turns,
+                "share": share,
+                "gathered": gathered,
+                "mana_total": mana_total,
+                "mana_left": combatant.mana,
+                **self._cast_cost_keys(
+                    combatant, craft.push_mana, channel_used, borrowed, lifted_past
+                ),
+            },
+        )
+
+    def _begin_craft(self, caster: CombatantState) -> CraftState | None:
+        """Begin the craft the caster chose for the turn, where it may.
+
+        The working is ``chosen_spell``, with ``chosen_push_mana`` pushed
+        past its tier, and ``chosen_borrow`` says whether a share the pool
+        cannot pay may be borrowed. A craft is begun where a cast may be
+        made and nowhere else (house reading
+        ``craft_begins_where_a_cast_may``): the one guard a cast answers to
+        (:meth:`_cast_blocked`) refuses it in the log, as does a pool that
+        cannot cover the whole working when the caster did not choose to
+        borrow. A craft that begins ends each spell its caster keeps up,
+        with a ``status`` event apiece (house reading
+        ``crafting_ends_continuing_spells``), and stands on the caster with
+        no turn yet counted. A Game Master's grant of the working is read
+        and left as it was (house reading ``grant_stands_until_withdrawn``).
+
+        Returns:
+            The craft now standing on the caster, or ``None`` when the log
+            refused it and nothing was begun.
+
+        Raises:
+            ValueError: for each craft the menu never offers. With no True
+                Magic rules injected, or for a caster with no level in the
+                True skill; for a key that is not a working the rules build;
+                for an effect that needs a Game Master's grant, at a key the
+                caster's ``granted_workings`` does not hold; for a tier past
+                the caster's cap (:meth:`.magic.MagicRules.tier_cap`); for a
+                push with no Push rules, of a working with no rolled effect,
+                past Push's own cap or below 0; for whole mana past the
+                caster's Channel by the True kind; and for a borrowing with
+                no Borrowing rules, or whose projected shortfall would take
+                the debt past its cap.
+        """
+        magic = self._rules_of_true_mage(caster, "crafts a working")
+        true_magic = self._true_magic_rules(caster)
+        key = caster.chosen_spell
+        try:
+            effect, _tier = true_magic.effect_and_tier(key)
+        except KeyError as not_built:
+            raise ValueError(
+                f"{caster.name} crafts {key!r}, which is not a working the "
+                "injected True Magic rules build"
+            ) from not_built
+        working = true_magic.working_from_key(key)
+        if effect.needs_grant and not magic.granted(caster, key):
+            raise ValueError(
+                f"{caster.name} crafts {working.name}, which only a figure a "
+                "Game Master has named it for may craft"
+            )
+        tier_cap = magic.tier_cap(caster)
+        if tier_cap is not None and working.level > tier_cap:
+            raise ValueError(
+                f"{caster.name} crafts {working.name}; the highest tier they "
+                f"may craft is {tier_cap}"
+            )
+        push_mana = caster.chosen_push_mana
+        self._check_push(caster, working, push_mana)
+        borrow = caster.chosen_borrow
+        mana_total = casting_mana(working, push_mana)
+        # What the craft expects to borrow over all its turns: its whole
+        # mana past the purse as it begins.
+        shortfall = max(0, mana_total - caster.mana) if borrow else 0
+        self._check_within_channel(
+            caster,
+            working,
+            push_mana,
+            kind=magic.cast_kind(working),
+            borrows=shortfall > 0,
+            deed="crafts",
+        )
+        self._check_borrow(caster, working, borrow)
+        self._check_debt_cap(caster, working, shortfall)
+        craft = CraftState(
+            spell_key=key,
+            push_mana=push_mana,
+            borrow=borrow,
+            turns_done=0,
+            borrowed=0,
+            target_id=caster.chosen_target,
+        )
+        # A craft whose mana cannot be gathered (a push below 0) is refused
+        # here, before anything is changed.
+        true_magic.gathered(craft)
+        if self._cast_blocked(caster, working):
+            return None
+        if caster.mana < mana_total and not borrow:
+            self._log_lacks_mana(caster, working, push_mana)
+            return None
+        caster.crafting = craft
+        for active_key in list(caster.active_spells):
+            self._end_active_spell(caster, active_key)
+            self.emit(
+                "status",
+                f"{caster.name} turns to their craft and lets "
+                f"{spell_for(active_key, magic).name} go; it ends",
+                actor=caster.name,
+                payload={"spell": active_key, "ended": True, "crafting": True},
+            )
+        return craft
+
+    def _lose_working(
+        self,
+        combatant: CombatantState,
+        ending: CastingEnding,
+        *,
+        craft: CraftState | None = None,
+    ) -> None:
+        """A craft ends before its working goes off: the one way it does.
+
+        In order: the working, the mana gathered and the mana borrowed are
+        read off the craft, the craft is taken off the combatant and the
+        combatant joins ``_crafts_ended``, so whatever follows runs with no
+        craft standing and cannot lose the working twice; the ``status``
+        event says so (``craft_lost``, how it ended, the mana spent, which
+        is what the craft had gathered, and the drain it owes); a craft that
+        borrowed makes its one debt roll (:meth:`_debt_roll`, the mana
+        gathered as the cost of a Runaway a band starts), unless the
+        combatant is no longer active, whose debt stands unrolled; and the
+        drain the injected rules give that ending is taken
+        (:meth:`_take_drain`), counting the mana gathered.
+
+        Args:
+            combatant: Whose craft is lost.
+            ending: How it ended, one of the keys of
+                :data:`CRAFT_LOSS_REASONS`.
+            craft: The craft lost, when it has already been taken off the
+                combatant; ``None`` for the craft standing on it.
+
+        Raises:
+            ValueError: with no True Magic rules injected, or for a
+                combatant with no craft standing and none given.
+            KeyError: for an ending nothing loses a craft by
+                (:data:`CRAFT_LOSS_REASONS`), or a craft whose key is not a
+                working the injected rules build.
+        """
+        true_magic = self._true_magic_rules(combatant)
+        lost = combatant.crafting if craft is None else craft
+        if lost is None:
+            raise ValueError(f"{combatant.name} has no craft to lose")
+        reason = CRAFT_LOSS_REASONS[ending]
+        working = true_magic.working_from_key(lost.spell_key)
+        gathered = true_magic.gathered(lost)
+        borrowed = lost.borrowed
+        combatant.crafting = None
+        self._crafts_ended.add(combatant.combatant_id)
+        self.emit(
+            "status",
+            f"{combatant.name}'s craft of {working.name} is lost, {reason}: "
+            f"{gathered} mana spent",
+            actor=combatant.name,
+            payload={
+                "craft_lost": True,
+                "ending": ending.value,
+                "spell": working.key,
+                "mana_spent": gathered,
+                "drain": true_magic.drain(gathered, ending),
+            },
+        )
+        magic = self.profile.magic
+        borrowing = None if magic is None else magic.borrowing
+        if borrowed and borrowing is not None and combatant.active:
+            self._debt_roll(combatant, working, borrowing, cost=gathered)
+        # None of these endings follows a roll: the drain cites none.
+        self._take_drain(combatant, gathered, ending, None)
+
     @staticmethod
     def _anchored_growth(
         combatant: CombatantState, spell: Spell, magic: MagicRules
@@ -2825,10 +3281,35 @@ class TurnRunner:
         """Pay a casting's whole mana, ``borrowed`` of it added to the debt
         (tarmar-engine #28); the payment as the log prints it."""
         cost = casting_mana(spell, push_mana)
-        caster.mana -= cost - borrowed
+        paid_text = f"{spell.level} + {push_mana} pushed" if push_mana else None
+        return self._pay_mana(caster, cost, borrowed, paid_text)
+
+    @staticmethod
+    def _pay_mana(
+        caster: CombatantState,
+        amount: int,
+        borrowed: int,
+        paid_text: str | None = None,
+    ) -> str:
+        """Take mana a casting spends from its caster: the one place the
+        pool and the debt move for it, a cast's whole mana and a craft's
+        share alike.
+
+        Args:
+            caster: Who pays.
+            amount: The mana spent.
+            borrowed: How much of it the pool cannot pay, added to the
+                caster's debt; the pool pays the rest.
+            paid_text: The amount as the log prints it, where it has parts
+                to show ("2 + 1 pushed"); ``None`` for the plain figure.
+
+        Returns:
+            The payment as the log prints it.
+        """
+        caster.mana -= amount - borrowed
         caster.debt += borrowed
-        paid_text = f"{spell.level} + {push_mana} pushed" if push_mana else str(cost)
-        cost_note = f"{paid_text} mana, {caster.mana} left"
+        shown = str(amount) if paid_text is None else paid_text
+        cost_note = f"{shown} mana, {caster.mana} left"
         if borrowed:
             cost_note += f", borrows {borrowed}, debt {caster.debt}"
         return cost_note

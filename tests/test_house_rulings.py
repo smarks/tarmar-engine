@@ -954,6 +954,7 @@ class TrueMagicRulingsTest(TestCase):
                 self.assertEqual(casting_mana(working, 3), tier + 3)
 
     def test_craft_gathers_even_shares(self):
+        from .test_craft import STEADY, choose_craft, craft, craft_actions, crafter
         from .test_true_magic import example_true_magic_rules
 
         self.assertEqual(
@@ -965,6 +966,18 @@ class TrueMagicRulingsTest(TestCase):
         self.assertEqual(gathered, [0, 2, 4, 7])
         # Not the alternative, which would pay the whole mana at the start.
         self.assertLess(rules.gathered_after(7, 3, 1), 7)
+        # A craft pays as it gathers: the action that begins a working of 4
+        # mana over 4 turns takes the first share from the pool, not the 4.
+        state = crafter()
+        caster = choose_craft(state, **STEADY)
+        (begun,) = craft_actions(craft(state))
+        self.assertEqual(
+            (begun["mana_total"], begun["turns"], begun["share"]), (4, 4, 1)
+        )
+        self.assertEqual(caster.mana, 10 - 1)
+        (continued,) = craft_actions(craft(state))
+        self.assertEqual((continued["share"], continued["gathered"]), (1, 2))
+        self.assertEqual(caster.mana, 10 - 2)
 
     def test_channel_lift_lifts_the_tier_cap(self):
         from tarmar_engine.magic import CHANNEL, LIFTABLE_BOUNDS
@@ -998,9 +1011,9 @@ class TrueMagicRulingsTest(TestCase):
 
     def test_grant_stands_until_withdrawn(self):
         # The engine never writes a figure's granted workings, so a grant
-        # stands until the consuming game withdraws it. The stronger pin, a
-        # craft begun that leaves its key listed, is the craft slice's to
-        # add here, with ``TurnRunner.craft_working``.
+        # stands until the consuming game withdraws it: a craft begun on a
+        # granted working leaves its key listed.
+        from .test_craft import choose_craft, craft, crafter, standing_craft
         from .test_state import make_combatant
         from .test_true_magic import knot_caster, true_magic_rules
 
@@ -1017,6 +1030,17 @@ class TrueMagicRulingsTest(TestCase):
         granted.reset_for_turn()
         self.assertEqual(granted.granted_workings, grants)
         self.assertEqual(make_combatant(1).granted_workings, [])
+        state = crafter(granted_workings=list(grants))
+        caster = choose_craft(state, "omen", 2)
+        craft(state)
+        self.assertEqual(standing_craft(caster).spell_key, "working:omen:2")
+        self.assertEqual(caster.granted_workings, grants)
+        # Not the alternative, a single use: with that craft gone, the same
+        # grant begins another.
+        caster.crafting = None
+        craft(state)
+        self.assertEqual(standing_craft(caster).spell_key, "working:omen:2")
+        self.assertEqual(caster.granted_workings, grants)
 
     def test_true_cast_rolls_the_spells_own_roll(self):
         from tarmar_engine.profile import TarmarProfile
@@ -1055,6 +1079,179 @@ class TrueMagicRulingsTest(TestCase):
             (casting_roll["versus"], casting_roll["target_number"]),
             ("INT", caster.intelligence),
         )
+
+    def test_crafting_ends_continuing_spells(self):
+        from .test_craft import craft_candidate, crafter, run_turn
+        from .test_engine import events_of_type
+
+        self.assertEqual(
+            ruling("crafting_ends_continuing_spells").value,
+            "end when the craft begins",
+        )
+        state = crafter(active_spells=["shield"])
+        caster = state.by_id(1)
+        events = run_turn(state, craft_candidate("scorch", 3))
+        self.assertEqual(caster.active_spells, [])
+        # Renew Spells, which comes before the turn's choice, renews the
+        # spell as ever; it ends in the action that begins the craft.
+        (renewal,) = [
+            event
+            for event in events_of_type(events, "action")
+            if event["phase"] == 2 and event["payload"].get("spell") == "shield"
+        ]
+        self.assertIn("renews Shield", renewal["message"])
+        (ended,) = [
+            event
+            for event in events_of_type(events, "status")
+            if event["payload"].get("ended")
+        ]
+        self.assertEqual(ended["phase"], 5)
+        self.assertEqual(
+            ended["payload"], {"spell": "shield", "ended": True, "crafting": True}
+        )
+        # No later turn of the craft has a spell to renew.
+        later = run_turn(state, craft_candidate("scorch", 3))
+        self.assertEqual(
+            [event for event in later if event["payload"].get("spell") == "shield"],
+            [],
+        )
+
+    def test_another_action_abandons_the_craft(self):
+        from tarmar_engine.magic import CastingEnding
+
+        from .test_craft import (
+            DEFEND,
+            craft_candidate,
+            crafter,
+            run_turn,
+            standing_craft,
+        )
+
+        abandoned = ruling("another_action_abandons_the_craft").value
+        self.assertEqual(abandoned, CastingEnding.ABANDONED.value)
+        state = crafter()
+        caster = state.by_id(1)
+        run_turn(state, craft_candidate("scorch", 3))
+        self.assertIsNotNone(caster.crafting)
+        events = run_turn(state, DEFEND)
+        (lost,) = [event for event in events if "craft_lost" in event["payload"]]
+        # Lost in Initial Movement, where the choice is recorded.
+        self.assertEqual((lost["phase"], lost["payload"]["ending"]), (3, abandoned))
+        self.assertIsNone(caster.crafting)
+        # The continuation, chosen instead, loses nothing.
+        state = crafter()
+        run_turn(state, craft_candidate("scorch", 3))
+        events = run_turn(state, craft_candidate("scorch", 3))
+        self.assertEqual(
+            [event for event in events if "craft_lost" in event["payload"]], []
+        )
+        self.assertEqual(standing_craft(state.by_id(1)).turns_done, 2)
+
+    def test_craft_begins_where_a_cast_may(self):
+        from tarmar_engine.state import WeaponState
+
+        from .test_cast_pieces import hand_to_hand, held, runner_on
+        from .test_craft import (
+            CRAFT_PROFILE,
+            choose_craft,
+            crafter,
+            crafter_beside,
+        )
+
+        self.assertEqual(
+            ruling("craft_begins_where_a_cast_may").value, "where a cast may be made"
+        )
+        empty_handed = WeaponState()
+        situations = {
+            "disengaged": (crafter(), True),
+            "beside an enemy": (crafter_beside(), True),
+            "hand-to-hand, empty hands": (
+                hand_to_hand(crafter_beside(weapon=empty_handed)),
+                True,
+            ),
+            "hand-to-hand, weapon in hand": (hand_to_hand(crafter_beside()), False),
+            "in a grapple": (held(crafter_beside(weapon=empty_handed)), False),
+            # The menu withholds a prone figure's craft, as it does its
+            # cast; the engine does not check it again.
+            "prone": (crafter(prone=True), True),
+        }
+        for situation, (state, begins) in situations.items():
+            with self.subTest(situation=situation):
+                caster = choose_craft(state, "mend", 1)
+                turn_runner, events = runner_on(state, (), CRAFT_PROFILE)
+                # A cast of a spell the caster knows is refused in the same
+                # places, by the same guard.
+                cast_refused = turn_runner._cast_blocked(
+                    caster, spells.get_spell("heal")
+                )
+                self.assertEqual(cast_refused, not begins)
+                events.clear()
+                turn_runner.craft_working(caster)
+                self.assertEqual(caster.crafting is not None, begins)
+                self.assertEqual(
+                    [event["event_type"] for event in events],
+                    ["action"] if begins else ["info"],
+                )
+
+    def test_working_aimed_by_its_last_craft_action(self):
+        from .test_craft import choose_craft, craft, crafter, standing_craft
+
+        self.assertEqual(
+            ruling("working_aimed_by_its_last_craft_action").value,
+            "latest craft action",
+        )
+        state = crafter()
+        caster = choose_craft(state, "scorch", 3, target=2)
+        craft(state)
+        self.assertEqual(standing_craft(caster).target_id, 2)
+        for named in (1, None):
+            with self.subTest(named=named):
+                choose_craft(state, "scorch", 3, target=named)
+                craft(state)
+                self.assertEqual(standing_craft(caster).target_id, named)
+
+    def test_craft_fixes_push_and_borrow_at_the_start(self):
+        from .test_craft import (
+            choose_craft,
+            craft,
+            craft_candidate,
+            crafter,
+            run_turn,
+            standing_craft,
+        )
+
+        self.assertEqual(
+            ruling("craft_fixes_push_and_borrow_at_the_start").value,
+            "fixed when the craft begins",
+        )
+        state = crafter()
+        caster = choose_craft(state, "scorch", 2, push=1, borrow=True)
+        craft(state)
+        # A later craft action takes neither from the turn's choice.
+        choose_craft(state, "scorch", 2, push=3, borrow=False)
+        craft(state)
+        begun = standing_craft(caster)
+        self.assertEqual((begun.push_mana, begun.borrow), (1, True))
+        # Two of its four turns in, the craft has gathered 1 of the 3 mana
+        # it began with; the 5 the later choice names would have brought 2.
+        self.assertEqual(caster.mana, 10 - 1)
+        # A choice that names another push or another borrowing is refused
+        # where it is recorded, and the craft stands as it began.
+        state = crafter()
+        caster = state.by_id(1)
+        run_turn(state, craft_candidate("scorch", 3, push=1))
+        for differing in (
+            craft_candidate("scorch", 3, push=2),
+            craft_candidate("scorch", 3, push=1, borrow=True),
+        ):
+            with self.subTest(push=differing.push_mana, borrow=differing.borrow):
+                with self.assertRaisesRegex(ValueError, "carried on as it began"):
+                    run_turn(state, differing)
+                standing = standing_craft(caster)
+                self.assertEqual(
+                    (standing.push_mana, standing.borrow, standing.turns_done),
+                    (1, False, 1),
+                )
 
     #: The list methods that change a list in place.
     LIST_MUTATORS = frozenset(

@@ -73,7 +73,7 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
         "Damage from a spell that does not ignore armour is reduced by the "
         "target's armour stops, as a weapon's is.",
         True,
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _resolve_cast (_roll_and_resolve)",
         RULING,
         "#826",
     ),
@@ -192,7 +192,7 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
         "The Runaway total is among them, because a Runaway's first effect, "
         "the drain, is paid at once out of the casting's mana.",
         True,
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
         RULING,
         "#816",
     ),
@@ -202,7 +202,8 @@ HOUSE_RULINGS: tuple[HouseRuling, ...] = (
         "Mastery 3 (no gestures and no words) and renewed at 2 or better; "
         "either side is offered its Mastery 3 casts.",
         {"cast": 3, "renew": 2},
-        "tarmar_engine/engine.py cast_spell, phase_renew_spells",
+        "tarmar_engine/engine.py _cast_blocked (cast_spell, craft_working, "
+        "_begin_craft), phase_renew_spells",
         RULING + " (cast: the grappling page's 'no hand gestures and no "
         "verbal component'; the HTH table's 'no-gesture spell' would allow 2)",
         "#821",
@@ -328,7 +329,8 @@ HOUSE_RULINGS += (
         "no weapon in hand (a shield is a standing fact of the snapshot, not a "
         "held item); a no-gesture spell is one known at Spell Mastery 2.",
         2,
-        "tarmar_engine/policy.py _hth_casts; engine.py cast_spell",
+        "tarmar_engine/policy.py _hth_casts; engine.py _cast_blocked "
+        "(cast_spell, craft_working, _begin_craft)",
         RULING,
         "#19",
     ),
@@ -380,7 +382,8 @@ HOUSE_RULINGS += (
         "A casting success tier applies only to a roll that already succeeds; "
         "it never turns a failure into a success.",
         "success first",
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _resolve_cast "
+        "(_roll_and_resolve)",
         "Spencer's ruling on tarmar-studio #292's scope (" + RULING + ")",
         "#825 (tarmar-engine #26)",
     ),
@@ -393,7 +396,8 @@ HOUSE_RULINGS += (
         "bonus cannot be pushed either. No page gives the size of either "
         "bonus; both are injected.",
         ("damage", "healing"),
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _resolve_cast (_roll_and_resolve), _check_push "
+        "(cast_spell, _begin_craft)",
         RULING,
         "#825 (tarmar-engine #26/#27)",
     ),
@@ -412,7 +416,7 @@ HOUSE_RULINGS += (
         "Pushed mana is paid with the spell's cost whenever the cast pays: on "
         "a success, and on the failures that lose mana (#816).",
         "with the cost",
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _pay_cast (_roll_and_resolve)",
         RULING,
         "#825 (tarmar-engine #27)",
     ),
@@ -443,8 +447,8 @@ HOUSE_RULINGS += (
         "tighter of the two holds.",
         "spell cost + pushed mana",
         "tarmar_engine/magic.py MagicRules.cast_within_channel, called by "
-        "tarmar_engine/engine.py cast_spell and tarmar_engine/policy.py "
-        "_within_channel",
+        "tarmar_engine/engine.py _check_within_channel (cast_spell, "
+        "_begin_craft) and tarmar_engine/policy.py _within_channel",
         RULING,
         "#825 (tarmar-engine #29)",
     ),
@@ -502,7 +506,8 @@ HOUSE_RULINGS += (
         "penalty, as the Control Roll takes them (orchestrator's ruling: one "
         "roll-under reading for the magic rolls).",
         ("casting", "spell aim", "spell damage", "debt"),
-        "tarmar_engine/engine.py cast_spell, _debt_roll",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _debt_roll "
+        "(_roll_and_resolve, _lose_working)",
         RULING,
         "#825 (tarmar-engine #28)",
     ),
@@ -512,7 +517,7 @@ HOUSE_RULINGS += (
         "success, and on the failures that lose mana. A failure that keeps "
         "its mana borrows nothing and makes no debt roll.",
         "when the cast pays",
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
         RULING,
         "#825 (tarmar-engine #28)",
     ),
@@ -523,7 +528,8 @@ HOUSE_RULINGS += (
         "is refused, borrowing or not. With no injected debt cap Channel is "
         "the only bound, so Borrowing without a cap needs Channel rules.",
         "spell cost + pushed mana, borrowed or not",
-        "tarmar_engine/engine.py cast_spell; tarmar_engine/policy.py "
+        "tarmar_engine/engine.py _check_within_channel (cast_spell, "
+        "_begin_craft); tarmar_engine/policy.py "
         "_borrow_candidates; tarmar_engine/magic.py "
         "MagicRules.cast_within_channel and MagicRules.channel_bound",
         RULING,
@@ -667,7 +673,8 @@ HOUSE_RULINGS += (
         "action; a slower one pays it at the cast, and its own action is then "
         "spent. The page's two timings collapse into one roll at the cast.",
         "at the cast",
-        "tarmar_engine/engine.py cast_spell, _oppose_cast, declare_counter",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell), _oppose_cast "
+        "(_roll_and_resolve), declare_counter",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -715,7 +722,7 @@ HOUSE_RULINGS += (
         "included, and a borrowing cast's debt roll follows), where an "
         "ordinary failed casting roll would keep it.",
         "no casting roll, mana paid",
-        "tarmar_engine/engine.py cast_spell",
+        "tarmar_engine/engine.py _roll_and_resolve (cast_spell)",
         RULING,
         "#825 (tarmar-engine #31)",
     ),
@@ -768,7 +775,8 @@ HOUSE_RULINGS += (
         "its counter_declared event. A cast or counter within the bounds "
         "carries no such key, lifted or not.",
         "lifted_bounds",
-        "tarmar_engine/engine.py cast_spell, _cast_cost_keys, declare_counter",
+        "tarmar_engine/engine.py cast_spell, craft_working, _channel_used, "
+        "_cast_cost_keys, declare_counter",
         RULING,
         "#37",
     ),
@@ -842,7 +850,8 @@ HOUSE_RULINGS += (
         "is its tier, so whatever reads a casting's mana counts a working as "
         "it counts a catalog spell.",
         "tier",
-        "tarmar_engine/magic.py TrueMagicRules.working, casting_mana",
+        "tarmar_engine/magic.py TrueMagicRules.working, casting_mana; "
+        "tarmar_engine/engine.py _begin_craft, craft_working",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -855,7 +864,8 @@ HOUSE_RULINGS += (
         "differ by more than a point, and the last turn brings the whole. "
         "The alternative reading pays the whole mana when the craft begins.",
         "even shares, rounded down",
-        "tarmar_engine/magic.py TrueMagicRules.gathered_after",
+        "tarmar_engine/magic.py TrueMagicRules.gathered_after; "
+        "tarmar_engine/engine.py craft_working",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -869,7 +879,8 @@ HOUSE_RULINGS += (
         "bound it went past. The alternative reading is a further bound, "
         "lifted on its own.",
         "channel",
-        "tarmar_engine/magic.py MagicRules.tier_cap, lifted_bounds_passed",
+        "tarmar_engine/magic.py MagicRules.tier_cap, lifted_bounds_passed; "
+        "tarmar_engine/engine.py _begin_craft",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -883,7 +894,8 @@ HOUSE_RULINGS += (
         "when the craft begins.",
         "stands until withdrawn",
         "tarmar_engine/magic.py MagicRules.granted; "
-        "tarmar_engine/state.py CombatantState.granted_workings",
+        "tarmar_engine/state.py CombatantState.granted_workings; "
+        "tarmar_engine/engine.py _begin_craft",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
@@ -895,6 +907,73 @@ HOUSE_RULINGS += (
         "The alternative reading adds the bonus to a True cast too.",
         "the spell's own roll",
         "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "crafting_ends_continuing_spells",
+        "A caster who crafts a working does nothing else, and that includes "
+        "keeping a spell up: each spell the caster has running ends when the "
+        "craft begins, in the action that begins it. Ending them in the Renew "
+        "Spells phase instead would treat workings unevenly, since that phase "
+        "comes before the turn's choice: a working of one turn would never "
+        "lose them, and a longer one would lose them before its caster chose "
+        "whether to go on. The alternative reading is that renewing a spell "
+        "is no action, and goes on as usual through a craft.",
+        "end when the craft begins",
+        "tarmar_engine/engine.py _begin_craft",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "another_action_abandons_the_craft",
+        "A crafting caster does not move, defend, dodge or counter. The craft "
+        "option chosen again is the craft's continuation; choosing any other "
+        "option ends the working when the choice is recorded in Initial "
+        "Movement, before the caster moves. The working is lost with the "
+        "mana it had gathered.",
+        "abandoned",
+        "tarmar_engine/engine.py phase_initial_movement, _settle_craft_choice",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "craft_begins_where_a_cast_may",
+        "A craft is begun exactly where a cast may be made: disengaged or "
+        "engaged, in hand-to-hand with empty hands, and never in a grapple. "
+        "A working has no Spell Mastery level, so it reads at level 1 under "
+        "the one guard a cast answers to. As for a cast, a prone figure "
+        "outside hand-to-hand has STAND UP alone on its menu, so no craft "
+        "begins there, and the engine does not check it again: nothing knocks "
+        "a standing figure prone between its choice and its action but "
+        "unconsciousness.",
+        "where a cast may be made",
+        "tarmar_engine/engine.py _begin_craft, _cast_blocked",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "working_aimed_by_its_last_craft_action",
+        "The figure a working is aimed at is the one its latest craft action "
+        "named: each craft action that is counted names the target anew, and "
+        "may name another figure than the last did, or none.",
+        "latest craft action",
+        "tarmar_engine/engine.py craft_working; "
+        "tarmar_engine/state.py CraftState.target_id",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
+    HouseRuling(
+        "craft_fixes_push_and_borrow_at_the_start",
+        "The mana pushed into a working, and whether a share its caster's "
+        "pool cannot pay may be borrowed, are chosen when the craft begins "
+        "and change on no later turn. The continuation carries both as they "
+        "began; a craft option that names another working, another push or "
+        "another borrowing while a craft stands is a caller's error, refused "
+        "where the choice is recorded.",
+        "fixed when the craft begins",
+        "tarmar_engine/engine.py _begin_craft, _settle_craft_choice; "
+        "tarmar_engine/state.py CraftState",
         RULING,
         "#208 (tarmar-engine #77)",
     ),
