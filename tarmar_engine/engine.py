@@ -566,6 +566,7 @@ class TurnRunner:
             combatant.chosen_spell = decision.chosen.spell_key
             combatant.chosen_push_mana = decision.chosen.push_mana
             combatant.chosen_borrow = decision.chosen.borrow
+            combatant.chosen_true_cast = decision.chosen.true_cast
             combatant.chosen_anchor = decision.chosen.anchor_target
             combatant.chosen_counter = self._counter_choice(decision.chosen)
             combatant.chosen_destination = decision.chosen.destination
@@ -2342,6 +2343,16 @@ class TurnRunner:
         caster may press it again on a later turn. With no ``MagicRules``
         none of these runs and a cast logs exactly what it always has.
 
+        With injected True Magic rules the caster's choice may mark the cast
+        a True cast (``CombatantState.chosen_true_cast``): of a spell it
+        knows or the same rung of another element's ladder
+        (:meth:`.magic.MagicRules.true_castable`), instant as any cast is,
+        deriving its Channel by the True kind, and making the spell's
+        ordinary casting roll (house reading
+        ``true_cast_rolls_the_spells_own_roll``). Casting it deeper is a
+        push, with Push's Control Roll and bonus, and each point pushed
+        drains its caster once the casting is done (:meth:`_take_drain`).
+
         The checks are made here. The guard on where a figure may cast
         (:meth:`_cast_blocked`) and the casting itself, from the counter to
         the debt roll (:meth:`_roll_and_resolve`), are the pieces a working
@@ -2355,8 +2366,9 @@ class TurnRunner:
                 ``generic_counter_is_learned_never_cast``; the menu offers
                 none), a push or a borrowing the profile's rules do not
                 allow, a casting past the caster's Channel for the spell or a
-                push past the cap where neither is lifted for the caster, or
-                a borrowing past the injected debt cap.
+                push past the cap where neither is lifted for the caster, a
+                borrowing past the injected debt cap, or a True cast the
+                caster may not make (:meth:`_check_true_cast`).
         """
         magic = self.profile.magic
         spell = spell_for(combatant.chosen_spell, magic)
@@ -2370,6 +2382,9 @@ class TurnRunner:
                 f"{combatant.name} casts {spell.name}, a generic counter, which "
                 "is learned and never cast"
             )
+        true_cast = combatant.chosen_true_cast
+        if true_cast:
+            self._check_true_cast(combatant, spell)
         borrowing = None if magic is None else magic.borrowing
         if combatant.chosen_borrow and borrowing is None:
             raise ValueError(
@@ -2397,7 +2412,6 @@ class TurnRunner:
         cost = casting_mana(spell, push_mana)
         # The kind of magic the cast names for its Channel: none for a recipe
         # cast, which derives by the spell's own.
-        true_cast = combatant.chosen_true_cast
         kind = None if magic is None else magic.cast_kind(spell, true_cast=true_cast)
         # The Channel used and its kind, with Channel rules injected.
         channel_used: tuple[int, str] | None = None
@@ -2463,6 +2477,29 @@ class TurnRunner:
             lifted_past=lifted_past,
         )
 
+    def _check_true_cast(self, caster: CombatantState, spell: Spell) -> None:
+        """Refuse a True cast its caster may not make. The menu offers none
+        of these, so each is a caller's error.
+
+        Raises:
+            ValueError: with no True Magic rules injected, for a caster with
+                no level in the True skill, or for a spell that is neither
+                one the caster knows nor the same rung of another element's
+                ladder (:meth:`.magic.MagicRules.true_castable`).
+        """
+        magic = self.profile.magic
+        if magic is None or magic.true_level(caster) <= 0:
+            true_magic = self._true_magic_rules(caster)
+            raise ValueError(
+                f"{caster.name} True casts {spell.name} with no level in "
+                f"{true_magic.skill_label}"
+            )
+        if spell not in magic.true_castable(caster):
+            raise ValueError(
+                f"{caster.name} True casts {spell.name}, which is neither a "
+                "spell they know nor the same rung of another element's ladder"
+            )
+
     def _cast_blocked(self, caster: CombatantState, spell: Spell) -> bool:
         """Is the caster where it may not cast this spell? The refusal is
         logged here.
@@ -2523,16 +2560,21 @@ class TurnRunner:
         channel_used: tuple[int, str] | None,
         lifted_past: tuple[str, ...],
     ) -> None:
-        """A casting from the counter to the debt roll: the one copy of the
+        """A casting from the counter to the drain: the one copy of the
         sequence, for a cast and for a working.
 
         In order: every counter declared against the caster
         (:meth:`_oppose_cast`); the casting roll; the payment, on a success
         or on a failing total that loses the mana; the ``action`` event; the
         effect of a success (:meth:`_resolve_cast`) or the Runaway a failing
-        total starts; and the debt roll of a casting that paid and borrowed.
-        Countered, the casting makes no roll: it pays, says so and makes its
-        debt roll.
+        total starts; the debt roll of a casting that paid and borrowed; and
+        the drain of a True cast that paid (:meth:`_take_drain`), which
+        counts its pushed mana: for a casting that went off, for one whose
+        roll failed (:attr:`~.magic.CastingEnding.FAILED`) or for one a
+        Control band stopped (:attr:`~.magic.CastingEnding.STOPPED`).
+        Countered, the casting makes no roll: it pays, says so, makes its
+        debt roll and, a True cast, takes its drain
+        (:attr:`~.magic.CastingEnding.COUNTERED`).
 
         Args:
             caster: The caster.
@@ -2552,15 +2594,16 @@ class TurnRunner:
             lifted_past: The lifted bounds the casting went past.
 
         Raises:
-            NotImplementedError: for a True cast or a working. This runs a
-                recipe cast only until the slices of tarmar-engine #77 that
-                build those land.
+            NotImplementedError: for a working. This runs an instant cast
+                only until the slice of tarmar-engine #77 that completes a
+                working lands.
         """
-        if true_cast or craft is not None:
+        if craft is not None:
             raise NotImplementedError(
-                f"{caster.name}'s {spell.name}: a True cast and a working are "
-                "not yet run here"
+                f"{caster.name}'s {spell.name}: a working is not yet run here"
             )
+        # A True cast says so in each of its own events.
+        true_cast_keys: dict[str, bool] = {"true_cast": True} if true_cast else {}
         magic = self.profile.magic
         borrowing = None if magic is None else magic.borrowing
         cost = casting_mana(spell, push_mana)
@@ -2594,10 +2637,14 @@ class TurnRunner:
                     **self._cast_cost_keys(
                         caster, push_mana, channel_used, shortfall, lifted_past
                     ),
+                    **true_cast_keys,
                 },
             )
             if shortfall and borrowing is not None:
                 self._debt_roll(caster, spell, borrowing, cost=cost)
+            if true_cast:
+                # No casting roll was made: the drain cites none.
+                self._take_drain(caster, push_mana, CastingEnding.COUNTERED, None)
             return
         # injury-thresholds-death.md's -1/-2 band (#296) applies to the
         # effective attribute the roll checks against, and so does an
@@ -2645,6 +2692,7 @@ class TurnRunner:
             **self._cast_cost_keys(
                 caster, push_mana, channel_used, borrowed, lifted_past
             ),
+            **true_cast_keys,
         }
         self.emit(
             "action",
@@ -2661,8 +2709,10 @@ class TurnRunner:
         refund_cap = cost
         if borrowing is not None and not borrowing.refunds_pay_debt_first:
             refund_cap = cost - borrowed
+        # How a casting that paid ended without going off, for its drain.
+        ending: CastingEnding | None = None
         if succeeded:
-            self._resolve_cast(
+            went_off = self._resolve_cast(
                 caster,
                 spell,
                 magic,
@@ -2672,13 +2722,19 @@ class TurnRunner:
                 push_mana=push_mana,
                 target_id=target_id,
             )
-        elif (
-            casting_failure is not None
-            and sum(record.faces) == casting_failure.runaway_total
-        ):
-            self._begin_runaway(caster, spell, cost)
+            if not went_off:
+                ending = CastingEnding.STOPPED
+        else:
+            ending = CastingEnding.FAILED
+            if (
+                casting_failure is not None
+                and sum(record.faces) == casting_failure.runaway_total
+            ):
+                self._begin_runaway(caster, spell, cost)
         if borrowed and borrowing is not None:
             self._debt_roll(caster, spell, borrowing, cost=cost)
+        if true_cast and pays:
+            self._take_drain(caster, push_mana, ending, [cast_sequence])
 
     def _true_magic_rules(self, combatant: CombatantState) -> TrueMagicRules:
         """The profile's injected True Magic rules.
@@ -2700,7 +2756,7 @@ class TurnRunner:
         caster: CombatantState,
         drained_mana: int,
         ending: CastingEnding | None,
-        chain: list[int],
+        chain: list[int] | None,
     ) -> None:
         """Take what a True cast or a working drains from its caster: the
         one way a drain is taken.
@@ -2717,7 +2773,8 @@ class TurnRunner:
             ending: How the casting ended without going off, or ``None``: it
                 went off.
             chain: The roll sequence numbers behind the drain, for a fall
-                into unconsciousness or a death to cite.
+                into unconsciousness or a death to cite; ``None`` for none,
+                which leaves the caster's fatal chain as it was.
 
         Raises:
             ValueError: with no True Magic rules injected.

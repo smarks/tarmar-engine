@@ -66,7 +66,8 @@ here ahead of the turn code that will run them:
   injected attribute, each gaining a bonus per step of mana invested; a
   defender who wins cancels the spell, its mana spent, and the caster may
   press it again on a later turn, paying again for another opposed roll.
-* **True Magic** (rules only, so far). A caster with a level in the injected
+* **True Magic** (True casts run; a working is rules only, so far). A caster
+  with a level in the injected
   True skill may True cast a spell, deriving Channel from that skill
   (:meth:`MagicRules.cast_kind`), or craft a working over several turns
   (:class:`TrueMagicRules`). A working is a spell the rules build from an
@@ -104,7 +105,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, TypeVar
 
 from .dice import MAX_DICE_COUNT, parse_dice_expression
-from .spells import Spell, get_spell
+from .spells import Spell, element_siblings, get_spell
 
 # The combatant's pools are declared in .state; magic re-exports them so
 # ``tarmar_engine.magic`` keeps naming them.
@@ -1592,6 +1593,29 @@ class MagicRules:
         if self.true_magic is None:
             return 0
         return self._true_derivation(self.true_magic).skill_level(caster)
+
+    def true_castable(self, caster: CombatantState) -> tuple[Spell, ...]:
+        """The catalog spells the caster may True cast: each spell it knows
+        that can be cast (any but a generic counter), in the order it knows
+        them, each followed by the same rung of every other element's ladder
+        (:func:`~tarmar_engine.spells.element_siblings`), with no repeats.
+
+        Empty for a caster with no level in the True skill, and so with no
+        True Magic rules.
+
+        Raises:
+            KeyError: for a known spell the catalog does not hold.
+        """
+        if self.true_level(caster) <= 0:
+            return ()
+        castable: dict[str, Spell] = {}
+        for key in caster.spells:
+            known = get_spell(key)
+            if known.generic_counter:
+                continue
+            for spell in (known, *element_siblings(known)):
+                castable.setdefault(spell.key, spell)
+        return tuple(castable.values())
 
     def tier_cap(self, caster: CombatantState) -> int | None:
         """The highest tier of working the caster may craft, or ``None`` when

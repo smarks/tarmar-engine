@@ -298,6 +298,9 @@ class Candidate:
     #: forecast (DEFEND, DODGE, a move, a grapple, a buff or a heal, a pushed
     #: cast).
     forecast: Forecast | None = None
+    #: Is the cast a True cast (tarmar-engine #77)? The engine copies it to
+    #: ``CombatantState.chosen_true_cast`` when the choice is recorded.
+    true_cast: bool = False
 
     def to_payload(self) -> dict:
         payload = {
@@ -319,6 +322,9 @@ class Candidate:
         # Likewise only a borrowing cast carries its key.
         if self.borrow:
             payload["borrow"] = True
+        # And only a True cast its own.
+        if self.true_cast:
+            payload["true_cast"] = True
         # The same for a hex: a candidate that names none logs as it did.
         if self.destination is not None:
             payload["destination"] = list(self.destination)

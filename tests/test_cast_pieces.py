@@ -17,7 +17,13 @@ from tarmar_engine import combat_math, engine, policy
 from tarmar_engine.magic import CastingEnding, MagicRules
 from tarmar_engine.profile import TARMAR, TarmarProfile
 from tarmar_engine.spells import get_spell
-from tarmar_engine.state import BODY_POOL, BattleState, RunawayState, WeaponState
+from tarmar_engine.state import (
+    BODY_POOL,
+    BattleState,
+    CraftState,
+    RunawayState,
+    WeaponState,
+)
 
 from .test_channel import cast_payload, channel_caster
 from .test_counterspell import (
@@ -478,10 +484,9 @@ class OffBalanceCastAgainstACounterTest(TestCase):
 
 
 class TrueCastChannelTest(TestCase):
-    """A cast marked a True cast derives its Channel by the True kind, and is
-    then stopped: a True cast is not run until its own slice of
-    tarmar-engine #77. The "knot" kind gives 3 x the "knotwork" level + 1;
-    a spell's own kind, 2 x its recorded level - 1."""
+    """A cast marked a True cast derives its Channel by the True kind. The
+    "knot" kind gives 3 x the "knotwork" level + 1; a spell's own kind, 2 x
+    its recorded level - 1."""
 
     PROFILE = TarmarProfile(
         magic=replace(true_magic_rules(), push=example_push_rules())
@@ -495,17 +500,18 @@ class TrueCastChannelTest(TestCase):
         caster.chosen_true_cast = true_cast
         return caster
 
-    def test_a_true_cast_within_the_true_kinds_channel_is_not_yet_run(self):
+    def test_a_true_cast_within_the_true_kinds_channel_is_cast(self):
         # "knotwork" 2: a Channel of 7 by the True kind. No level is recorded
         # in the spell, so its own kind gives a Channel of 0.
         state = channel_caster({}, skill_levels={KNOT_SKILL: 2})
         caster = self.caster_choosing(state, "fire_missile", true_cast=True)
-        turn_runner, events = runner_on(state, [[3, 3, 3]], self.PROFILE)
-        with self.assertRaises(NotImplementedError):
-            turn_runner.cast_spell(caster)
-        self.assertEqual(events, [])
-        self.assertEqual(turn_runner.roller.faces_queue, [[3, 3, 3]])
-        self.assertEqual(caster.mana, 10)
+        turn_runner, events = runner_on(state, MISSILE_FACES, self.PROFILE)
+        turn_runner.cast_spell(caster)
+        payload = cast_payload(events)
+        self.assertEqual((payload["channel"], payload["channel_kind"]), (7, "knot"))
+        self.assertIs(payload["true_cast"], True)
+        self.assertIs(payload["success"], True)
+        self.assertEqual(caster.mana, 10 - 1)
         # The same cast as a recipe cast is past the spell's own Channel.
         caster.chosen_true_cast = False
         with self.assertRaisesRegex(ValueError, "Channel for it is 0"):
@@ -532,6 +538,38 @@ class TrueCastChannelTest(TestCase):
         payload = cast_payload(events)
         self.assertEqual((payload["channel"], payload["channel_kind"]), (5, "loom"))
         self.assertEqual(payload["push_mana"], 2)
+
+
+class WorkingNotYetRunTest(TestCase):
+    """The shared sequence runs an instant cast only: a completing working
+    is stopped before anything is rolled, spent or logged, until the slice
+    of tarmar-engine #77 that completes one."""
+
+    def test_a_casting_handed_a_craft_is_refused(self):
+        state = wizard_state(skill_levels={KNOT_SKILL: 2})
+        caster = state.by_id(1)
+        working = example_true_magic_rules().working("scorch", 1)
+        craft = CraftState(working.key, 0, False, 3, 0, 2)
+        turn_runner, events = runner_on(
+            state, [[3, 3, 3]], TarmarProfile(magic=true_magic_rules())
+        )
+        with self.assertRaises(NotImplementedError):
+            turn_runner._roll_and_resolve(
+                caster,
+                working,
+                push_mana=0,
+                target_id=2,
+                true_cast=True,
+                roll_target=12,
+                versus="WIS+Knotwork",
+                shortfall=0,
+                craft=craft,
+                channel_used=None,
+                lifted_past=(),
+            )
+        self.assertEqual(events, [])
+        self.assertEqual(turn_runner.roller.faces_queue, [[3, 3, 3]])
+        self.assertEqual(caster.mana, 10)
 
 
 class RunawayOfAWorkingTest(TestCase):

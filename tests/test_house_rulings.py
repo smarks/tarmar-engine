@@ -1018,6 +1018,44 @@ class TrueMagicRulingsTest(TestCase):
         self.assertEqual(granted.granted_workings, grants)
         self.assertEqual(make_combatant(1).granted_workings, [])
 
+    def test_true_cast_rolls_the_spells_own_roll(self):
+        from tarmar_engine.profile import TarmarProfile
+
+        from .test_engine import ScriptedRoller, events_of_type
+        from .test_magic import wizard_state
+        from .test_true_magic import (
+            KNOT_SKILL,
+            example_true_magic_rules,
+            true_magic_rules,
+        )
+
+        self.assertEqual(
+            ruling("true_cast_rolls_the_spells_own_roll").value, "the spell's own roll"
+        )
+        # The example rules add 2 a level to a working's roll; at "knotwork"
+        # 3 a True cast's target is still the caster's INT of 14.
+        rules = true_magic_rules()
+        self.assertEqual(example_true_magic_rules().roll_bonus_per_level, 2)
+        state = wizard_state(skill_levels={KNOT_SKILL: 3})
+        caster = state.by_id(1)
+        caster.chosen_spell = "fire_missile"
+        caster.chosen_target = 2
+        caster.chosen_true_cast = True
+        events: list[dict] = []
+        runner = engine.TurnRunner(
+            state,
+            ScriptedRoller([[3, 3, 3], [2, 2, 2], [5]]),
+            events.append,
+            profile=TarmarProfile(magic=rules),
+        )
+        runner.cast_spell(caster)
+        casting_roll = events_of_type(events, "roll")[0]["payload"]
+        self.assertEqual(casting_roll["purpose"], "casting")
+        self.assertEqual(
+            (casting_roll["versus"], casting_roll["target_number"]),
+            ("INT", caster.intelligence),
+        )
+
     #: The list methods that change a list in place.
     LIST_MUTATORS = frozenset(
         {"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"}

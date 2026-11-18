@@ -913,6 +913,72 @@ class TrueLevelTest(TestCase):
             true_magic_rules().tier_cap(knot_caster(3, lifted_magic_bounds=["chanel"]))
 
 
+class TrueCastableTest(TestCase):
+    """What a True mage may True cast: the spells it knows, and the same
+    rung of every other element's ladder."""
+
+    def castable_keys(self, rules: MagicRules, caster: CombatantState) -> list[str]:
+        return [spell.key for spell in rules.true_castable(caster)]
+
+    def test_each_known_spell_is_followed_by_its_element_siblings(self):
+        caster = knot_caster(1, spells=["fire_ball", "heal", "earth_missile"])
+        self.assertEqual(
+            self.castable_keys(true_magic_rules(), caster),
+            [
+                "fire_ball",
+                "water_ball",
+                "lightning_ball",
+                "earth_ball",
+                "wind_ball",
+                "heal",
+                "earth_missile",
+                "water_missile",
+                "fire_missile",
+                "lightning_missile",
+                "wind_missile",
+            ],
+        )
+
+    def test_a_spell_reached_twice_is_listed_once_where_it_first_comes(self):
+        # Water Ball is Fire Ball's sibling and is known itself.
+        caster = knot_caster(1, spells=["fire_ball", "water_ball"])
+        self.assertEqual(
+            self.castable_keys(true_magic_rules(), caster),
+            ["fire_ball", "water_ball", "lightning_ball", "earth_ball", "wind_ball"],
+        )
+
+    def test_another_rung_of_a_known_ladder_is_not_castable(self):
+        castable = self.castable_keys(
+            true_magic_rules(), knot_caster(3, spells=["fire_ball"])
+        )
+        for key in ("fire_missile", "fire_bolt", "water_missile", "wind_bolt"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, castable)
+
+    def test_a_generic_counter_is_left_out(self):
+        caster = knot_caster(1, spells=["counter_2", "shield", "counter_1"])
+        self.assertEqual(self.castable_keys(true_magic_rules(), caster), ["shield"])
+        only_counters = knot_caster(1, spells=["counter_3"])
+        self.assertEqual(true_magic_rules().true_castable(only_counters), ())
+
+    def test_nothing_is_castable_with_no_level_in_the_true_skill(self):
+        for knotwork_level in (None, 0):
+            with self.subTest(knotwork_level=knotwork_level):
+                caster = knot_caster(knotwork_level, spells=["fire_ball", "heal"])
+                self.assertEqual(true_magic_rules().true_castable(caster), ())
+
+    def test_nothing_is_castable_with_no_true_magic_rules(self):
+        caster = knot_caster(3, spells=["fire_ball", "heal"])
+        for rules in (MagicRules(), MagicRules(channel=knot_channel_rules())):
+            with self.subTest(channel=rules.channel is not None):
+                self.assertEqual(rules.true_castable(caster), ())
+
+    def test_a_known_spell_the_catalog_does_not_hold_is_a_key_error(self):
+        caster = knot_caster(1, spells=["fire_ball", "no_such_spell"])
+        with self.assertRaises(KeyError):
+            true_magic_rules().true_castable(caster)
+
+
 class CastKindTest(TestCase):
     def test_a_recipe_cast_names_no_kind(self):
         for rules in (MagicRules(), true_magic_rules()):

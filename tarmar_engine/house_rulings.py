@@ -887,6 +887,17 @@ HOUSE_RULINGS += (
         RULING,
         "#208 (tarmar-engine #77)",
     ),
+    HouseRuling(
+        "true_cast_rolls_the_spells_own_roll",
+        "A True cast of a spell makes that spell's ordinary casting roll, "
+        "under the spell's own attribute, with no bonus for the caster's "
+        "level in the True skill. Only a working's roll takes that bonus. "
+        "The alternative reading adds the bonus to a True cast too.",
+        "the spell's own roll",
+        "tarmar_engine/engine.py cast_spell",
+        RULING,
+        "#208 (tarmar-engine #77)",
+    ),
 )
 
 
