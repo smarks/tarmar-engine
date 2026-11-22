@@ -907,8 +907,25 @@ class LiftedBoundsRulingsTest(TestCase):
 
         self.assertEqual(
             ruling("lifted_channel_bounds_the_shortfall").value,
-            "mana + Channel, when Borrowing has no debt cap",
+            {
+                "counts the cost": "mana + Channel, when Borrowing has no debt cap",
+                "leaves it out": "max(mana, cost) + Channel, when Borrowing has "
+                "no debt cap",
+            },
         )
+        # Leaving the cost out, Channel 1 and cost 3: the greater of the
+        # mana and the cost, plus the Channel.
+        from .test_channel_counts_cost import BOLT, bolt_caster, magic_rules
+
+        leaving = magic_rules(counts_cost=False)
+        for mana, bound in ((0, 3 + 1), (5, 5 + 1)):
+            lifted_caster = bolt_caster(mana, lifted_magic_bounds=[CHANNEL]).by_id(1)
+            self.assertEqual(
+                leaving.channel_bound(
+                    lifted_caster, spells.get_spell(BOLT), borrowing=True
+                ),
+                bound,
+            )
         rules = channel_borrowing_rules()
         # Channel 1 for the Bolt, 2 mana.
         caster = channel_caster({"lightning_bolt": 1}, mana=2).by_id(1)
@@ -942,6 +959,48 @@ class LiftedBoundsRulingsTest(TestCase):
         self.assertEqual(
             tiers_of(casts(lifted, craft_rules(), beyond_purse=True)), [1, 2, 3, 4, 5]
         )
+
+
+class ChannelCostRulingsTest(TestCase):
+    """The reading on a kind of magic that leaves the cost out of Channel
+    (tarmar-engine #83), pinned to the code that makes it."""
+
+    def test_channel_may_exclude_the_cost(self):
+        from tarmar_engine.magic import MagicRules
+
+        from .test_channel_counts_cost import BOLT, bolt_caster, magic_rules
+        from .test_true_magic import (
+            KNOT_KIND,
+            example_true_magic_rules,
+            knot_channel_rules,
+        )
+
+        self.assertEqual(
+            ruling("channel_may_exclude_the_cost").value,
+            {"counts the cost": "cost + pushed mana", "leaves it out": "pushed mana"},
+        )
+        bolt = spells.get_spell(BOLT)
+        for counts_cost, counted in ((True, 3 + 2), (False, 2)):
+            channel = magic_rules(counts_cost=counts_cost).channel
+            assert channel is not None
+            self.assertEqual(channel.counted_mana(bolt, 2), counted)
+        # The cost always fits: a cost of 3 past a Channel of 1 is cast,
+        # unpushed and borrowed alike.
+        leaving = magic_rules(counts_cost=False)
+        self.assertTrue(leaving.cast_within_channel(bolt_caster(10).by_id(1), bolt))
+        self.assertTrue(
+            leaving.cast_within_channel(bolt_caster(0).by_id(1), bolt, borrowing=True)
+        )
+        # True Magic's kind must count it.
+        channel = knot_channel_rules()
+        knot = replace(channel.derivations[KNOT_KIND], counts_cost=False)
+        with self.assertRaises(ValueError):
+            MagicRules(
+                channel=replace(
+                    channel, derivations={**channel.derivations, KNOT_KIND: knot}
+                ),
+                true_magic=example_true_magic_rules(),
+            )
 
 
 class GenericCounterRulingsTest(TestCase):
