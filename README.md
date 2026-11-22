@@ -1238,6 +1238,54 @@ spec-only release: no code, catalog entry or event changes, and the drift
 guards read only the spell lists and the Elemental line, which stay as they
 were.
 
+## Channel may leave the cost out (v0.9.24)
+
+Spencer's ruling of 2026-11-21 on tarmar-studio #196: a recipe spell's cost
+always fits, and Channel limits only the mana pushed or borrowed past it
+(tarmar-engine #83). The engine takes this per kind of magic, numbers still
+injected.
+
+- **The flag.** `ChannelDerivation` gains `counts_cost: bool = True`. `True`
+  is the behaviour before v0.9.24: Channel bounds the casting's whole mana,
+  cost and pushed mana together. `False`: the cost always fits, however it
+  is paid, and Channel bounds only the mana past it, pushed from the purse
+  or borrowed (house reading `channel_may_exclude_the_cost`, marked for
+  Spencer). A spell whose cost is past the caster's Channel is then still
+  offered and cast for its cost.
+- **One answer.** `ChannelRules.counted_mana(spell, push_mana, kind=None)`
+  is the mana a casting puts against Channel: `magic.casting_mana(spell,
+  push_mana)` for a kind that counts the cost, `push_mana` for one that
+  leaves it out. `casting_mana` keeps its meaning, the mana a casting takes
+  from the purse. `MagicRules.past_channel(caster, spell, push_mana=0, *,
+  kind=None)` says whether a casting puts more than the caster's Channel
+  against it, lifted or not; `lifted_bounds_passed` and the menu's "past
+  Channel N" read it.
+- **The bound.** `MagicRules.channel_bound` is still the most mana the
+  casting may take, cost and pushed mana together: the caster's Channel,
+  plus the cost for a kind that leaves the cost out. `cast_within_channel`,
+  `PushRules.push_room` (so the room is `min(mana - cost, Channel)`),
+  `BorrowingRules.borrowing_ceiling` and the menu's pushes and borrowings
+  all read it, so the menu offers exactly what `cast_spell` accepts. **A
+  caller that shows `channel_bound` as the caster's Channel should show
+  `channel_for` instead**: for a kind that leaves the cost out they differ by
+  the cost. A debt cap, where one is injected, still bounds borrowing.
+- **A lift never binds tighter.** With Channel lifted and no debt cap, a
+  borrowing casting may take the caster's mana plus its Channel where the
+  kind counts the cost (as before), and the greater of its mana and the
+  spell's cost, plus its Channel, where it leaves the cost out (house
+  reading `lifted_channel_bounds_the_shortfall`, amended and marked for
+  Spencer).
+- **True Magic counts the cost.** `MagicRules` refuses rules whose True
+  Magic `channel_kind` derivation has `counts_cost=False`: a True cast still
+  needs a True skill of at least its spell's level and its push, and a
+  working's tier and push stay within it. Workings' Channel and tier cap
+  are unchanged.
+- **Wording.** A cast refused past Channel by a kind that leaves the cost
+  out says "with N mana past its cost"; one that counts it says "with N
+  mana", as before. The menu's withheld line ("it costs N mana, past …
+  Channel") is only ever said of a kind that counts the cost: for one that
+  leaves it out, an unpushed cast always fits.
+
 ## What it sits on
 
 - **hexarena** — hex geometry: coordinates, facing arcs, range bands,

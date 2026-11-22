@@ -2053,6 +2053,11 @@ def _within_channel(
     alike. When the AI had chosen one, it takes the best of what remains by
     the rule it chose with (the highest score, the first listed on a tie).
 
+    Only a kind of magic that counts the cost
+    (:attr:`.magic.ChannelDerivation.counts_cost`) withholds a cast for its
+    Channel, so the withheld line names the cost: for a kind that leaves it
+    out the cost always fits, and a cast here pushes nothing.
+
     The Channel is the one the casting names
     (:meth:`.magic.MagicRules.cast_kind`): a True cast's and a working's by
     the True kind, any other cast's by its spell's own. So a recipe cast and
@@ -2105,7 +2110,7 @@ def _within_channel(
         if CHANNEL in candidate.lifted_bounds:
             candidate.rationale = (
                 f"{candidate.rationale}; {spell.level} mana, "
-                f"{_channel_note(actor, spell, 0, actor_channel, magic)}"
+                f"{_channel_note(actor, spell, 0, actor_channel, magic, kind)}"
             )
         kept.append(candidate)
     reasons = list(withheld.values())
@@ -2128,8 +2133,10 @@ def _push_candidates(
 ) -> list[Candidate]:
     """The pushed variant of each cast on the menu, one per affordable amount.
 
-    With Channel rules, no variant takes the casting's whole mana past the
-    actor's Channel for the spell, and each names that Channel; Push's own
+    With Channel rules, no variant takes the casting past what the actor's
+    Channel for the spell lets it take (:meth:`.magic.MagicRules.
+    channel_bound`: the Channel, plus the cost for a kind of magic that
+    leaves the cost out), and each names that Channel; Push's own
     optional cap still applies beneath it. Either bound a Game Master has
     lifted for the actor does not apply, and a variant past it says so
     (:func:`_push_note`) and carries it in :attr:`Candidate.lifted_bounds`.
@@ -2151,7 +2158,6 @@ def _push_candidates(
     """
     pushed: list[Candidate] = []
     cap_lifted = bound_lifted(actor, PUSH_CAP)
-    channel_rules = magic.channel
     for candidate in candidates:
         if (
             not candidate.spell_key
@@ -2161,14 +2167,8 @@ def _push_candidates(
             continue
         spell = spell_for(candidate.spell_key, magic)
         kind = magic.cast_kind(spell, true_cast=candidate.true_cast)
-        channel, bound = (
-            (None, None)
-            if channel_rules is None
-            else (
-                channel_rules.channel_for(actor, spell, kind),
-                channel_rules.bound_for(actor, spell, kind),
-            )
-        )
+        channel = magic.channel_for(actor, spell, kind)
+        bound = magic.channel_bound(actor, spell, kind=kind)
         room = push.push_room(spell, actor.mana, bound, cap_lifted=cap_lifted)
         for extra_mana in range(1, room + 1):
             passed = magic.lifted_bounds_passed(actor, spell, extra_mana, kind=kind)
@@ -2221,7 +2221,10 @@ def _push_note(
     total = casting_mana(spell, extra_mana)
     bound_notes: list[str] = []
     if channel is not None:
-        bound_notes.append(_channel_note(actor, spell, extra_mana, channel, magic))
+        kind = magic.cast_kind(spell, true_cast=candidate.true_cast)
+        bound_notes.append(
+            _channel_note(actor, spell, extra_mana, channel, magic, kind)
+        )
     if PUSH_CAP in passed:
         bound_notes.append(f"past the push cap {push.max_push_mana}")
     channel_note = "".join(f", {note}" for note in bound_notes)
@@ -2241,10 +2244,14 @@ def _channel_note(
     push_mana: int,
     channel: int,
     magic: MagicRules,
+    kind: str | None,
 ) -> str:
     """The actor's Channel as a menu line names it for a casting of the
     spell with ``push_mana`` pushed: "Channel 7", or "past Channel 7" for a
-    casting whose whole mana is past it. A working whose tier is past the
+    casting that puts more mana against it than that
+    (:meth:`.magic.MagicRules.past_channel`, by the ``kind`` the casting
+    names: its whole mana, or for a kind that leaves the cost out the mana
+    past the cost). A working whose tier is past the
     cap the actor's level in the True skill gives
     (:meth:`.magic.MagicRules.past_tier_cap`) names that cap too ("Channel
     7, past the tier cap 4", :meth:`.magic.MagicRules.unlifted_tier_cap`);
@@ -2256,7 +2263,7 @@ def _channel_note(
     :data:`~.magic.CHANNEL` for both), which the line leaves to the caller
     to say from :attr:`Candidate.lifted_bounds`, in its own words
     (tarmar-engine #55)."""
-    past = "past " if casting_mana(spell, push_mana) > channel else ""
+    past = "past " if magic.past_channel(actor, spell, push_mana, kind=kind) else ""
     note = f"{past}Channel {channel}"
     if magic.past_tier_cap(actor, spell):
         note += f", past the tier cap {magic.unlifted_tier_cap(actor)}"
@@ -2279,10 +2286,12 @@ def _borrow_candidates(
     grapple) allow a cast, and trimmed by Channel as the menu is. A variant
     is offered when the casting, cost and pushed mana together, lies within
     :meth:`.magic.BorrowingRules.borrowing_ceiling`: past the purse, within
-    the debt the cap still allows and within the actor's Channel for the
-    spell (:meth:`.magic.MagicRules.channel_bound`: with Channel lifted for
-    the actor, the debt cap bounds it, or with no cap the actor's mana plus
-    its Channel).
+    the debt the cap still allows and within what the actor's Channel for
+    the spell lets the casting take (:meth:`.magic.MagicRules.channel_bound`:
+    the Channel, plus the cost for a kind of magic that leaves the cost out;
+    with Channel lifted for the actor, the debt cap bounds it, or with no cap
+    the actor's mana, or the cost where that is greater and the kind leaves
+    it out, plus its Channel), so it offers exactly what the engine accepts.
     Push's own cap holds unless lifted for the actor too.
 
     Scored :data:`PLAYER_ONLY_SCORE` and appended last, so they never displace

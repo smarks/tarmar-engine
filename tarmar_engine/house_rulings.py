@@ -441,6 +441,8 @@ HOUSE_RULINGS += (
     ),
     HouseRuling(
         "channel_bounds_whole_casting",
+        "For a kind of magic that counts the cost (the default; see "
+        "channel_may_exclude_the_cost), "
         "Channel bounds the whole mana of one casting: the spell's cost and "
         "its pushed mana together, before any tier refund. A spell whose own "
         "cost is past the caster's Channel for it cannot be cast, and leaves "
@@ -452,6 +454,31 @@ HOUSE_RULINGS += (
         "_begin_craft) and tarmar_engine/policy.py _within_channel",
         RULING,
         "#825 (tarmar-engine #29)",
+    ),
+    HouseRuling(
+        "channel_may_exclude_the_cost",
+        "A kind of magic may leave the spell's cost out of Channel "
+        "(ChannelDerivation.counts_cost false). Its cost then always fits, "
+        "however it is paid, and Channel bounds only the mana past the cost, "
+        "pushed from the purse or borrowed: unlifted, a casting may take at "
+        "most its cost plus its Channel, so a spell costing more than the "
+        "caster's Channel is still cast for its cost. The menu's casts, "
+        "pushes and borrowings and the engine's refusals read the one answer "
+        "(ChannelRules.counted_mana), and a debt cap, where one is injected, "
+        "still bounds borrowing. A kind that counts the cost keeps "
+        "channel_bounds_whole_casting. True Magic's kind must count it: the "
+        "engine refuses rules whose True kind leaves it out, so a True cast "
+        "still needs a True skill of at least its spell's level and its push, "
+        "and a working's tier and push stay within it.",
+        {"counts the cost": "cost + pushed mana", "leaves it out": "pushed mana"},
+        "tarmar_engine/magic.py ChannelRules.counted_mana "
+        "(MagicRules.channel_bound, MagicRules.cast_within_channel, "
+        "MagicRules.past_channel, MagicRules.lifted_bounds_passed), "
+        "MagicRules._true_derivation; tarmar_engine/engine.py "
+        "_check_within_channel; tarmar_engine/policy.py _push_candidates, "
+        "_borrow_candidates, _craft_mana_bound, _channel_note",
+        "Spencer's ruling of 2026-11-21 on tarmar-studio #196 (" + RULING + ")",
+        "#196 (tarmar-engine #83)",
     ),
     HouseRuling(
         "channel_unrecorded_level",
@@ -532,9 +559,12 @@ HOUSE_RULINGS += (
     HouseRuling(
         "borrowing_counts_toward_channel",
         "Channel bounds the whole casting, the spell's cost and its pushed "
-        "mana, whether paid from the pool or borrowed: a casting past Channel "
-        "is refused, borrowing or not. With no injected debt cap Channel is "
-        "the only bound, so Borrowing without a cap needs Channel rules.",
+        "mana, whether paid from the pool or borrowed, for a kind of magic "
+        "that counts the cost (for one that leaves it out, the mana past the "
+        "cost, pushed or borrowed: channel_may_exclude_the_cost): a casting "
+        "past Channel is refused, borrowing or not. With no injected debt "
+        "cap Channel is the only bound, so Borrowing without a cap needs "
+        "Channel rules.",
         "spell cost + pushed mana, borrowed or not",
         "tarmar_engine/engine.py _check_within_channel (cast_spell, "
         "_begin_craft); tarmar_engine/policy.py "
@@ -805,16 +835,25 @@ HOUSE_RULINGS += (
         "bounded by the purse alone, and a borrowing casting by the injected "
         "debt cap where there is one. Where Borrowing has no debt cap, "
         "Channel bounds only the shortfall: a borrowing casting may take the "
-        "caster's mana plus its Channel. The bound is finite, so the menu can "
+        "caster's mana plus its Channel. Amended for a kind of magic that "
+        "leaves the cost out of Channel (channel_may_exclude_the_cost): there "
+        "it may take the greater of the caster's mana and the spell's cost, "
+        "plus its Channel, so a lift never binds tighter than the unlifted "
+        "bound of cost plus Channel. The bound is finite, so the menu can "
         "list the amounts; more mana never refuses a cast that less mana "
-        "allowed; and the lifted caster borrows more than it could unlifted. "
-        "Awaiting Spencer's word: the ruling lifts Channel without saying "
-        "what then bounds a borrowing.",
-        "mana + Channel, when Borrowing has no debt cap",
+        "allowed; and the lifted caster borrows at least as much as it could "
+        "unlifted. Awaiting Spencer's word: the ruling lifts Channel without "
+        "saying what then bounds a borrowing.",
+        {
+            "counts the cost": "mana + Channel, when Borrowing has no debt cap",
+            "leaves it out": "max(mana, cost) + Channel, when Borrowing has no "
+            "debt cap",
+        },
         "tarmar_engine/magic.py MagicRules.channel_bound; "
-        "tarmar_engine/policy.py _craft_mana_bound (_craft_tiers)",
+        "tarmar_engine/policy.py _craft_mana_bound (_craft_tiers), "
+        "_borrow_candidates",
         RULING,
-        "#37",
+        "#37; #196 (tarmar-engine #83)",
     ),
     HouseRuling(
         "generic_counter_is_learned_never_cast",

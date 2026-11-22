@@ -69,6 +69,7 @@ from . import actions, combat_math, hexes, movement, policy, weapons
 from . import resolution as combat
 from .dice import parse_dice_expression
 from .magic import (
+    CHANNEL,
     COUNTER_BOUNDS,
     LIFTED_BOUNDS_KEY,
     PUSH_CAP,
@@ -2433,9 +2434,11 @@ class TurnRunner:
         hooks run, in this order, between the casting roll and the effect:
         the casting success tier (:meth:`_casting_success_tier`) and a pushed
         cast's Control Roll (:meth:`_push_control_roll`). Their bonuses add
-        to the spell's rolled effect. With injected Channel rules the whole
-        mana of the casting, cost and pushed mana together, must lie within
-        the caster's Channel for the spell (:meth:`.magic.MagicRules.
+        to the spell's rolled effect. With injected Channel rules the mana
+        the casting puts against Channel (its whole mana, or for a kind of
+        magic that leaves the cost out the mana past the cost,
+        :meth:`.magic.ChannelRules.counted_mana`) must lie within the
+        caster's Channel for the spell (:meth:`.magic.MagicRules.
         cast_within_channel`), and the cast names the Channel it used. With
         injected Borrowing rules a cast the caster chose to borrow for, and
         cannot afford, empties the pool and adds the shortfall to its debt
@@ -2650,9 +2653,15 @@ class TurnRunner:
         borrows: bool,
         deed: str,
     ) -> None:
-        """Refuse a casting whose whole mana is past the caster's Channel
-        for it (:meth:`.magic.MagicRules.cast_within_channel`): the one
-        check, for a cast and for a craft.
+        """Refuse a casting past the caster's Channel for it
+        (:meth:`.magic.MagicRules.cast_within_channel`): the one check, for a
+        cast and for a craft.
+
+        The refusal names the mana the casting puts against Channel
+        (:meth:`.magic.ChannelRules.counted_mana`): its whole mana, or the
+        mana past its cost for a kind of magic that leaves the cost out. A
+        borrowing refused with Channel lifted names its whole mana and the
+        lifted bound it is past.
 
         Args:
             caster: The caster.
@@ -2668,18 +2677,36 @@ class TurnRunner:
                 not lifted it for the caster.
         """
         magic = self.profile.magic
-        if magic is None or magic.cast_within_channel(
-            caster, spell, push_mana, borrowing=borrows, kind=kind
+        # With no Channel rules every casting is within Channel.
+        if (
+            magic is None
+            or magic.channel is None
+            or magic.cast_within_channel(
+                caster, spell, push_mana, borrowing=borrows, kind=kind
+            )
         ):
             return
         channel = magic.channel_for(caster, spell, kind)
-        bound = magic.channel_bound(caster, spell, borrowing=borrows, kind=kind)
-        borrowing_note = (
-            "" if bound == channel else f", which lets them borrow to {bound}"
-        )
+        whole_mana = casting_mana(spell, push_mana)
+        if bound_lifted(caster, CHANNEL):
+            # Lifted, only a borrowing with no debt cap is refused. A bound
+            # that is the Channel itself (no mana, a kind counting the cost)
+            # is named as the Channel alone, as before v0.9.24.
+            bound = magic.channel_bound(caster, spell, borrowing=borrows, kind=kind)
+            spent = f"{whole_mana} mana"
+            borrowing_note = (
+                "" if bound == channel else f", which lets them borrow to {bound}"
+            )
+        else:
+            counted = magic.channel.counted_mana(spell, push_mana, kind)
+            spent = (
+                f"{counted} mana"
+                if counted == whole_mana
+                else f"{counted} mana past its cost"
+            )
+            borrowing_note = ""
         raise ValueError(
-            f"{caster.name} {deed} {spell.name} with "
-            f"{casting_mana(spell, push_mana)} mana; "
+            f"{caster.name} {deed} {spell.name} with {spent}; "
             f"their Channel for it is {channel}{borrowing_note}"
         )
 

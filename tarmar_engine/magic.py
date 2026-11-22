@@ -40,7 +40,9 @@ Eight mechanics are modelled:
   rules give a push bonus may be pushed (:meth:`PushRules.can_push`).
 * **Channel.** A caster's Channel for a spell bounds the whole mana of one
   casting, the spell's cost and any pushed mana together
-  (:class:`ChannelRules`). It is per caster and per spell: it derives from a
+  (:class:`ChannelRules`), or for a kind of magic that leaves the cost out
+  only the mana past the cost, pushed or borrowed
+  (:meth:`ChannelRules.counted_mana`). It is per caster and per spell: it derives from a
   skill level recorded on the caster's snapshot, by a rule injected for each
   kind of magic. The menu offers no cast past it and the engine refuses one.
 * **Borrowing.** A caster short of mana may borrow the rest
@@ -559,9 +561,9 @@ class PushRules:
         max_push_mana: A secondary cap on the extra mana one cast may take,
             the same for every caster, or ``None`` for none. Channel
             (:attr:`MagicRules.channel`) supersedes it as the bound on a
-            casting: it is per caster and per spell, and it bounds the whole
-            mana of the casting, cost included. Where both are injected, the
-            tighter one holds.
+            casting: it is per caster and per spell, and it bounds the mana
+            the casting puts against it (:meth:`ChannelRules.counted_mana`).
+            Where both are injected, the tighter one holds.
         spell_effect_bonus_per_mana: Per-spell overrides of the kind's bonus,
             keyed by spell key; only for a spell with a rolled effect.
     """
@@ -635,10 +637,12 @@ class PushRules:
         Args:
             spell: The spell pushed.
             mana: The caster's mana.
-            channel: The Channel bounding the casting (cost and pushed mana
-                together), or ``None`` when nothing does: no Channel rules
-                injected, or Channel lifted for the caster
-                (:meth:`MagicRules.channel_bound`).
+            channel: The most mana Channel lets the casting take, cost and
+                pushed mana together (:meth:`MagicRules.channel_bound`: the
+                caster's Channel, plus the cost for a kind that leaves the
+                cost out, so the room is then ``min(mana - cost, Channel)``),
+                or ``None`` when nothing does: no Channel rules injected, or
+                Channel lifted for the caster.
             cap_lifted: Has a Game Master lifted :attr:`max_push_mana` for
                 the caster (:data:`PUSH_CAP`)?
         """
@@ -717,11 +721,19 @@ class ChannelDerivation:
             this kind.
         multiplier: Channel per recorded level.
         offset: Added after the multiplication.
+        counts_cost: Does Channel count the spell's cost? ``True``: Channel
+            bounds the casting's whole mana, cost and pushed mana together.
+            ``False``: the cost always fits, however it is paid, and Channel
+            bounds only the mana past it, pushed or borrowed (house reading
+            ``channel_may_exclude_the_cost``). :meth:`ChannelRules.
+            counted_mana` is the one place a casting reads it, and
+            :class:`MagicRules` refuses ``False`` on the True Magic kind.
     """
 
     source_skill: str | None
     multiplier: int
     offset: int
+    counts_cost: bool = True
 
     def __post_init__(self) -> None:
         if self.multiplier < 0:
@@ -755,10 +767,14 @@ class ChannelDerivation:
 
 @dataclass(frozen=True)
 class ChannelRules:
-    """Channel: the most mana one casting may take, per caster and spell.
+    """Channel: the most mana one casting may put against it, per caster and
+    spell.
 
-    Channel bounds the whole mana of a casting: the spell's cost and any
-    pushed mana together. Which rule derives it depends on the spell's kind
+    For a kind of magic that counts the cost, Channel bounds the whole mana
+    of a casting: the spell's cost and any pushed mana together. For one
+    that leaves the cost out (:attr:`ChannelDerivation.counts_cost`), the
+    cost always fits and Channel bounds only the mana past it
+    (:meth:`counted_mana`). Which rule derives it depends on the spell's kind
     of magic; the kinds, their names and their rules are all injected.
 
     Attributes:
@@ -820,7 +836,7 @@ class ChannelRules:
         self, caster: CombatantState, spell: Spell, kind: str | None = None
     ) -> int:
         """The caster's Channel for this spell: the most mana one casting of
-        it may take, cost and pushed mana together.
+        it may put against Channel (:meth:`counted_mana`).
 
         Args:
             caster: The caster.
@@ -831,15 +847,56 @@ class ChannelRules:
         Raises:
             ChannelUnclassifiedSpell: for a spell the rules give no kind.
         """
-        derivation = self.derivations[self.kind_for(spell, kind)]
+        derivation = self._derivation_for(spell, kind)
         return derivation.channel_at(derivation.recorded_level(caster, spell))
+
+    def _derivation_for(
+        self, spell: Spell, kind: str | None = None
+    ) -> ChannelDerivation:
+        """The derivation a casting of the spell reads its Channel by.
+
+        Args:
+            spell: The spell cast.
+            kind: The kind the cast names, or ``None``: the spell's own
+                (:meth:`kind_for`).
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+        """
+        return self.derivations[self.kind_for(spell, kind)]
+
+    def counted_mana(
+        self, spell: Spell, push_mana: int, kind: str | None = None
+    ) -> int:
+        """The mana a casting of the spell with ``push_mana`` pushed puts
+        against Channel: its whole mana (:func:`casting_mana`) for a kind
+        that counts the cost, and the mana past the cost alone for one that
+        leaves it out (:attr:`ChannelDerivation.counts_cost`).
+
+        The one place the flag is read: every Channel test compares this, or
+        a bound :meth:`MagicRules.channel_bound` builds from it, with the
+        caster's Channel. :func:`casting_mana` stays the mana the casting
+        takes from the purse.
+
+        Args:
+            spell: The spell cast.
+            push_mana: The mana pushed (or borrowed) past the spell's cost.
+            kind: The kind the cast names, or ``None``: the spell's own
+                (:meth:`kind_for`).
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+        """
+        if self._derivation_for(spell, kind).counts_cost:
+            return casting_mana(spell, push_mana)
+        return push_mana
 
     def bound_for(
         self, caster: CombatantState, spell: Spell, kind: str | None = None
     ) -> int | None:
-        """The caster's Channel for this spell as the bound on a casting from
-        its own mana: ``None`` when a Game Master has lifted Channel for the
-        caster (:data:`CHANNEL`).
+        """The caster's Channel for this spell as the bound on what a casting
+        from its own mana puts against it (:meth:`counted_mana`): ``None``
+        when a Game Master has lifted Channel for the caster (:data:`CHANNEL`).
 
         Args:
             caster: The caster.
@@ -929,13 +986,16 @@ class BorrowingRules:
 
     def borrowing_ceiling(self, mana: int, debt: int, channel: int | None) -> int:
         """The most mana one borrowing casting may take: the purse and the
-        debt the cap still allows, within the caster's Channel for the spell.
+        debt the cap still allows, within what Channel lets the casting take.
 
         Args:
             mana: The caster's mana.
             debt: What the caster already owes.
-            channel: The caster's Channel for the spell, or ``None`` with no
-                Channel rules injected.
+            channel: The most mana Channel lets the borrowing casting take
+                (:meth:`MagicRules.channel_bound` with ``borrowing``): the
+                caster's Channel, plus the spell's cost for a kind that leaves
+                the cost out. ``None`` when Channel bounds nothing: no Channel
+                rules injected, or Channel lifted with a debt cap injected.
 
         Raises:
             ValueError: with neither a debt cap nor a Channel to bound it.
@@ -1725,7 +1785,11 @@ class MagicRules:
 
         Raises:
             ValueError: with no Channel rules, for a ``channel_kind`` with no
-                derivation, or for one that reads no general skill.
+                derivation, for one that reads no general skill, or for one
+                that leaves the cost out of Channel
+                (:attr:`ChannelDerivation.counts_cost`): a True cast needs a
+                True skill of at least the spell's level and its push, and a
+                working's tier and push stay within it.
         """
         if self.channel is None:
             raise ValueError(
@@ -1742,6 +1806,11 @@ class MagicRules:
             raise ValueError(
                 f"the True Magic channel_kind {true_magic.channel_kind!r} derives "
                 "Channel per spell; it must name the True skill as its source"
+            )
+        if not derivation.counts_cost:
+            raise ValueError(
+                f"the True Magic channel_kind {true_magic.channel_kind!r} leaves "
+                "the cost out of Channel; a True cast and a working count it"
             )
         return derivation
 
@@ -1896,15 +1965,23 @@ class MagicRules:
         kind: str | None = None,
     ) -> int | None:
         """The most mana Channel lets this caster's casting of the spell take,
-        or ``None`` when Channel bounds nothing but the purse (and Push's own
-        cap) does.
+        cost and pushed mana together, or ``None`` when Channel bounds nothing
+        but the purse (and Push's own cap) does.
+
+        Unlifted, it is the caster's Channel for the spell, plus the spell's
+        cost for a kind of magic that leaves the cost out
+        (:meth:`ChannelRules.counted_mana`): the cost always fits, however it
+        is paid, and Channel bounds the mana past it, pushed or borrowed
+        (house reading ``channel_may_exclude_the_cost``).
 
         ``None`` with no Channel rules injected, or with Channel lifted for
-        the caster by a Game Master (:meth:`ChannelRules.bound_for`). A
-        borrowing casting with Channel lifted is bounded by the injected debt
-        cap where there is one; where Borrowing has none, Channel bounds only
-        the shortfall, so the casting may take the caster's mana plus its
-        Channel (house reading ``lifted_channel_bounds_the_shortfall``).
+        the caster by a Game Master (:data:`CHANNEL`). A borrowing casting
+        with Channel lifted is bounded by the injected debt cap where there is
+        one; where Borrowing has none, Channel bounds only the shortfall, so
+        the casting may take the caster's mana plus its Channel, or for a kind
+        that leaves the cost out the greater of its mana and the cost, plus
+        its Channel, so a lift never binds tighter than the unlifted bound
+        (house reading ``lifted_channel_bounds_the_shortfall``).
 
         Args:
             caster: The caster.
@@ -1914,21 +1991,26 @@ class MagicRules:
                 the True kind for a working, otherwise the spell's own.
 
         Raises:
-            ChannelUnclassifiedSpell: for a spell the rules give no kind.
+            ChannelUnclassifiedSpell: for a spell the rules give no kind,
+                lifted or not.
             ValueError: for a working with no True Magic rules injected.
         """
         kind = self._channel_kind(spell, kind)
         if self.channel is None:
             return None
-        bound = self.channel.bound_for(caster, spell, kind)
+        channel = self.channel.channel_for(caster, spell, kind)
+        # The mana of the casting Channel leaves out: the cost, for a kind
+        # that leaves it out, and none for one that counts it.
+        uncounted = casting_mana(spell, 0) - self.channel.counted_mana(spell, 0, kind)
+        if not bound_lifted(caster, CHANNEL):
+            return uncounted + channel
         if (
-            bound is not None
-            or not borrowing
+            not borrowing
             or self.borrowing is None
             or self.borrowing.max_debt is not None
         ):
-            return bound
-        return caster.mana + self.channel.channel_for(caster, spell, kind)
+            return None
+        return max(caster.mana, uncounted) + channel
 
     def cast_within_channel(
         self,
@@ -1941,17 +2023,19 @@ class MagicRules:
     ) -> bool:
         """Does Channel let this caster cast the spell with ``push_mana``
         pushed: the casting's whole mana (:func:`casting_mana`) within
-        :meth:`channel_bound`?
+        :meth:`channel_bound`, which is the mana it puts against Channel
+        (:meth:`ChannelRules.counted_mana`) within the caster's Channel
+        unless a Game Master has lifted it?
 
         The one Channel test the casting phase refuses by and the menu
         withholds by, public so a caller asks it rather than restating it.
         ``True`` with no Channel rules injected, and for a caster a Game
         Master has lifted Channel for, except a borrowing casting where
-        Borrowing has no debt cap: that one is held to the caster's mana plus
-        its Channel. It says nothing of the purse, Push's own cap or the debt
-        cap, which are the caller's checks (the debt cap through
-        :meth:`BorrowingRules.borrowing_ceiling`; ``cast_spell`` refuses a
-        borrowing past it).
+        Borrowing has no debt cap: that one is held to the lifted bound
+        :meth:`channel_bound` gives. It says nothing of the purse, Push's own
+        cap or the debt cap, which are the caller's checks (the debt cap
+        through :meth:`BorrowingRules.borrowing_ceiling`; ``cast_spell``
+        refuses a borrowing past it).
 
         Args:
             caster: The caster.
@@ -1968,6 +2052,40 @@ class MagicRules:
         bound = self.channel_bound(caster, spell, borrowing=borrowing, kind=kind)
         return bound is None or casting_mana(spell, push_mana) <= bound
 
+    def past_channel(
+        self,
+        caster: CombatantState,
+        spell: Spell,
+        push_mana: int = 0,
+        *,
+        kind: str | None = None,
+    ) -> bool:
+        """Does a casting of the spell with ``push_mana`` pushed put more
+        mana against Channel (:meth:`ChannelRules.counted_mana`) than the
+        caster's Channel for it, whether or not a Game Master has lifted it?
+        ``False`` with no Channel rules injected.
+
+        Public so the menu's Channel note asks it, as
+        :meth:`lifted_bounds_passed` does.
+
+        Args:
+            caster: The caster.
+            spell: The spell cast.
+            push_mana: The mana pushed past the spell's cost.
+            kind: The kind the cast names (:meth:`cast_kind`), or ``None``:
+                the True kind for a working, otherwise the spell's own.
+
+        Raises:
+            ChannelUnclassifiedSpell: for a spell the Channel rules give no
+                kind.
+            ValueError: for a working with no True Magic rules injected.
+        """
+        kind = self._channel_kind(spell, kind)
+        if self.channel is None:
+            return False
+        counted = self.channel.counted_mana(spell, push_mana, kind)
+        return counted > self.channel.channel_for(caster, spell, kind)
+
     def lifted_bounds_passed(
         self,
         caster: CombatantState,
@@ -1979,11 +2097,12 @@ class MagicRules:
         """The bounds a casting of the spell with ``push_mana`` pushed goes
         past that only a Game Master's lifting allows, in order: Push's own
         cap (:data:`PUSH_CAP`) when the push is past it, then the caster's
-        Channel (:data:`CHANNEL`) when the casting's whole mana is past it,
-        or when the spell is a working whose tier is past the caster's tier
-        cap: lifting Channel lifts that cap too, so no bound of its own names
-        it. ``kind`` is the kind the cast names (:meth:`cast_kind`), or
-        ``None``: the True kind for a working, otherwise the spell's own.
+        Channel (:data:`CHANNEL`) when the mana the casting puts against it
+        is past it (:meth:`past_channel`), or when the spell is a working
+        whose tier is past the caster's tier cap: lifting Channel lifts that
+        cap too, so no bound of its own names it. ``kind`` is the kind the
+        cast names (:meth:`cast_kind`), or ``None``: the True kind for a
+        working, otherwise the spell's own.
 
         The one answer the engine's cast payload and the menu's cast options
         give (:data:`LIFTED_BOUNDS_KEY`), so a caller reads it rather than
@@ -1997,8 +2116,7 @@ class MagicRules:
         passed: list[str] = []
         if push_mana and self.push is not None and not self.push.within_cap(push_mana):
             passed.append(PUSH_CAP)
-        channel = self.channel_for(caster, spell, kind)
-        past_channel = channel is not None and casting_mana(spell, push_mana) > channel
+        past_channel = self.past_channel(caster, spell, push_mana, kind=kind)
         if past_channel or self.past_tier_cap(caster, spell):
             passed.append(CHANNEL)
         return tuple(passed)
